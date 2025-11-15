@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # SOC_CTRL driver
+    if bld.is_defined('CONFIG_USING_SOC_CTRL'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+                'drivers/soc_ctrl/soc_ctrl.c',
+            ]

@@ -1,0 +1,56 @@
+
+choice
+    prompt "cpu arch select"
+    config ARCH_ARMV7_R5
+        bool "armv7-r5"
+    config ARCH_ARMV8_A72
+        bool "armv8-a72"
+endchoice
+
+menu "bsp select"
+
+choice
+    prompt "Bsp select"
+    config BSP_TIANHE
+        bool "bsp tianhe"
+endchoice
+
+source "bsp/tianhe/Kconfig"
+
+choice
+    prompt "Platform select"
+    config PLATFORM_FPGA
+        bool "platform fpga"
+    config PLATFORM_EMU
+        bool "platform emu"
+    config PLATFORM_ASIC
+        bool "platform asic"
+endchoice
+
+menu "fpga platform select"
+    depends on PLATFORM_FPGA
+        choice
+            prompt "FPGA select"
+            config PLATFORM_FPGA_S2C
+                bool "platform fpga s2c"
+            config PLATFORM_FPGA_HAPS
+                bool "platform fpga haps"
+            config PLATFORM_FPGA_VU19P
+                bool "platform fpga vu19p"
+            config PLATFORM_FPGA_1902
+                bool "platform fpga 1902"
+        endchoice
+endmenu
+
+menu "emu platform select"
+    depends on PLATFORM_EMU
+        choice
+            prompt "EMU select"
+            config PLATFORM_EMU_PZ1
+                bool "platform emu pz1"
+            config PLATFORM_EMU_VEL
+                bool "platform fpga veloce"
+        endchoice
+endmenu
+
+endmenu

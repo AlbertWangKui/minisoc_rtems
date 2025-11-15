@@ -1,0 +1,5 @@
+config BRD_INIT
+    bool "do generic reg writing when booting up"
+    default y
+    help
+        invoke generic registers writing when booting up

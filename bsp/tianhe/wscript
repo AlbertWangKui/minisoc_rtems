@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'bsp/tianhe/board_init.c',
+            'bsp/tianhe/bsp_device.c',
+            'bsp/tianhe/bsp_crg_api.c',
+            'bsp/tianhe/bsp_topcrg.c',
+            'bsp/tianhe/bsp_qspi.c',
+            'bsp/tianhe/bsp_task_cfg.c',
+            'bsp/tianhe/iomux.c',
+            'bsp/tianhe/pll.c',
+            'bsp/tianhe/osp/bsp_osp_memory.c',
+            'bsp/tianhe/bsp_gpio_hp.c',
+        ]

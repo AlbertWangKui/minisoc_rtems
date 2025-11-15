@@ -1,0 +1,5 @@
+config USING_QFLASH
+    bool "USING QSPI Flash"
+    default y
+    help
+      Select this to use QSPI Flash driver

@@ -1,0 +1,9 @@
+menu "tianhe bsp"
+	depends on BSP_TIANHE
+
+    config BSP_NAME
+        string
+        default "tianhe"
+
+    # select special peripherals for this bsp.
+endmenu

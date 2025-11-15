@@ -1,0 +1,7 @@
+mainmenu "minisoc FW Configuration"
+
+source "bsp/Kconfig"
+source "drivers/Kconfig"
+source "components/Kconfig"
+source "bsp/shared/osp/Kconfig"
+

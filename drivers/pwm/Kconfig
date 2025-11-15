@@ -1,0 +1,5 @@
+config USING_PWM
+    bool "USING PWM"
+    default n
+    help
+      Select this to use PWM driver

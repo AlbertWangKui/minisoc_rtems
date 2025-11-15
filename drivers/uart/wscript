@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # UART driver
+    if bld.is_defined('CONFIG_USING_UART'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+                'drivers/uart/drv_uart.c',
+            ]

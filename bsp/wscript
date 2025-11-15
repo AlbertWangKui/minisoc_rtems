@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # Build all BSP directories
+    bsp_dirs = ['shared']
+    
+    # Add platform-specific BSP
+    if bld.env.BSP:
+        bsp_dirs.append(bld.env.BSP)
+    
+    for bsp_dir in bsp_dirs:
+        if bld.path.find_dir(bsp_dir):
+            bld.recurse(bsp_dir)

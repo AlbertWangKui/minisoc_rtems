@@ -1,0 +1,5 @@
+config USING_WDT
+    bool "USING WATCHDOG"
+    default y
+    help
+      Select this to use Watch Dog driver

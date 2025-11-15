@@ -1,0 +1,29 @@
+config USING_SGPIO
+    bool "USING SGPIO"
+    default y
+    help
+        Select this to use SGPIO driver
+
+choice
+    depends on USING_SGPIO
+    prompt "SGPIO driver select"
+    config USING_SGPIO_V1_1
+        bool "USING SGPIO v1.1"
+        help
+            sgpio driver for TianQin
+    config USING_SGPIO_V2_0
+        bool "USING SGPIO v2.0"
+        help
+            sgpio driver for SheShou
+    config USING_SGPIO_V1_0
+        bool "USING SGPIO v1.0"
+        help
+            sgpio driver for TianHe/ShuangZi
+endchoice
+
+config USING_SGPIO_API_TEST
+    bool "Enable SGPIO API test"
+    default n
+    depends on USING_SGPIO
+    help
+        Select this to use sgpio API test

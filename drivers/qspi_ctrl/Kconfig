@@ -1,0 +1,5 @@
+config USING_QSPI_CTRL
+    bool "USING QSPI_CTRL"
+    default y
+    help
+      Select this to use qspi control

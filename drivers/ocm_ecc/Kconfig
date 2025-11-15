@@ -1,0 +1,5 @@
+config USING_OCM_ECC
+    bool "USING OCM_ECC"
+    default y
+    help
+      Select this to use OCM ECC driver

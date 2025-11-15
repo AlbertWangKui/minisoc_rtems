@@ -1,0 +1,11 @@
+config USING_GPIO
+    bool "USING GPIO"
+    default y
+    help
+      Select this to use GPIO driver
+config USING_GPIO_API_TEST
+    bool "Enable GPIO API test"
+    default n
+    depends on USING_GPIO
+    help
+      Select this to use gpio API Input Validation Testing

@@ -1,0 +1,55 @@
+/*
+ * Copyright (C), 2024, WuXi Stars Micro System Technologies Co., Ltd.
+ *
+ * @file    bsp_task_cfg.c
+ * @author  fuchj
+ * @date    2024.05.14
+ * @brief   rtos项目差异化配置
+ * @note    NA
+ */
+
+#include <task_bootup.h>
+#include <bsp_config.h>
+
+#define CONFIGURE_COREDUMP_BACKEND_FLASH_V2
+#define CONFIGURE_FLASH_COREDUMP_REGION_SET
+
+#define CONFIGURE_APPLICATION_NEEDS_CLOCK_DRIVER
+#define CONFIGURE_APPLICATION_NEEDS_CONSOLE_DRIVER
+
+#define CONFIGURE_MAXIMUM_TASKS 32
+
+#define CONFIGURE_INIT_TASK_ATTRIBUTES RTEMS_FLOATING_POINT
+
+#define CONFIGURE_MAXIMUM_SEMAPHORES     32
+#define CONFIGURE_MAXIMUM_MESSAGE_QUEUES 32
+#define CONFIGURE_MAXIMUM_TIMERS         32
+#define CONFIGURE_MAXIMUM_PARTITIONS     32
+
+#ifdef CONFIGURE_TICKS_PER_TIMESLICE
+#undef CONFIGURE_TICKS_PER_TIMESLICE
+#define CONFIGURE_TICKS_PER_TIMESLICE    1
+#endif
+
+#define CONFIGURE_STACK_CHECKER_ENABLED
+#define CONFIGURE_MALLOC_STATISTICS
+
+#if defined(CONFIG_PLATFORM_EMU)
+    #define CONFIGURE_MICROSECONDS_PER_TICK    50
+#else 
+    #define CONFIGURE_MICROSECONDS_PER_TICK    10000
+#endif
+
+#define CONFIGURE_MAXIMUM_FILE_DESCRIPTORS 50
+///< 其中UNF MODE、ABT MODE各使用独立的1K，剩余4K其他模式使用
+#define CONFIGURE_INTERRUPT_STACK_SIZE (1024 * 6)
+///< 真实硬件将workspace和user malloc分开,这样能所以踩内存的影响范围
+#define CONFIGURE_UNIFIED_WORK_AREAS
+#define CONFIGURE_MAXIMUM_USER_EXTENSIONS  3
+
+#define CONFIGURE_UNLIMITED_OBJECTS
+#define CONFIGURE_APPLICATION_NEEDS_LIBBLOCK
+
+#include <rtems/confdefs.h>
+
+

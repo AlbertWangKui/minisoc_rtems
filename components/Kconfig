@@ -1,0 +1,79 @@
+menu "Components"
+
+
+source "components/misc/Kconfig"
+
+menu "CLI"
+config USING_CLI
+    bool "USING cli"
+    default y
+    help
+      Select this to use cli
+
+  choice
+      prompt "shell select"
+      depends on USING_CLI
+      default USING_DSHELL
+      config USING_DSHELL
+          bool "USING DSHELL"
+      config USING_CLI_CORE
+          bool "USING CLI_CORE"
+  endchoice
+
+  config MAX_USHELL_CMD_NUM
+    depends on USING_DSHELL
+    int "Max ushell cmd num"
+    default 1024
+    help
+      Set ushell cmd number
+endmenu
+
+menu "json"
+config ENABLE_JSON
+    bool "enable json api"
+    default n
+    help
+        enable json api
+source "components/core_json/Kconfig"
+endmenu
+
+menu "Flash Partition"
+config ENABLE_PARTITION_TABLE
+    bool "Enable partition table"
+    default y
+    select USING_QFLASH
+    help
+        enable flash partition table
+
+config PARTITION_TABLE_DUMP
+    bool "Enable partition table dump api"
+    default n
+    select ENABLE_PARTITION_TABLE
+    help
+        enable flash partition table dump function
+endmenu
+
+menu "SBR"
+config ENABLE_SBR_API
+    bool "Enable SBR API"
+    select ENABLE_VERIFICATION
+    select ENABLE_PARTITION_TABLE
+    default y
+    help
+        enable SBR
+
+config DUMP_SBR
+    bool "print sbr contents when drivers get it"
+    depends on ENABLE_SBR_API
+    default y
+    help
+        dump sbr info when driver get the sbr config
+
+config SBR_IMG_IN_RAM
+    bool "SBR image is in RAM"
+    default y
+    help
+        enable this when sbr image is in RAM
+endmenu
+
+endmenu

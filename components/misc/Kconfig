@@ -1,0 +1,7 @@
+menu "verification lib"
+config ENABLE_VERIFICATION
+    bool "Enable verification functions"
+    default n
+    help
+        Enable common verify algorithms (e.g., CRC16, checksum16)
+endmenu

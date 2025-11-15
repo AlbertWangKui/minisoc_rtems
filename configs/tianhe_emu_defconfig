@@ -1,0 +1,110 @@
+CONFIG_ARCH_ARMV7_R5=y
+# CONFIG_ARCH_ARMV8_A72 is not set
+
+#
+# bsp select
+#
+# CONFIG_BSP_SHESHOU is not set
+# CONFIG_BSP_TIANYING is not set
+# CONFIG_BSP_TIANLONG_CS is not set
+CONFIG_BSP_TIANHE=y
+CONFIG_BSP_NAME="tianhe"
+
+#
+# tianhe bsp
+#
+# end of tianhe bsp
+
+# CONFIG_PLATFORM_FPGA is not set
+CONFIG_PLATFORM_EMU=y
+# CONFIG_PLATFORM_ASIC is not set
+
+#
+# emu platform select
+#
+CONFIG_PLATFORM_EMU_PZ1=y
+# CONFIG_PLATFORM_EMU_VEL is not set
+# end of emu platform select
+# end of bsp select
+
+#
+# Device Drivers
+#
+CONFIG_BRD_INIT=y
+# CONFIG_USING_TIMER is not set
+CONFIG_USING_UART=y
+# CONFIG_USING_SOC_CTRL is not set
+CONFIG_USING_GPIO=y
+# CONFIG_USING_GPIO_API_TEST is not set
+CONFIG_USING_WDT=y
+CONFIG_USING_I2C=y
+CONFIG_USING_SMBUS=y
+# CONFIG_USING_SGPIO is not set
+CONFIG_USING_PWM=y
+# CONFIG_USING_TACH is not set
+# CONFIG_USING_OCM_ECC is not set
+CONFIG_USING_QFLASH=y
+
+#
+# security
+#
+# CONFIG_USING_EFUSE is not set
+# CONFIG_USING_SM23 is not set
+# CONFIG_USING_TRNG is not set
+# end of security
+
+# CONFIG_USING_PVT is not set
+# CONFIG_USING_QSPI_CTRL is not set
+# end of Device Drivers
+
+#
+# Components
+#
+
+#
+# verification lib
+#
+CONFIG_ENABLE_VERIFICATION=y
+# end of verification lib
+
+#
+# CLI
+#
+CONFIG_USING_CLI=y
+CONFIG_USING_DSHELL=y
+# CONFIG_USING_CLI_CORE is not set
+CONFIG_MAX_USHELL_CMD_NUM=1024
+# end of CLI
+
+#
+# json
+#
+# CONFIG_ENABLE_JSON is not set
+
+#
+# coreJson from FreeRTOS
+#
+# end of coreJson from FreeRTOS
+# end of json
+
+#
+# Flash Partition
+#
+CONFIG_ENABLE_PARTITION_TABLE=y
+# CONFIG_PARTITION_TABLE_DUMP is not set
+# end of Flash Partition
+
+#
+# SBR
+#
+CONFIG_ENABLE_SBR_API=y
+CONFIG_DUMP_SBR=y
+CONFIG_SBR_IMG_IN_RAM=y
+# end of SBR
+# end of Components
+
+#
+# Osp
+#
+CONFIG_USING_OSP=y
+# end of Osp

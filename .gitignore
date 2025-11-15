@@ -1,0 +1,86 @@
+# Prerequisites
+*.d
+*.swp
+.config.old
+*.pyc
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+*.bin
+*.asm
+
+# Linker output
+*.ilk
+*.map
+*.exp
+*.ld
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+.vscode/
+.claude/
+.cline*
+.github*
+.waf*/
+.lock-waf_*
+.gdbinit
+.config
+drivers/smbus/MIGRATION_SUMMARY.md
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+tags
+include/config/config.h
+include/config/menuconfig.h
+build/
+include/generated/
+scripts/Kconfiglib/__pycache__/kconfiglib.cpython-310.pyc
+drv_symbols.c
+drv_symbols.sym
+drv_symbols.exclude
+user_config/*
+!user_config/.gitkeep
+.lock-waf_linux2_build
+!sbr.bin
+AGENTS.md
+drivers/smbus/source/drv_smbus_testsuit.c
+drivers/smbus/source/drv_smbus_testsuit.h
+AGENTS-TC.md
+.lock-waf_linux2_build
+.config*

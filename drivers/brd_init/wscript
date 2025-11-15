@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # BRD_INIT driver
+    if bld.is_defined('CONFIG_BRD_INIT'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+                'drivers/brd_init/brd_init.c',
+            ]

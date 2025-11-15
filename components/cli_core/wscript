@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # CLI_CORE component
+    if bld.is_defined('CONFIG_USING_CLI_CORE'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'components/cli_core/cli_argument.c',
+            'components/cli_core/cli_command.c',
+            'components/cli_core/cli_core.c',
+            'components/cli_core/cli_level.c',
+            'components/cli_core/cli_normal_output.c',
+            'components/cli_core/cli_printf.c',
+            'components/cli_core/cli_session.c',
+            'components/cli_core/cli_std.c',
+            'components/cli_core/cli_string.c',
+            'components/cli_core/shell_cmds.c',
+            'components/cli_core/shell_common.c'
+        ]

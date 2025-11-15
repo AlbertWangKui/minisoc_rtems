@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # Build shared BSP components
+    bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'bsp/shared/minisoc_init.c',
+            'bsp/shared/task_bootup.c',
+            'bsp/shared/bsp_api.c',
+            'bsp/shared/rtems/clock.c',
+            'bsp/shared/rtems/rtems_adapter.c',
+        ]
+
+    # Add architecture-specific sources
+    if bld.is_defined('CONFIG_ARCH_ARMV8_A72'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+                'bsp/shared/bsp_a72_op.c',
+            ]
+    if bld.is_defined('CONFIG_ARCH_ARMV7_R5'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+                'bsp/shared/bsp_r5_op.c',
+            ]
+    
+    # Build OSP if enabled
+    if bld.is_defined('CONFIG_USING_OSP'):
+        bld.recurse('osp')

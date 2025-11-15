@@ -1,0 +1,5 @@
+config USING_SOC_CTRL
+    bool "USING SOC_CTRL"
+    default y
+    help
+      Select this to use soc control

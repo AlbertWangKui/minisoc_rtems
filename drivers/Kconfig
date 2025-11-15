@@ -1,0 +1,18 @@
+menu "Device Drivers"
+
+source "drivers/brd_init/Kconfig"
+source "drivers/timer/Kconfig"
+source "drivers/uart/Kconfig"
+source "drivers/soc_ctrl/Kconfig"
+source "drivers/gpio/Kconfig"
+source "drivers/wdt/Kconfig"
+source "drivers/smbus/Kconfig"
+source "drivers/sgpio/Kconfig"
+source "drivers/pwm/Kconfig"
+source "drivers/qspi/Kconfig"
+source "drivers/security/Kconfig"
+source "drivers/pvt/Kconfig"
+source "drivers/qspi_ctrl/Kconfig"
+source "drivers/ocm_ecc/Kconfig"
+
+endmenu

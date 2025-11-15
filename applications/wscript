@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # Build init.c
+    bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'applications/init.c',
+        ]

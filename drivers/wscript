@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # Build all driver subdirectories
+    driver_dirs = [
+        'timer', 'uart', 'soc_ctrl', 'gpio', 'wdt', 'smbus',
+        'sgpio', 'pwm', 'qspi', 'security',
+        'pvt', 'qspi_ctrl', 'brd_init', 'ocm_ecc'
+    ]
+    
+    for driver_dir in driver_dirs:
+        bld.recurse(driver_dir)

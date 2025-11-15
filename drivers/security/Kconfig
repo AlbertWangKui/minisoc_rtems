@@ -1,0 +1,49 @@
+menu "security"
+
+config USING_EFUSE
+    bool "USING efuse"
+    default y
+    help
+      Select this to use efuse driver
+
+choice
+    prompt "efuse driver select"
+    depends on USING_EFUSE
+
+    config USING_EFUSE_V1
+        bool "USING EFUSE_V1"
+    config USING_EFUSE_V2
+        bool "USING EFUSE_V2"
+endchoice
+
+
+config USING_TRNG
+    bool "USING TRNG"
+    default y
+    help
+      Select this to use trng(true random number generator) driver
+
+choice
+    prompt "trng driver select"
+    depends on USING_TRNG
+
+    config USING_DW_TRNG
+        bool "USING DW_TRNG"
+    config USING_HG_TRNG
+        bool "USING HG_TRNG"
+endchoice
+
+config USING_TRNG_API_TEST
+    bool "Enable trng API test"
+    default n
+    depends on USING_TRNG
+    help
+        Select this to use trng API test
+
+config USING_SM3
+    bool "USING SM3"
+    default y
+    help
+      Select this to use sm3(hash calc) driver
+
+endmenu

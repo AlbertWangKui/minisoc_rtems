@@ -1,0 +1,5 @@
+config USING_UART
+    bool "USING UART"
+    default y
+    help
+      Select this to use UART driver

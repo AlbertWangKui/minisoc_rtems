@@ -1,0 +1,20 @@
+menu "coreJson from FreeRTOS"
+
+config CORE_JSON
+    bool "coreJson"
+    depends on ENABLE_JSON
+    default y
+    help
+      Select this to use coreJson component
+
+choice
+    prompt "Json Position Select"
+    depends on CORE_JSON
+    default JSON_IN_SRAM
+    config JSON_IN_SRAM
+        bool "json file in sram"
+    config JSON_IN_FLASH
+        bool "json file in flash"
+endchoice
+
+endmenu

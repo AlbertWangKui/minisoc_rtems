@@ -1,0 +1,129 @@
+{
+	"bspCfg": {
+	},
+	"uart0": {
+		"name": "uart0",
+		"index": 0,
+		"reg": "0xbe640000",
+		"interrupts": [98, 127],
+		"console": 1,
+		"baud_rate": 115200,
+		"parity": "none",
+		"stop_bits": 1,
+		"data_bits": 8,
+		"enable_tx_interrupt": 0,
+		"enable_rx_interrupt": 0,
+		"compatible": "csi,uart"
+	},
+	"uart1": {
+		"name": "uart1",
+		"index": 1,
+		"reg": "0xbe641000",
+		"interrupts": [99, 127],
+		"console": 0,
+		"baud_rate": 115200,
+		"parity": "none",
+		"stop_bits": 1,
+		"data_bits": 8,
+		"enable_tx_interrupt": 0,
+		"enable_rx_interrupt": 0,
+		"compatible": "csi,uart"
+	},
+	"gpio": {
+		"group_size": 32,
+		"pin_cnt": 64,
+		"gpio0" : {
+			"name": "gpio0",
+			"index": 0,
+			"reg": "0xB8041000",
+			"interrupts": [390, 127],
+			"compatible": "sysnop,gpio-v1.0"
+		},
+		"gpio1" : {
+			"name": "gpio1",
+			"index": 1,
+			"reg": "0xB8041400",
+			"interrupts": [391, 127],
+			"compatible": "sysnop,gpio-v1.0"
+		}
+	},
+	"trng0" : {
+		"index": 0,
+		"name": "trng0",
+		"reg": "0xBE230000",
+		"compatible": "dw,trng-v1.0"
+	},
+
+	"wdt0": {
+		"name": "wdt0",
+		"index": 0,
+		"reg": "0xBE602000",
+		"interrupts": [102,127],
+		"mode": "interrupt",
+		"feed_time": 10000,
+		"check_time": 1000,
+		"reset_time": 1000,
+		"compatible": "ry1.0 compatible driver"
+	},
+	"wdt1": {
+		"name": "wdt1",
+		"index": 0,
+		"reg": "0xBE607000",
+		"interrupts": [115,127],
+		"mode": "interrupt",
+		"feed_time": 10000,
+		"check_time": 1000,
+		"reset_time": 1000,
+		"compatible": "ry1.0 compatible driver"
+	},
+	"wdt2": {
+		"name": "wdt2",
+		"index": 0,
+		"reg": "0xBE608000",
+		"interrupts": [116,127],
+		"mode": "interrupt",
+		"feed_time": 10000,
+		"check_time": 1000,
+		"reset_time": 1000,
+		"compatible": "ry1.0 compatible driver"
+	},
+	"wdt3": {
+		"name": "wdt3",
+		"index": 0,
+		"reg": "0xBE609000",
+		"interrupts": [117,127],
+		"mode": "interrupt",
+		"feed_time": 10000,
+		"check_time": 1000,
+		"reset_time": 1000,
+		"compatible": "ry1.0 compatible driver"
+	},
+	"efuse0" : {
+		"name": "efuse0",
+		"index": 0,
+		"reg": "0xBE101000",
+		"compatible": "drv_efuse"
+	},
+
+	"pwm0" : {
+		"name": "pwm0",
+		"reg": "0xBE638000",
+		"interrupts": [71,127],
+		"channel_num": 2,
+		"compatible": "drv_pwm"
+	},
+
+	"iomux_cfg": {
+		"name": "iomux default configs",
+		"iomux_config0": ["0xB8040218","0x0"],
+		"iomux_config1": ["0xB8040258","0x0"],
+		"iomux_config2": ["0xB8040298","0x0"],
+		"iomux_config3": ["0xB80402D8","0x0"],
+		"iomux_config4": ["0xB8040318","0x0"],
+		"iomux_config5": ["0xB8040358","0x0"],
+		"iomux_config6": ["0xB8040398","0x0"],
+		"iomux_config7": ["0xB80403D8","0x0"],
+		"iomux_config8": ["0xB8040418","0x0"],
+		"iomux_config9": ["0xB8040458","0x0"]
+	}
+}

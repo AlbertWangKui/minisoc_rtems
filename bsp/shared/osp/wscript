@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'bsp/shared/osp/src/osp_asan.c',
+            'bsp/shared/osp/src/osp_cache.c',
+            'bsp/shared/osp/src/osp_cli.c',
+            'bsp/shared/osp/src/osp_common.c',
+            'bsp/shared/osp/src/osp_condition_variable.c',
+            'bsp/shared/osp/src/osp_debug_exception.c',
+            'bsp/shared/osp/src/osp_event.c',
+            'bsp/shared/osp/src/osp_get_core_snapshot_info.c',
+            'bsp/shared/osp/src/osp_inner_common.c',
+            'bsp/shared/osp/src/osp_interrupt.c',
+            'bsp/shared/osp/src/osp_memory.c',
+            'bsp/shared/osp/src/osp_mmap.c',
+            'bsp/shared/osp/src/osp_monitor.c',
+            'bsp/shared/osp/src/osp_mutex.c',
+            'bsp/shared/osp/src/osp_os_fatal.c',
+            'bsp/shared/osp/src/osp_os_reset.c',
+            'bsp/shared/osp/src/osp_profiling_pmu.c',
+            'bsp/shared/osp/src/osp_queue.c',
+            'bsp/shared/osp/src/osp_rwlock.c',
+            'bsp/shared/osp/src/osp_scheduler_smp.c',
+            'bsp/shared/osp/src/osp_semaphore.c',
+            'bsp/shared/osp/src/osp_sprintf.c',
+            'bsp/shared/osp/src/osp_sys_clock.c',
+            'bsp/shared/osp/src/osp_system_error.c',
+            'bsp/shared/osp/src/osp_task.c',
+            'bsp/shared/osp/src/osp_timer.c'
+        ]

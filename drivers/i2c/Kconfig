@@ -1,0 +1,6 @@
+config USING_I2C
+    bool "USING I2C"
+    default n
+    help
+      Select this to use I2C driver
+

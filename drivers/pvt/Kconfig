@@ -1,0 +1,15 @@
+config USING_PVT
+    bool "USING PVT"
+    default n
+    help
+      Select this to use pvt driver
+
+choice
+    prompt "pvt driver select"
+    depends on USING_PVT
+
+    config USING_HG_PVT
+        bool "USING HG_PVT"
+    config USING_TIANQIN_PVT
+        bool "USING TIANQIN_PVT"
+endchoice

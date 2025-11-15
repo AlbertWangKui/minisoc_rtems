@@ -1,0 +1,9 @@
+menu "CLI CORE"
+
+config USING_CLI_CORE
+    bool "USING cli core"
+    default y
+    help
+      Select this to use cli core component
+
+endmenu
