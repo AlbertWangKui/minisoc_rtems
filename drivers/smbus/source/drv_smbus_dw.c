@@ -1878,57 +1878,37 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
 
     /* ========== RD REQUEST (Read from Master) ========== */
     if (intrStat & SMBUS_IC_INTR_RD_REQ_MASK) {
-        LOGE("SMBus Slave: RD_REQ interrupt detected! status=0x%08X\n", intrStat);
+        LOGD("SMBus Slave: RD_REQ triggered - Master requests data\n");
 
-        /* CRITICAL FIX: Prevent duplicate RD_REQ processing to avoid interrupt storm */
-        if (!(pDrvData->pSmbusDev.status & SMBUS_STATUS_READ_IN_PROGRESS_MASK)) {
-            /* Only process if not already in read mode */
-            pDrvData->pSmbusDev.status |= SMBUS_STATUS_READ_IN_PROGRESS_MASK;
-            pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
-            pDrvData->slaveTransferActive = 1;
+        /* **关键修复：优先处理 RD_REQ** */
+        /* 清除 RD_REQ 中断 */
+        (void)regBase->icClrRdReq;
 
-            /* CRITICAL FIX: Clear RD_REQ interrupt immediately to prevent storm */
-            U32 rdReqMask = SMBUS_IC_INTR_RD_REQ_MASK;
-            regBase->icIntrStat.value = rdReqMask;
-            LOGE("SMBus Slave: RD_REQ interrupt cleared - mask=0x%08X\n", rdReqMask);
+        /* 检查 TX FIFO 是否为空 */
+        if (regBase->icStatus.fields.tfe == 1) {
+            U8 txData = 0xFF;  // 默认值
 
-            /* Trigger read request callback */
-            smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_READ_REQ, NULL, 0);
+            /* 从 Slave TX buffer 获取数据 */
+            if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
+                pDrvData->pSmbusDev.slaveValidTxLen > 0 &&
+                pDrvData->slaveTxIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
 
-            /* CRITICAL FIX: Immediately check if slave activity is present and fill TX FIFO */
-            U32 statusReg = regBase->icStatus.value;
-            U32 slaveActivity = (statusReg & SMBUS_IC_STATUS_SLAVE_ACTIVITY_MASK) >> SMBUS_IC_STATUS_SLAVE_ACTIVITY_SHIFT;
+                txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->slaveTxIndex];
+                pDrvData->slaveTxIndex++;
 
-            LOGE("SMBus Slave: RD_REQ activity check - status=0x%08X, activity=%d\n", statusReg, slaveActivity);
-
-            if (slaveActivity == 1) {
-                /* Master is requesting data, we must fill TX FIFO immediately */
-                U8 txData = 0xFF;  // Default response if no callback data available
-
-                /* Try to get data from callback or buffer */
-                if (pDrvData->pSmbusDev.slaveTxBuf && pDrvData->slaveTxIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
-                    txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->slaveTxIndex++];
-                    LOGE("SMBus Slave: TX data from buffer[0x%02X] (idx=%d)\n", txData, pDrvData->slaveTxIndex-1);
-                } else {
-                    LOGE("SMBus Slave: Using default TX data 0xFF due to empty buffer\n");
-                }
-
-                /* CRITICAL STEP: Write data to TX FIFO to release SCL */
-                regBase->icDataCmd.value = (U32)txData;
-                LOGE("SMBus Slave: CRITICAL - Filled TX FIFO with 0x%02X to release SCL\n", txData);
-
-                /* Enable TX_EMPTY interrupt for subsequent data */
-                U32 currentMask = regBase->icIntrMask;
-                currentMask |= SMBUS_IC_INTR_TX_EMPTY_MASK;
-                regBase->icIntrMask = currentMask;
-                LOGE("SMBus Slave: TX_EMPTY enabled for continued transmission (mask=0x%08X)\n", currentMask);
+                LOGD("SMBus Slave: Sending data[%d]=0x%02X to Master\n", pDrvData->slaveTxIndex-1, txData);
             } else {
-                LOGE("SMBus Slave: No slave activity detected during RD_REQ\n");
+                LOGE("SMBus Slave: No TX data available! Sending 0xFF (idx=%d, len=%d)\n",
+                     pDrvData->slaveTxIndex, pDrvData->pSmbusDev.slaveValidTxLen);
             }
 
-            LOGD("SMBus Slave read request - new request processed\n");
+            /* **立即填充 TX FIFO** */
+            regBase->icDataCmd.fields.dat = txData;
+            regBase->icDataCmd.fields.cmd = 0;  // Write to TX FIFO
+
+            LOGD("SMBus Slave: TX FIFO filled with 0x%02X\n", txData);
         } else {
-            LOGD("SMBus Slave read request - ignored (already in progress)\n");
+            LOGD("SMBus Slave: TX FIFO not empty, skipping RD_REQ fill\n");
         }
     }
 
@@ -1943,7 +1923,6 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             U32 currentMask = regBase->icIntrMask;
             currentMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
             regBase->icIntrMask = currentMask;
-
             LOGE("SMBus Slave: Disabled spurious TX_EMPTY interrupt (mask=0x%08X)\n", currentMask);
         } else {
             /* CRITICAL FIX: Active read operation - must fill TX FIFO immediately */
