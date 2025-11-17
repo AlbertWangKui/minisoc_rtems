@@ -569,38 +569,38 @@ static void smbusClearInterrupts(volatile SmbusRegMap_s *regBase, U32 mask)
         return;
     }
 
-    /* Clear specific I2C interrupts based on mask bits */
-    if (mask & (1 << 0)) {  /* m_rx_under */
+    /* Clear specific I2C interrupts based on mask bits using correct macro definitions */
+    if (mask & SMBUS_IC_INTR_RX_UNDER_MASK) {  /* bit[0] - m_rx_under */
         (void)regBase->icClrRxUnder;
     }
-    if (mask & (1 << 1)) {  /* m_rx_over */
+    if (mask & SMBUS_IC_INTR_RX_OVER_MASK) {   /* bit[1] - m_rx_over */
         (void)regBase->icClrRxOver;
     }
-    if (mask & (1 << 2)) {  /* m_tx_over */
+    if (mask & SMBUS_IC_INTR_TX_OVER_MASK) {   /* bit[3] - m_tx_over */
         (void)regBase->icClrTxOver;
     }
-    if (mask & (1 << 3)) {  /* m_rd_req */
+    if (mask & SMBUS_IC_INTR_RD_REQ_MASK) {    /* bit[5] - m_rd_req */
         (void)regBase->icClrRdReq;
     }
-    if (mask & (1 << 4)) {  /* m_tx_abrt */
+    if (mask & SMBUS_IC_INTR_TX_ABRT_MASK) {   /* bit[6] - m_tx_abrt */
         (void)regBase->icClrTxAbrt;
     }
-    if (mask & (1 << 5)) {  /* m_rx_done */
+    if (mask & SMBUS_IC_INTR_RX_DONE_MASK) {   /* bit[7] - m_rx_done */
         (void)regBase->icClrRxDone;
     }
-    if (mask & (1 << 6)) {  /* m_activity */
+    if (mask & SMBUS_IC_INTR_ACTIVITY_MASK) {  /* bit[8] - m_activity */
         (void)regBase->icClrActivity;
     }
-    if (mask & (1 << 7)) {  /* m_stop_det */
+    if (mask & SMBUS_IC_INTR_STOP_DET_MASK) {  /* bit[9] - m_stop_det */
         (void)regBase->icClrStopDet;
     }
-    if (mask & (1 << 8)) {  /* m_start_det */
+    if (mask & SMBUS_IC_INTR_START_DET_MASK) { /* bit[10] - m_start_det */
         (void)regBase->icClrStartDet;
     }
-    if (mask & (1 << 9)) {  /* m_gen_call */
+    if (mask & SMBUS_IC_INTR_GEN_CALL_MASK) {  /* bit[11] - m_gen_call */
         (void)regBase->icClrGenCall;
     }
-    if (mask & (1 << 10)) { /* m_restart_det */
+    if (mask & SMBUS_IC_INTR_RESTART_DET_MASK) { /* bit[12] - m_restart_det */
         (void)regBase->icClrRestartDet;
     }
 
@@ -1879,16 +1879,13 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
     /* ========== RD REQUEST (Read from Master) ========== */
     if (intrStat & SMBUS_IC_INTR_RD_REQ_MASK) {
         LOGD("SMBus Slave: RD_REQ triggered - Master requests data\n");
-
-        /* **关键修复：优先处理 RD_REQ** */
-        /* 清除 RD_REQ 中断 */
-        (void)regBase->icClrRdReq;
+        U32 clearMask = SMBUS_IC_INTR_RD_REQ_MASK;
+        (void)smbusReadClearIntrBitsMasked(pDrvData, clearMask);  ///< 使用安全的清除函数
 
         /* 检查 TX FIFO 是否为空 */
         if (regBase->icStatus.fields.tfe == 1) {
-            U8 txData = 0xFF;  // 默认值
+            U8 txData = 0xFF;
 
-            /* 从 Slave TX buffer 获取数据 */
             if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
                 pDrvData->pSmbusDev.slaveValidTxLen > 0 &&
                 pDrvData->slaveTxIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
@@ -1902,11 +1899,11 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
                      pDrvData->slaveTxIndex, pDrvData->pSmbusDev.slaveValidTxLen);
             }
 
-            /* **立即填充 TX FIFO** */
+            /* 填充 TX FIFO */
             regBase->icDataCmd.fields.dat = txData;
-            regBase->icDataCmd.fields.cmd = 0;  // Write to TX FIFO
+            regBase->icDataCmd.fields.cmd = 0;
 
-            LOGD("SMBus Slave: TX FIFO filled with 0x%02X\n", txData);
+            LOGD("SMBus Slave: TX FIFO filled successfully\n");  // ← 添加这行确认成功
         } else {
             LOGD("SMBus Slave: TX FIFO not empty, skipping RD_REQ fill\n");
         }
