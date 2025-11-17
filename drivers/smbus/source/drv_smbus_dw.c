@@ -524,6 +524,31 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
     LOGD("%s: Semaphore created successfully, ID=%d, channelNum=%d\n",
          __func__, pDrvData->pSmbusDev.semaphoreId, pDrvData->pSmbusDev.channelNum);
 
+    /* FINAL SAFETY FIX: Force correct Slave interrupt mask if in Slave mode */
+    if (pDrvData->sbrCfg.masterMode == 0) {
+        volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
+
+        /* CRITICAL: Override any previous incorrect interrupt mask settings */
+        U32 slaveMask = SMBUS_IC_INTR_RX_FULL_MASK |      /* 0x004 */
+                          SMBUS_IC_INTR_RD_REQ_MASK |       /* 0x020 */
+                          SMBUS_IC_INTR_TX_ABRT_MASK |      /* 0x040 */
+                          SMBUS_IC_INTR_RX_DONE_MASK |      /* 0x080 */
+                          SMBUS_IC_INTR_STOP_DET_MASK;     /* 0x200 */
+
+        /* Calculate: 0x004 | 0x020 | 0x040 | 0x080 | 0x200 = 0x2E4 */
+        regBase->icIntrMask = slaveMask;
+
+        LOGI("FINAL OVERRIDE: Slave interrupt mask FORCED to 0x%08X (expected: 0x2E4)\n", regBase->icIntrMask);
+
+        /* Verify final setting */
+        U32 finalMask = regBase->icIntrMask;
+        if (finalMask != slaveMask) {
+            LOGE("FINAL OVERRIDE FAILED! Expected: 0x%08X, Actual: 0x%08X\n", slaveMask, finalMask);
+        } else {
+            LOGI("FINAL OVERRIDE SUCCESS: Slave interrupt mask correctly set to 0x%08X\n", finalMask);
+        }
+    }
+
     return EXIT_SUCCESS;
 }
 
@@ -1878,34 +1903,48 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
 
     /* ========== RD REQUEST (Read from Master) ========== */
     if (intrStat & SMBUS_IC_INTR_RD_REQ_MASK) {
-        LOGD("SMBus Slave: RD_REQ triggered - Master requests data\n");
-        U32 clearMask = SMBUS_IC_INTR_RD_REQ_MASK;
-        (void)smbusReadClearIntrBitsMasked(pDrvData, clearMask);  ///< 使用安全的清除函数
+        LOGD("SMBus Slave: RD_REQ triggered\n");
 
-        /* 检查 TX FIFO 是否为空 */
-        if (regBase->icStatus.fields.tfe == 1) {
-            U8 txData = 0xFF;
+        /* 清除 RD_REQ */
+        smbusReadClearIntrBitsMasked(pDrvData, SMBUS_IC_INTR_RD_REQ_MASK);
 
-            if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
-                pDrvData->pSmbusDev.slaveValidTxLen > 0 &&
-                pDrvData->slaveTxIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
+        /* 获取数据 */
+        U8 txData = 0xA1;
+        if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
+            pDrvData->pSmbusDev.slaveValidTxLen > 0) {
+            static U32 txIndex = 0;
+            txData = pDrvData->pSmbusDev.slaveTxBuf[txIndex % pDrvData->pSmbusDev.slaveValidTxLen];
+            txIndex++;
+        }
 
-                txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->slaveTxIndex];
-                pDrvData->slaveTxIndex++;
+        LOGD("SMBus Slave: Preparing to send 0x%02X\n", txData);
 
-                LOGD("SMBus Slave: Sending data[%d]=0x%02X to Master\n", pDrvData->slaveTxIndex-1, txData);
-            } else {
-                LOGE("SMBus Slave: No TX data available! Sending 0xFF (idx=%d, len=%d)\n",
-                     pDrvData->slaveTxIndex, pDrvData->pSmbusDev.slaveValidTxLen);
-            }
+        /* ⚠️ 关键修改：正确写入 TX FIFO */
+        /* 方法 1：直接写 value（推荐） */
+        regBase->icDataCmd.value = (U32)txData;
 
-            /* 填充 TX FIFO */
-            regBase->icDataCmd.fields.dat = txData;
-            regBase->icDataCmd.fields.cmd = 0;
+        /* 方法 2：如果上面不行，使用指针 */
+        // volatile U32 *pDataCmd = (volatile U32 *)((U32)regBase + 0x10);
+        // *pDataCmd = (U32)txData;
 
-            LOGD("SMBus Slave: TX FIFO filled successfully\n");  // ← 添加这行确认成功
+        /* ⚠️ 添加内存屏障确保写入生效 */
+        __asm__ volatile("" ::: "memory");
+
+        /* 读回验证 */
+        U32 txflr = regBase->icTxflr;
+        U32 status = regBase->icStatus.value;
+
+        LOGD("SMBus Slave: After TX write - TXFLR=%d, STATUS=0x%08X, TFE=%d\n",
+             txflr, status, regBase->icStatus.fields.tfe);
+
+        /* 验证写入是否成功 */
+        if (txflr == 0) {
+            LOGE("!!! TX FIFO still empty after write!\n");
+            /* 尝试再写一次 */
+            regBase->icDataCmd.value = (U32)txData;
+            LOGD("SMBus Slave: Retry write, TXFLR=%d\n", regBase->icTxflr);
         } else {
-            LOGD("SMBus Slave: TX FIFO not empty, skipping RD_REQ fill\n");
+            LOGI("✓ TX FIFO write success, level=%d\n", txflr);
         }
     }
 
@@ -2045,6 +2084,23 @@ static void smbusIsr(void *arg)
     LOGD("SMBus IRQ: mode=%s, rawIntr=0x%08X, intrStat=0x%08X, smbus=0x%08X\n",
          (pDrvData->pSmbusDev.mode == DW_SMBUS_MODE_MASTER) ? "MASTER" : "SLAVE",
          rawIntr, intrStat, smbusIntrStat.value);
+
+    /* 🔥 CRITICAL RUNTIME FIX: Check and force correct Slave interrupt mask */
+    if (pDrvData->pSmbusDev.mode != DW_SMBUS_MODE_MASTER) {
+        U32 currentMask = regBase->icIntrMask;
+        if (currentMask == 0x00080001) {
+            LOGW("!!! ISR DETECTED WRONG INTERRUPT MASK - Fixing from 0x%08X to 0x2E4\n", currentMask);
+            regBase->icIntrMask = 0x000002E4;
+
+            /* Verify the fix worked */
+            U32 verifyMask = regBase->icIntrMask;
+            if (verifyMask == 0x000002E4) {
+                LOGI("✅ ISR SUCCESSFULLY FIXED interrupt mask to 0x%08X\n", verifyMask);
+            } else {
+                LOGE("❌ ISR FAILED TO FIX interrupt mask! Still: 0x%08X\n", verifyMask);
+            }
+        }
+    }
 
     /* Handle interrupts based on current mode - FIXED: Use raw interrupt status */
     if (pDrvData->pSmbusDev.mode == DW_SMBUS_MODE_MASTER) {
