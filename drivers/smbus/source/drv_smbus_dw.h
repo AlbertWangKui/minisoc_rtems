@@ -419,6 +419,8 @@ typedef struct SmbusDev {
     U8                       *slaveTxBuf;        /**< Slave TX buffer */
     U32                      slaveValidRxLen;    /**< Valid RX buffer length */
     U32                      slaveValidTxLen;    /**< Valid TX buffer length */
+    U8                       masterTxBuf[33];    // 当前正在发送的消息缓冲区位置
+    U32                      masterTxBufLen;     // 当前消息剩余待发送长度
     U32                      sdaHoldTime;        /**< SDA hold time configuration */
     U32                      clkRate;            /**< Clock rate for timing calculations */
     U32                      rxStallCount;       /**< RX stall detection counter */

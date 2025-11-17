@@ -30,6 +30,7 @@
 static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData);
 static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData);
 static S32 smbusAllocateSlaveBuffers(SmbusDrvData_s *pDrvData);
+static S32 smbusAllocateMasterBuffers(SmbusDrvData_s *pDrvData);
 static S32 smbusInitializeArpMaster(SmbusDrvData_s *pDrvData);
 static void smbusFreeDriverData(SmbusDrvData_s *pDrvData);
 
@@ -76,6 +77,39 @@ __attribute((unused)) static S32 smbusAllocateSlaveBuffers(SmbusDrvData_s *pDrvD
         pDrvData->pSmbusDev.slaveValidTxLen = 0;
 
         LOGD("%s: Slave buffers allocated successfully\n", __func__);
+    }
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief Allocate master buffers for SMBus operation
+ * @details Allocates TX and RX buffers for master mode operation.
+ *          These buffers are used for data transfer in master mode.
+ * @param[in] pDrvData Pointer to driver data structure
+ * @return EXIT_SUCCESS on success, negative error code on failure
+ *
+ * @note Only allocates buffers when in master mode
+ * @note Uses SMBUS_MAX_BUFFER_SIZE for buffer size
+ * @note Memory is freed in smbusFreeDriverData
+ * [CORE] Core protocol layer - memory management
+ */
+static S32 smbusAllocateMasterBuffers(SmbusDrvData_s *pDrvData)
+{
+    if (pDrvData == NULL) {
+        return -EINVAL;
+    }
+
+    /* Only initialize master buffers in master mode */
+    if (pDrvData->sbrCfg.masterMode == 1) {
+        /* Initialize master TX buffer array */
+        memset(pDrvData->pSmbusDev.masterTxBuf, 0, sizeof(pDrvData->pSmbusDev.masterTxBuf));
+        pDrvData->pSmbusDev.masterTxBufLen = 0;
+        LOGD("%s: Master TX buffer initialized (%u bytes)\n", __func__, sizeof(pDrvData->pSmbusDev.masterTxBuf));
+
+        /* Note: master RX buffer is handled by pDrvData->rxBuffer in legacy mode */
+
+        LOGD("%s: Master buffers initialized successfully\n", __func__);
     }
 
     return EXIT_SUCCESS;
@@ -344,6 +378,10 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
     pDrvData->errorCount = 0;
     pDrvData->slaveTransferActive = 0;
 
+    /* Initialize master buffer variables */
+    memset(pDrvData->pSmbusDev.masterTxBuf, 0, sizeof(pDrvData->pSmbusDev.masterTxBuf));
+    pDrvData->pSmbusDev.masterTxBufLen = 0;
+
     /* Initialize callback queue (fix ISR blocking issue) */
     pDrvData->callbackQueue.head = 0;
     pDrvData->callbackQueue.tail = 0;
@@ -365,7 +403,8 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
     pDrvData->pSmbusDev.transferTimeout = SMBUS_DEFAULT_TIMEOUT_MS;  /* Default timeout */
     pDrvData->pSmbusDev.transferStartTime = 0;
     memset(pDrvData->pSmbusDev.msgs, 0, sizeof(SmbusMsg_t) *32);
-    
+    /* Note: masterRxBuf and masterRxBufLen have been removed - use pDrvData->rxBuffer instead */
+
     LOGE("2\r\n");
     *ppDrvData = pDrvData;
     return EXIT_SUCCESS;
@@ -523,7 +562,7 @@ static void smbusClearInterrupts(volatile SmbusRegMap_s *regBase, U32 mask)
     if (mask == 0xFFFFFFFF) { /* STARS_I2C_STATUS_INT_ALL equivalent */
         (void)regBase->icClrIntr;
         if (regBase->icClrSmbusIntr != 0) {
-            regBase->icClrSmbusIntr = mask;
+            (void)regBase->icClrSmbusIntr;  /* Dummy read to clear SMBus interrupts */
         }
         LOGD("%s: Cleared all interrupts\n", __func__);
         return;
@@ -566,7 +605,7 @@ static void smbusClearInterrupts(volatile SmbusRegMap_s *regBase, U32 mask)
 
     /* Clear SMBus specific interrupts if available */
     if (regBase->icClrSmbusIntr != 0) {
-        regBase->icClrSmbusIntr = mask;
+        (void)regBase->icClrSmbusIntr;  /* Dummy read to clear SMBus interrupts */
     }
 
     LOGD("%s: Cleared interrupts with mask 0x%08X\n", __func__, mask);
@@ -612,15 +651,15 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
     Bool asyncComplete = false;
 
     /* ========== ASYNC MODE: Handle async interrupt transfers ========== */
-    //LOGD("SMBus Master: Checking async mode - interruptMode=%d, status=0x%08X, active=%d\n",
-         //pDrvData->sbrCfg.interruptMode, pDrvData->pSmbusDev.status,
-         //(pDrvData->pSmbusDev.status & SMBUS_STATUS_ACTIVE) ? 1 : 0);
-    //LOGD("SMBus Master: Device addresses - pDrvData=%p, pSmbusDev=%p, regBase=%p\n",
-         //(void*)pDrvData, (void*)&pDrvData->pSmbusDev, (void*)pDrvData->pSmbusDev.regBase);
+    LOGD("SMBus Master: Checking async mode - interruptMode=%d, status=0x%08X, active=%d\n",
+         pDrvData->sbrCfg.interruptMode, pDrvData->pSmbusDev.status,
+         (pDrvData->pSmbusDev.status & SMBUS_STATUS_ACTIVE) ? 1 : 0);
+    LOGD("SMBus Master: Device addresses - pDrvData=%p, pSmbusDev=%p, regBase=%p\n",
+         (void*)pDrvData, (void*)&pDrvData->pSmbusDev, (void*)pDrvData->pSmbusDev.regBase);
 
     if (pDrvData->sbrCfg.interruptMode == 1 &&
         (pDrvData->pSmbusDev.status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS))) {
-        //LOGD("SMBus Master: Async mode active - status=0x%08X\n", pDrvData->pSmbusDev.status);
+        LOGD("SMBus Master: Async mode active - status=0x%08X\n", pDrvData->pSmbusDev.status);
         /* Async interrupt mode handling - similar to I2C implementation */
         SmbusDev_s *dev = &pDrvData->pSmbusDev;
 
@@ -639,8 +678,9 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
             /* Disable interrupts */
             regBase->icIntrMask = 0;
 
-            /* Clear abort status */
-            regBase->icClrTxAbrt = 0;
+            /* Clear abort status using dummy read */
+            volatile U32 abortDummy = regBase->icClrTxAbrt;  /* Dummy read to clear TX abort */
+            (void)abortDummy; /* Suppress unused variable warning */
 
             LOGE("SMBus Async: TX Abort, source=0x%08X\n", dev->abortSource);
             asyncComplete = true;
@@ -649,7 +689,7 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
         /* Handle ACTIVITY interrupt in async mode */
         if (intrStat & SMBUS_IC_INTR_ACTIVITY_MASK) {
             /* Clear activity status - this interrupt indicates bus activity started */
-            regBase->icClrActivity = 0;
+            (void)regBase->icClrActivity;    /* Dummy read to clear activity */
             LOGI("SMBus Async: Activity detected (0x%08X) and cleared\n", intrStat);
         }
 
@@ -659,7 +699,7 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
             SmbusHalOps_s *halOps = smbusGetHalOps();
             if (halOps != NULL && halOps->smbusDwRead != NULL) {
                 LOGD("SMBus Async: RX_FULL detected, calling smbusDwRead\n");
-                halOps->smbusDwRead(dev);
+                halOps->smbusDwRead(pDrvData);
 
                 /* CRITICAL FIX: After processing, check if FIFO still has data and clear if needed */
                 U32 remaining_fifo = regBase->icRxflr;
@@ -713,8 +753,8 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                 /* Process async TX data using HAL functions */
                 SmbusHalOps_s *halOps = smbusGetHalOps();
                 if (halOps != NULL && halOps->smbusDwXferMsg != NULL) {
-                    //LOGD("SMBus Async: Calling smbusDwXferMsg, msgWriteIdx=%d, msgsNum=%d\n",
-                         //dev->msgWriteIdx, dev->msgsNum);
+                    LOGD("SMBus Async: Calling smbusDwXferMsg, msgWriteIdx=%d, msgsNum=%d\n",
+                         dev->msgWriteIdx, dev->msgsNum);
                     halOps->smbusDwXferMsg(dev);
                 } else {
                     LOGE("SMBus Async: HAL functions not available - halOps=%p, smbusDwXferMsg=%p\n",
@@ -735,8 +775,6 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                     updatedMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
                     regBase->icIntrMask = updatedMask;
                     LOGD("SMBus Async: Post-processing TX_EMPTY disabled - mask=0x%08X\n", updatedMask);
-                    /* 添加硬件同步延时 - 替代LOGD的时序作用 */
-                    for(volatile int i = 0; i < 100; i++);  // 很小的延时
                 }
             }
             LOGD("SMBus Async: TX Empty processed\n");
@@ -744,119 +782,51 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
 
         /* Check for async transfer completion */
         if (((intrStat & (SMBUS_IC_INTR_TX_ABRT_MASK | SMBUS_IC_INTR_STOP_DET_MASK)) || dev->msgErr) &&
-            (dev->rxOutstanding == 0)) {
+            (dev->msgWriteIdx >= dev->msgsNum) && (dev->rxOutstanding == 0)) {
             /* Clear transfer active status */
             dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
             asyncComplete = true;
 
-            LOGD("SMBus Async: Transfer completed (abort/stop), releasing semaphore (semId=%d)\n", dev->semaphoreId);
-
+            LOGE("SMBus Async: Transfer completed (abort/stop), releasing semaphore (semId=%d)\n", dev->semaphoreId);
+#if 1
             /* CRITICAL FIX: Ensure TX_EMPTY is disabled when transfer completes */
             U32 abortMask = regBase->icIntrMask;
             abortMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
             regBase->icIntrMask = abortMask;
+#endif
             LOGD("SMBus Async: TX_EMPTY disabled due to abort/stop completion - mask=0x%08X\n", abortMask);
-
-            /* Release semaphore to unblock waiting task */
-            if (dev->semaphoreId != (rtems_id)0) {
-                S32 releaseResult = rtems_semaphore_release(dev->semaphoreId);
-                LOGD("SMBus Async: Semaphore release result=%d\n", releaseResult);
-            } else {
-                LOGE("SMBus Async: Invalid semaphoreId (0)\n");
-            }
         }
-        /* Check for transfer completion when all messages are processed */
-        else if ((dev->msgWriteIdx >= dev->msgsNum) && (dev->rxOutstanding == 0) &&
-                 (dev->status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS))) {
-            /* All messages processed and no outstanding RX - transfer complete */
-            /* CRITICAL FIX: Use interrupt protection to ensure atomic completion */
-            rtems_interrupt_level level;
-            rtems_interrupt_disable(level);
 
-            /* Check completion conditions atomically */
-            if (dev->rxOutstanding == 0 && dev->msgWriteIdx >= dev->msgsNum &&
-                (dev->status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS))) {
-
-                dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
-                asyncComplete = true;
-
-                LOGD("SMBus Async: All messages processed (idx=%d/%d), releasing semaphore (semId=%d)\n",
-                     dev->msgWriteIdx, dev->msgsNum, dev->semaphoreId);
-
-                /* CRITICAL: Immediately disable TX_EMPTY interrupt to prevent spurious interrupts */
-                U32 currentMask = regBase->icIntrMask;
-                currentMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
-                regBase->icIntrMask = currentMask;
-                LOGD("SMBus Async: Disabled TX_EMPTY interrupt to prevent spurious triggers (mask=0x%08X)\n", currentMask);
-
-                /* Final safety check - ensure no pending interrupts */
-                regBase->icIntrMask = 0;  /* Disable all interrupts temporarily */
-                LOGD("SMBus Async: All interrupts disabled for safety cleanup\n");
-
-                /* Release semaphore to unblock waiting task */
-                if (dev->semaphoreId != (rtems_id)0) {
-                    S32 releaseResult = rtems_semaphore_release(dev->semaphoreId);
-                    LOGD("SMBus Async: Messages complete - Semaphore release result=%d\n", releaseResult);
-                } else {
-                    LOGE("SMBus Async: Messages complete - Invalid semaphoreId (0)\n");
-                }
-            }
-
-            rtems_interrupt_enable(level);
-        }
         /* Simplified STOP detection - ensure semaphore release for write operations */
         else if (intrStat & SMBUS_IC_INTR_STOP_DET_MASK) {
             /* STOP检测到，说明传输完成 */
             if (dev->status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS)) {
-                /* CRITICAL FIX: Use interrupt protection for STOP detection completion */
-                rtems_interrupt_level level;
-                rtems_interrupt_disable(level);
+                dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
+                asyncComplete = true;
 
-                /* Double-check status after disabling interrupts */
-                if (dev->status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS)) {
-                    dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
-                    asyncComplete = true;
+                LOGD("SMBus Async: STOP detected, releasing semaphore (semId=%d)\n", dev->semaphoreId);
+                /* CRITICAL FIX: Ensure complete interrupt cleanup on STOP detection */
+                LOGE("SMBus Async: TX_EMPTY disabled due to STOP detection - mask=0x%08X\n", regBase->icIntrMask);
 
-                    LOGD("SMBus Async: STOP detected, releasing semaphore (semId=%d)\n", dev->semaphoreId);
-
-                    /* CRITICAL: Immediately disable TX_EMPTY interrupt to prevent spurious interrupts */
-                    U32 currentMask = regBase->icIntrMask;
-                    currentMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
-                    regBase->icIntrMask = currentMask;
-
-                    /* CRITICAL FIX: Ensure complete interrupt cleanup on STOP detection */
-                    LOGD("SMBus Async: TX_EMPTY disabled due to STOP detection - mask=0x%08X\n", currentMask);
-
-                    /* Force clear any pending TX_EMPTY condition */
-                    regBase->icIntrMask = 0;  /* Disable all interrupts on STOP */
+                /* Force clear any pending TX_EMPTY condition */
+                if (dev->msgWriteIdx >= dev->msgsNum) {
+                    //regBase->icIntrMask = 0;  /* Disable all interrupts on STOP */
                     LOGD("SMBus Async: All interrupts disabled on STOP detection\n");
-                    LOGD("SMBus Async: STOP - Disabled TX_EMPTY interrupt (mask=0x%08X)\n", currentMask);
-
-                        if (dev->semaphoreId != (rtems_id)0) {
-                            S32 releaseResult = rtems_semaphore_release(dev->semaphoreId);
-                            LOGD("SMBus Async: STOP - Semaphore release result=%d\n", releaseResult);
-                        } else {
-                            LOGE("SMBus Async: STOP - Invalid semaphoreId (0)\n");
-                        }
-                    }
-
-                    rtems_interrupt_enable(level);
                 }
             }
         }
-
         /* Enhanced Timeout protection - force completion if transfer takes too long */
-        if (pDrvData->pSmbusDev.status & SMBUS_STATUS_ACTIVE) {
+        if (dev->status & SMBUS_STATUS_ACTIVE) {
             U32 currentTime = rtems_clock_get_ticks_since_boot();
-            U32 timeoutTicks = RTEMS_MILLISECONDS_TO_TICKS(pDrvData->pSmbusDev.transferTimeout);
+            U32 timeoutTicks = RTEMS_MILLISECONDS_TO_TICKS(dev->transferTimeout);
 
-            if ((currentTime - pDrvData->pSmbusDev.transferStartTime) > timeoutTicks) {
+            if ((currentTime - dev->transferStartTime) > timeoutTicks) {
                 LOGE("SMBus Async: Transfer timeout in ISR, forcing completion\n");
                 LOGE("SMBus Async: Timeout details - msgWriteIdx=%d, msgsNum=%d, rxOutstanding=%d, status=0x%08X\n",
-                     pDrvData->pSmbusDev.msgWriteIdx, pDrvData->pSmbusDev.msgsNum, pDrvData->pSmbusDev.rxOutstanding, pDrvData->pSmbusDev.status);
+                     dev->msgWriteIdx, dev->msgsNum, dev->rxOutstanding, dev->status);
 
-                pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_ACTIVE;
-                pDrvData->pSmbusDev.msgErr = -ETIMEDOUT;
+                dev->status &= ~SMBUS_STATUS_ACTIVE;
+                dev->msgErr = -ETIMEDOUT;
                 asyncComplete = true;
 
                 /* CRITICAL: Disable ALL interrupts to prevent continuous ISR calls */
@@ -868,40 +838,35 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                 LOGE("SMBus Async: Timeout - Disabled ALL interrupts (mask=0x%08X) to prevent ISR loop\n", currentMask);
 
                 /* CRITICAL: Clear RX FIFO to prevent stale data from triggering more interrupts */
-                if (pDrvData->pSmbusDev.rxOutstanding > 0) {
-                    LOGW("SMBus Async: Clearing RX FIFO due to timeout - rxOutstanding=%d\n", pDrvData->pSmbusDev.rxOutstanding);
+                if (dev->rxOutstanding > 0) {
+                    LOGW("SMBus Async: Clearing RX FIFO due to timeout - rxOutstanding=%d\n", dev->rxOutstanding);
                     /* Read and discard RX FIFO data */
                     while (regBase->icRxflr > 0) {
                         volatile U32 dummy = regBase->icDataCmd.value;
                         (void)dummy;
                     }
-                    pDrvData->pSmbusDev.rxOutstanding = 0;
+                    dev->rxOutstanding = 0;
                 }
 
-                /* Clear all interrupt status bits */
-                regBase->icClrIntr = 0xFFFFFFFF;
-                regBase->icClrTxAbrt = 0;
-                regBase->icClrRxUnder = 0;
-                regBase->icClrRxOver = 0;
-                regBase->icClrTxOver = 0;
-                regBase->icClrRdReq = 0;
-                regBase->icClrRxDone = 0;
-                regBase->icClrActivity = 0;
-                regBase->icClrStopDet = 0;
-                regBase->icClrStartDet = 0;
-                regBase->icClrGenCall = 0;
+                /* Clear all interrupt status bits using dummy read approach */
+                volatile U32 dummy;
+                dummy = regBase->icClrIntr;        /* Dummy read to clear combined interrupt */
+                dummy = regBase->icClrTxAbrt;      /* Dummy read to clear TX abort */
+                dummy = regBase->icClrRxUnder;    /* Dummy read to clear RX underflow */
+                dummy = regBase->icClrRxOver;     /* Dummy read to clear RX overflow */
+                dummy = regBase->icClrTxOver;     /* Dummy read to clear TX overflow */
+                dummy = regBase->icClrRdReq;      /* Dummy read to clear read request */
+                dummy = regBase->icClrRxDone;     /* Dummy read to clear RX done */
+                dummy = regBase->icClrActivity;   /* Dummy read to clear activity */
+                dummy = regBase->icClrStopDet;    /* Dummy read to clear stop detection */
+                dummy = regBase->icClrStartDet;   /* Dummy read to clear start detection */
+                dummy = regBase->icClrGenCall;    /* Dummy read to clear general call */
+                (void)dummy; /* Suppress unused variable warning */
 
                 /* Reset transfer state completely */
-                pDrvData->pSmbusDev.msgWriteIdx = 0;
-                pDrvData->pSmbusDev.msgReadIdx = 0;
-                pDrvData->pSmbusDev.msgsNum = 0;
-
-                if (pDrvData->pSmbusDev.semaphoreId != (rtems_id)0) {
-                    S32 releaseResult = rtems_semaphore_release(pDrvData->pSmbusDev.semaphoreId);
-                    LOGE("SMBus Async: Timeout - Semaphore released with result=%d\n", releaseResult);
-                } else {
-                    LOGE("SMBus Async: Timeout - Invalid semaphoreId (0)\n");
-                }
+                dev->msgWriteIdx = 0;
+                dev->msgReadIdx = 0;
+                dev->msgsNum = 0;
             }
         }
 
@@ -952,18 +917,20 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                         dev->rxOutstanding = 0;
                         dev->rxStallCount = 0;  /* Reset counter */
 
-                        /* Clear all interrupt status bits */
-                        regBase->icClrIntr = 0xFFFFFFFF;
-                        regBase->icClrTxAbrt = 0;
-                        regBase->icClrRxUnder = 0;
-                        regBase->icClrRxOver = 0;
-                        regBase->icClrTxOver = 0;
-                        regBase->icClrRdReq = 0;
-                        regBase->icClrRxDone = 0;
-                        regBase->icClrActivity = 0;
-                        regBase->icClrStopDet = 0;
-                        regBase->icClrStartDet = 0;
-                        regBase->icClrGenCall = 0;
+                        /* Clear all interrupt status bits using dummy read approach */
+                        volatile U32 stallDummy;
+                        stallDummy = regBase->icClrIntr;        /* Dummy read to clear combined interrupt */
+                        stallDummy = regBase->icClrTxAbrt;      /* Dummy read to clear TX abort */
+                        stallDummy = regBase->icClrRxUnder;    /* Dummy read to clear RX underflow */
+                        stallDummy = regBase->icClrRxOver;     /* Dummy read to clear RX overflow */
+                        stallDummy = regBase->icClrTxOver;     /* Dummy read to clear TX overflow */
+                        stallDummy = regBase->icClrRdReq;      /* Dummy read to clear read request */
+                        stallDummy = regBase->icClrRxDone;     /* Dummy read to clear RX done */
+                        stallDummy = regBase->icClrActivity;   /* Dummy read to clear activity */
+                        stallDummy = regBase->icClrStopDet;    /* Dummy read to clear stop detection */
+                        stallDummy = regBase->icClrStartDet;   /* Dummy read to clear start detection */
+                        stallDummy = regBase->icClrGenCall;    /* Dummy read to clear general call */
+                        (void)stallDummy; /* Suppress unused variable warning */
 
                         if (dev->semaphoreId != (rtems_id)0) {
                             S32 releaseResult = rtems_semaphore_release(dev->semaphoreId);
@@ -994,24 +961,24 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                 LOGD("SMBus Async: TX_EMPTY interrupt handled\n");
             }
             if (intrStat & SMBUS_IC_INTR_RX_UNDER_MASK)
-                regBase->icClrRxUnder = 0;
+                (void)regBase->icClrRxUnder;      /* Dummy read to clear RX underflow */
             if (intrStat & SMBUS_IC_INTR_RX_OVER_MASK)
-                regBase->icClrRxOver = 0;
+                (void)regBase->icClrRxOver;       /* Dummy read to clear RX overflow */
             if (intrStat & SMBUS_IC_INTR_TX_OVER_MASK)
-                regBase->icClrTxOver = 0;
+                (void)regBase->icClrTxOver;       /* Dummy read to clear TX overflow */
             if (intrStat & SMBUS_IC_INTR_RD_REQ_MASK)
-                regBase->icClrRdReq = 0;
+                (void)regBase->icClrRdReq;        /* Dummy read to clear read request */
             if (intrStat & SMBUS_IC_INTR_RX_DONE_MASK)
-                regBase->icClrRxDone = 0;
+                (void)regBase->icClrRxDone;       /* Dummy read to clear RX done */
             if (intrStat & SMBUS_IC_INTR_ACTIVITY_MASK)
-                regBase->icClrActivity = 0;
+                (void)regBase->icClrActivity;     /* Dummy read to clear activity */
             if ((intrStat & SMBUS_IC_INTR_STOP_DET_MASK) &&
                 ((dev->rxOutstanding == 0) || (intrStat & SMBUS_IC_INTR_RX_FULL_MASK)))
-                regBase->icClrStopDet = 0;
+                (void)regBase->icClrStopDet;      /* Dummy read to clear stop detection */
             if (intrStat & SMBUS_IC_INTR_START_DET_MASK)
-                regBase->icClrStartDet = 0;
+                (void)regBase->icClrStartDet;     /* Dummy read to clear start detection */
             if (intrStat & SMBUS_IC_INTR_GEN_CALL_MASK)
-                regBase->icClrGenCall = 0;
+                (void)regBase->icClrGenCall;      /* Dummy read to clear general call */
 
             /* CRITICAL FIX: Check for transfer completion status before exiting */
             if (!asyncComplete && !(dev->status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS))) {
@@ -1831,6 +1798,10 @@ static void smbusFreeDriverData(SmbusDrvData_s *pDrvData)
         pDrvData->pSmbusDev.slaveValidTxLen = 0;
     }
 
+    /* Clear master TX buffer array - no need to free as it's a static array */
+    memset(pDrvData->pSmbusDev.masterTxBuf, 0, sizeof(pDrvData->pSmbusDev.masterTxBuf));
+    pDrvData->pSmbusDev.masterTxBufLen = 0;
+    LOGD("%s: Master TX buffer array cleared\n", __func__);
     /* Free ARP context if allocated */
     SmbusArpContext_s *context = (SmbusArpContext_s *)pDrvData->arpFailParam;
     if (context != NULL) {
@@ -2249,7 +2220,14 @@ S32 smbusInit(DevList_e devId)
         goto disable_vector;
     }
 
-    /* Step 8: Initialize ARP Master context (modularized) */
+    /* Step 8: Allocate master buffers for master mode */
+    ret = smbusAllocateMasterBuffers(pDrvData);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: Master buffer allocation failed, ret=%d\n", __func__, ret);
+        goto disable_vector;
+    }
+
+    /* Step 9: Initialize ARP Master context (modularized) */
     ret = smbusInitializeArpMaster(pDrvData);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: ARP Master initialization failed, ret=%d\n", __func__, ret);
@@ -2866,9 +2844,9 @@ void smbusHandleMasterTimeoutRecovery(SmbusDrvData_s *pDrvData, SmbusTimeoutType
     regBase->icEnable.fields.enable = 1;
 
     ///< Step 5: Clear any pending interrupts
-    regBase->icClrTxAbrt;
-    regBase->icClrIntr;
-    regBase->icClrSmbusIntr = 0x000F;  ///< Clear all timeout-related interrupts
+    regBase->icClrTxAbrt;          /* Dummy read to clear TX abort */
+    regBase->icClrIntr;           /* Dummy read to clear combined interrupt */
+    (void)regBase->icClrSmbusIntr; /* Dummy read to clear SMBus interrupts */
 
     ///< Step 6: Re-enable master mode
     conReg.fields.masterMode = 1;
@@ -2934,9 +2912,9 @@ void smbusHandleSlaveTimeoutRecovery(SmbusDrvData_s *pDrvData, SmbusTimeoutType_
     regBase->icEnable.fields.enable = 1;
 
     ///< Step 4: Clear all pending interrupts
-    regBase->icClrTxAbrt;
-    regBase->icClrIntr;
-    regBase->icClrSmbusIntr = 0x000C;  ///< Clear slave timeout-related interrupts
+    regBase->icClrTxAbrt;          /* Dummy read to clear TX abort */
+    regBase->icClrIntr;           /* Dummy read to clear combined interrupt */
+    (void)regBase->icClrSmbusIntr; /* Dummy read to clear SMBus interrupts */
 
     ///< Step 5: Re-enable slave mode
     conReg.fields.icSlaveDisable = 0;

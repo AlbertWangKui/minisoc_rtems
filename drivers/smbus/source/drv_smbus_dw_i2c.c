@@ -16,13 +16,18 @@
  *       registers and provide the foundation for higher-level protocols.
  */
 
-
+#include <rtems.h>
+#include <rtems/counter.h>
+#include <rtems/bspIo.h>
 #include "log_msg.h"
 #include "udelay.h"
 #include "osp_interrupt.h"
+#include "osp_barrier.h"
 #include "drv_smbus_dw_i2c.h"
 #include "drv_smbus_dw.h"
 
+#define SMBUS_CMD_GENERAL_GET_UDID    (0x03)
+#define SMBUS_CMD_GENERAL_ASSIGN_ADDR (0x04)
 /* ======================================================================== */
 /*                    Function Forward Declarations                          */
 /* ======================================================================== */
@@ -32,22 +37,6 @@ static S32 smbusWaitBusNotBusy(SmbusDev_s *dev);
 static bool smbusIsControllerActive(SmbusDev_s *dev);
 static void smbusDwDisable(SmbusDev_s *dev);
 static S32 smbusHandleTxAbort(SmbusDev_s *dev);
-
-/* Local constant definitions to avoid circular include */
-#define SMBUS_TX_READY_TIMEOUT_US     (10000U)
-#define SMBUS_RX_READY_TIMEOUT_US     (10000U)
-#define SMBUS_TRANSACTION_TIMEOUT_US  (100000U)
-#define SMBUS_ARP_ADDR                (0x61)
-#define SMBUS_HOST_NOTIFY_ADDR        (0x08)
-#define SMBUS_CMD_GENERAL_GET_UDID    (0x03)
-#define SMBUS_ARP_ABORT_MASK          (0x09)
-#define SMBUS_MODE_SLAVE              (0)
-#define SMBUS_DEFAULT_TIMEOUT_MS      (5000)
-
-/* IC_DATA_CMD Register Bit Definitions */
-#define SMBUS_IC_DATA_CMD_READ_CMD    (0x1 << 8)  /**< Bit 8: Read command (1=read, 0=write) */
-#define SMBUS_IC_DATA_CMD_STOP        (0x1 << 9)  /**< Bit 9: Stop condition */
-#define SMBUS_IC_DATA_CMD_RESTART     (0x1 << 10) /**< Bit 10: Restart condition */
 
 /* ======================================================================== */
 /*                    HAL Layer - Register Access Functions                  */
@@ -811,7 +800,6 @@ static S32 smbusDwCheckStopBit(SmbusDev_s *dev)
         udelay(1);
         timeout--;
     }
-
     LOGE("SMBus: Stop bit detection timeout\n");
     return -ETIMEDOUT;
 }
@@ -835,9 +823,8 @@ static S32 smbusDwCheckStopBit(SmbusDev_s *dev)
  *
  * @warning Ensure device is properly initialized before calling
  * @warning Function modifies device status during transfer
- * [HAL] Hardware abstraction layer - I2C compatible transfer
  */
-U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
+static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
 {
     S32 ret = 0;
 
@@ -846,14 +833,6 @@ U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
         return (U32)(-EINVAL);
     }
 
-#if 0
-    /* Debug: Check device state */
-    LOGD("SMBus: Device state check - semaphoreId=%d, channelNum=%d, workMode=%d\n",
-         dev->semaphoreId, dev->channelNum, dev->workMode);
-    LOGD("SMBus: Device addresses - dev=%p, regBase=%p\n", (void*)dev, (void*)dev->regBase);
-
-    LOGT("SMBus: Starting async dw xfer, %u messages, workMode=%d\n", num, dev->workMode);
-#endif
     SmbusMsg_t *msgs = (SmbusMsg_t *)mg;
 
     ///< Polling mode (original implementation)
@@ -903,50 +882,7 @@ U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
         LOGE("SMBus: Transfer initialization failed: %d\n", ret);
         goto done;
     }
-#if 0
-    ///< Enable interrupts and wait for completion
-    volatile SmbusRegMap_s *regBase = dev->regBase;
 
-    /* Debug: Verify interrupt mask was set */
-    U32 actualMask = regBase->icIntrMask;
-    LOGD("SMBus: Actual interrupt mask after setting=0x%08X\n", actualMask);
-
-    /* Debug: Show which bits are set in the mask */
-    LOGD("SMBus: Mask bits - TX_EMPTY:%d RX_FULL:%d TX_ABRT:%d STOP_DET:%d ACTIVITY:%d\n",
-         (actualMask & SMBUS_IC_INTR_TX_EMPTY_MASK) ? 1 : 0,
-         (actualMask & SMBUS_IC_INTR_RX_FULL_MASK) ? 1 : 0,
-         (actualMask & SMBUS_IC_INTR_TX_ABRT_MASK) ? 1 : 0,
-         (actualMask & SMBUS_IC_INTR_STOP_DET_MASK) ? 1 : 0,
-         (actualMask & SMBUS_IC_INTR_ACTIVITY_MASK) ? 1 : 0);
-
-    /* Debug: Force generate a TX_EMPTY interrupt by writing data */
-    LOGD("SMBus: Attempting to force trigger TX_EMPTY interrupt\n");
-
-    /* Check if we can write to data register to trigger TX_EMPTY */
-    U32 txflr = 0;
-    txflr = regBase->icTxflr;
-    LOGD("SMBus: TX FIFO level before write: %d\n", txflr);
-
-    /* Try to write a test byte to trigger TX_EMPTY */
-    if (txflr < dev->txFifoDepth) {
-        regBase->icDataCmd.value = 0x00;  // Write dummy data
-        LOGD("SMBus: Wrote test data to trigger TX_EMPTY\n");
-    }
-
-    LOGD("SMBus: Waiting for async transfer completion (infinite wait - ISR handles timeout)\n");
-    LOGD("SMBus: semaphoreId=%d, channelNum=%d\n", dev->semaphoreId, dev->channelNum);
-
-    /* Debug: Check final interrupt status */
-    U32 finalRawIntr = regBase->icRawIntrStat.value;
-    U32 finalMaskedIntr = regBase->icIntrStat.value;
-    LOGD("SMBus: Final interrupt status - Raw: 0x%08X, Masked: 0x%08X\n",
-         finalRawIntr, finalMaskedIntr);
-
-    /* Debug: Try to manually call ISR to test the path */
-    LOGD("SMBus: Attempting manual ISR call for testing\n");
-    // smbusIsr(dev);  // Temporarily commented out - would need proper pDrvData
-
-#endif
     ///< Wait for transfer completion - let ISR handle timeout protection
     LOGD("SMBus: Waiting for transfer completion - semId=%d, status=0x%08X, timeout=%d\n",
          dev->semaphoreId, dev->status, dev->transferTimeout);
@@ -1062,7 +998,7 @@ static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_t *msgs, U32 num)
             U32 dataCmd = 0;
 
             /* Check if this is a read operation */
-            if (msgs[msgWrtIdx].flags & I2C_M_RD) {
+            if (msgs[msgWrtIdx].flags & SMBUS_M_RD) {
                 /* Read operation */
                 status = smbusCheckTxready(regBase);
                 if (status != EXIT_SUCCESS) {
@@ -1729,6 +1665,7 @@ S32 smbusCalcFifoSize(SmbusDev_s *dev)
     return EXIT_SUCCESS;
 }
 
+#if 0
 /**
  * @brief Calculate SMBus master timing parameters
  * @details Calculates SCL high/low count and SDA hold time for master mode
@@ -1809,6 +1746,126 @@ static void smbusCalcTimingsMaster(SmbusDev_s *dev)
     LOGD("SMBus: Timing calculated - SS:%u/%u, FS:%u/%u, FP:%u/%u, HS:%u/%u\n",
          dev->ssHcnt, dev->ssLcnt, dev->fsHcnt, dev->fsLcnt,
          dev->fpHcnt, dev->fpLcnt, dev->hsHcnt, dev->hsLcnt);
+}
+#endif
+
+/**
+ * @brief Calculate SMBus master timing parameters
+ * @details Calculates SCL high/low count and SDA hold time for master mode
+ *          based on the configured clock speed. Uses DW I2C recommended formula.
+ * @param[in] dev Pointer to SMBus device structure
+ * @return void
+ *
+ * @note SDA TX hold time formula: 0.15 × ic_clk / (2 × speed)
+ * @note ic_clk is the internal peripheral clock (e.g., 12.5MHz)
+ * @note This is derived from: base_lcnt × correction_factor / 2
+ *       where base_lcnt = ic_clk/(2×speed), correction = 6/(5×4) = 0.3
+ *       final: 0.3/2 = 0.15
+ * [HAL] Hardware abstraction layer - timing calculation
+ */
+static void smbusCalcTimingsMaster(SmbusDev_s *dev)
+{
+    U32 ic_clk;  /* Internal peripheral clock frequency (12.5MHz) */
+    
+    if (dev == NULL) {
+        return;
+    }
+    
+    /* Initialize all timing counters to zero */
+    dev->ssHcnt = 0;
+    dev->ssLcnt = 0;
+    dev->fsHcnt = 0;
+    dev->fsLcnt = 0;
+    dev->hsHcnt = 0;
+    dev->hsLcnt = 0;
+    dev->fpHcnt = 0;
+    dev->fpLcnt = 0;
+    
+    /* Calculate timing parameters based on clock rate */
+    switch (dev->clkRate) {
+        case SMBUS_MAX_STANDARD_MODE_FREQ:
+            /* Standard mode (100 kHz) */
+            dev->ssHcnt = SMBUS_HW_CLK_H100;
+            dev->ssLcnt = SMBUS_HW_CLK_L100;
+            break;
+            
+        case SMBUS_MAX_FAST_MODE_FREQ:
+            /* Fast mode (400 kHz) */
+            dev->fsHcnt = SMBUS_HW_CLK_H400;
+            dev->fsLcnt = SMBUS_HW_CLK_L400;
+            break;
+            
+        case SMBUS_MAX_FAST_MODE_PLUS_FREQ:
+            /* Fast mode plus (1 MHz) */
+            dev->fpHcnt = SMBUS_HW_CLK_H1000;
+            dev->fpLcnt = SMBUS_HW_CLK_L1000;
+            /* Also configure fast mode as fallback */
+            dev->fsHcnt = SMBUS_HW_CLK_H400;
+            dev->fsLcnt = SMBUS_HW_CLK_L400;
+            break;
+            
+        case SMBUS_MAX_HIGH_SPEED_MODE_FREQ:
+            /* High speed mode (3.4 MHz) */
+            dev->hsHcnt = SMBUS_HW_CLK_H3400;
+            dev->hsLcnt = SMBUS_HW_CLK_L3400;
+            /* Also configure fast mode for compatibility */
+            dev->fsHcnt = SMBUS_HW_CLK_H400;
+            dev->fsLcnt = SMBUS_HW_CLK_L400;
+            break;
+            
+        default:
+            /* Unknown speed, use fast mode as default */
+            dev->fsHcnt = SMBUS_HW_CLK_H400;
+            dev->fsLcnt = SMBUS_HW_CLK_L400;
+            LOGW("SMBus: Unknown clock rate %u Hz, using fast mode timing\n", dev->clkRate);
+            break;
+    }
+    
+    /* 
+     * Calculate SDA TX hold time using formula:
+     * IC_SDA_TX_HOLD = 0.15 × ic_clk / (2 × speed)
+     * 
+     * Derivation:
+     * - Base SCL low count = ic_clk / (2 × speed)
+     * - Correction factor = 6/(5×4) = 0.3
+     * - Final hold time = base × 0.3 / 2 = base × 0.15
+     * 
+     * Example with ic_clk=12.5MHz, speed=100kHz:
+     * sdaHoldTime = (15 × 12,500,000) / (200 × 100,000) = 9 cycles
+     * Time = 9 / 12.5MHz = 720ns
+     */
+    #define SMBUS_IC_CLK_FREQ (12500000)
+    ic_clk = SMBUS_IC_CLK_FREQ;  /* 12.5MHz = 12500000 Hz */
+    
+    if (ic_clk > 0 && dev->clkRate > 0) {
+        /* 
+         * Formula: sdaHoldTime = (0.15 × ic_clk) / (2 × speed)
+         * Use fixed-point: (15 × ic_clk) / (200 × speed) to avoid float
+         * Add rounding: + (100 × speed) before division
+         */
+        dev->sdaHoldTime = (15 * ic_clk + 100 * dev->clkRate) / (200 * dev->clkRate);
+        
+        /* Ensure minimum value of 1 */
+        if (dev->sdaHoldTime == 0) {
+            dev->sdaHoldTime = 1;
+        }
+        
+        LOGD("SMBus: SDA TX hold = (15x%u)/(200x%u) = %u cycles (~%u ns)\n",
+             ic_clk, dev->clkRate, dev->sdaHoldTime, 
+             (dev->sdaHoldTime * 1000) / (ic_clk / 1000000));
+    } else {
+        /* Fallback: use minimal safe value */
+        dev->sdaHoldTime = 1;
+        LOGW("SMBus: IC_CLK or clkRate not configured, using minimal SDA hold time\n");
+    }
+    
+    /* Initialize spike suppression lengths to defaults */
+    dev->fsSpklen = 0;  /* Use hardware default */
+    dev->hsSpklen = 0;  /* Use hardware default */
+    
+    LOGD("SMBus: Timing - SS:%u/%u FS:%u/%u FP:%u/%u HS:%u/%u SDA_HOLD:%u\n",
+         dev->ssHcnt, dev->ssLcnt, dev->fsHcnt, dev->fsLcnt,
+         dev->fpHcnt, dev->fpLcnt, dev->hsHcnt, dev->hsLcnt, dev->sdaHoldTime);
 }
 
 /**
@@ -2906,415 +2963,402 @@ __attribute((unused)) static U32 smbusDwReadClearIntrbits(SmbusDev_s *dev)
 }
 
 /**
- * @brief Handle data reception in async interrupt mode
- * @details Reads data from RX FIFO during interrupt service for async
- *          transfers. Handles multiple bytes based on outstanding RX count.
+ * @brief SMBus receive length adjustment handler (for Block Read)
+ * @details Called when first byte (length) is received in Block Read.
+ *          Adjusts buffer length and re-enables TX_EMPTY to continue transfer.
  * @param[in] dev Pointer to SMBus device structure
- * @note Based on I2C's i2c_dw_read implementation
- * @note Called from interrupt service routine when RX_FULL interrupt occurs
- * @note Updates message read index and processes multiple messages if needed
- * [ASYNC] Async interrupt support - RX data handling
+ * @param[in] len Received length byte from slave
+ * @return Adjusted total length (including PEC if enabled)
+ *
+ * @note Follows DW I2C Databook flow: receive len → adjust → re-enable TX_EMPTY
+ * @note This is critical for Block Read protocol compliance
+ * [HAL] Hardware abstraction layer - Block Read protocol
  */
-static void smbusDwRead(SmbusDev_s *dev)
+static U8 smbusDwRecvLen(SmbusDev_s *dev, U8 len)
 {
-    volatile SmbusRegMap_s *regBase = dev->regBase;
-    SmbusMsg_t *msg = NULL;
-    U32 val;
-    U32 rx_fifo_level;
-    U32 data_to_read;
-    U32 read_count = 0;
-    U32 stored_data_count = 0;  /* CRITICAL: Separate tracking of stored data */
-    U32 current_user_data = 0;
-    const U32 MAX_READ_COUNT = 100; /* Prevent infinite loops */
+    SmbusMsg_t *msgs = dev->msgs;
+    U32 flags = msgs[dev->msgReadIdx].flags;
+    U32 intrMask;
 
-    if (regBase == NULL || dev->msgs == NULL) {
+    /*
+     * Adjust the buffer length and mask the flag
+     * after receiving the first byte.
+     */
+    len += (flags & SMBUS_M_PEC) ? 2 : 1;  /* +1 for cmd, +1 for PEC if enabled */
+    dev->masterTxBufLen = len - ((len < dev->rxOutstanding) ? len : dev->rxOutstanding);
+    msgs[dev->msgReadIdx].len = len;
+    msgs[dev->msgReadIdx].flags &= ~SMBUS_M_RECV_LEN;
+
+    /*
+     * Received buffer length, re-enable TX_EMPTY interrupt
+     * to resume the SMBus Block Read transaction.
+     * This is the key mechanism from DW I2C Databook.
+     */
+    intrMask = dev->regBase->icIntrMask;
+    intrMask |= SMBUS_IC_INTR_TX_EMPTY_MASK;
+    dev->regBase->icIntrMask = intrMask;
+
+    LOGD("SMBus: Block Read len adjusted to %u, re-enabled TX_EMPTY\n", len);
+
+    return len;
+}
+
+/**
+ * @brief SMBus read handler (hardware-driven flow)
+ * @details Strictly follows DW I2C Databook flow:
+ *          RX_FULL interrupt → drain hardware FIFO → handle I2C_M_RECV_LEN → continue
+ * @param[in] dev Pointer to SMBus device structure
+ * @return void
+ *
+ * @note Does NOT use software counters for synchronization
+ * @note Relies on hardware flow control via IC_RXFLR register
+ * @note Automatically handles Block Read via I2C_M_RECV_LEN flag
+ * @note Re-enables TX_EMPTY when length byte is received (critical!)
+ * [HAL] Hardware abstraction layer - interrupt-driven read
+ */
+static void smbusDwRead(SmbusDrvData_s *pDrvData)
+{
+    volatile SmbusRegMap_s *regBase;
+    SmbusDev_s *dev;
+    SmbusMsg_t *msgs;
+    U32 rxValid;
+    U32 len;
+    U8 *buf;
+
+    if (pDrvData == NULL) {
+        LOGE("SMBus: Invalid driver data in read ISR\n");
+        return;
+    }
+
+    dev = &pDrvData->pSmbusDev;
+    regBase = dev->regBase;
+    msgs = dev->msgs;
+
+    if (regBase == NULL || msgs == NULL) {
         LOGE("SMBus: Invalid device or message in read ISR\n");
         return;
     }
 
-    /* CRITICAL: Check for negative rxOutstanding - this indicates a serious bug */
-    if ((S32)dev->rxOutstanding < 0) {
-        LOGE("SMBus: CRITICAL - rxOutstanding is negative (%d), aborting read to prevent infinite loop\n",
-             dev->rxOutstanding);
-        dev->rxOutstanding = 0;  /* Reset to 0 to prevent further issues */
-        dev->msgErr = -EIO;      /* Mark as error */
-        return;
-    }
+    /* Iterate through all read messages */
+    for (; dev->msgReadIdx < dev->msgsNum; dev->msgReadIdx++) {
+        U32 tmp;
+        U32 flags;
 
-    /* CRITICAL FIX: Get correct message for read operations */
-    /* For Write-Read operations, we need to handle both messages properly */
+        LOGD("SMBus: Processing msg[%d], flags=0x%X, status=0x%X\n",
+             dev->msgReadIdx, msgs[dev->msgReadIdx].flags, dev->status);
 
-    /* First, check if we need to advance from write message to read message */
-    if (dev->msgReadIdx < dev->msgsNum - 1) {
-        SmbusMsg_t *currentMsg = dev->msgs + dev->msgReadIdx;
-        SmbusMsg_t *nextMsg = dev->msgs + (dev->msgReadIdx + 1);
-
-        LOGD("SMBus: Current msg[%d] flags=0x%X, Next msg[%d] flags=0x%X\n",
-             dev->msgReadIdx, currentMsg ? currentMsg->flags : 0,
-             dev->msgReadIdx + 1, nextMsg ? nextMsg->flags : 0);
-
-        /* If current message is write (flags=0) and next is read (flags=1), switch to read */
-        if (currentMsg && nextMsg && (currentMsg->flags == 0) && (nextMsg->flags == 1)) {
-            LOGD("SMBus: Switching from write message to read message\n");
-            dev->msgReadIdx = dev->msgReadIdx + 1;
+        /* Skip write messages */
+        if (!(msgs[dev->msgReadIdx].flags & SMBUS_M_RD)) {
+            continue;
         }
-    }
 
-    msg = dev->msgs + dev->msgReadIdx;
-    if (msg == NULL) {
-        LOGE("SMBus: Invalid message read index\n");
-        return;
-    }
+        /* Determine buffer and length based on read state */
+        if (!(dev->status & SMBUS_STATUS_READ_IN_PROGRESS)) {
+            /* Fresh read - use message buffer */
+            len = msgs[dev->msgReadIdx].len;
+            buf = msgs[dev->msgReadIdx].buf;
+        } else {
+            /* Continuation of partial read - use pDrvData->rxBuffer */
+            len = pDrvData->rxLength;
+            buf = pDrvData->rxBuffer;
+        }
 
-    LOGD("SMBus: Read ISR entered - processing msg[%d], flags=0x%X, len=%d, buf=%p\n",
-         dev->msgReadIdx, msg->flags, msg->len, msg->buf);
-    LOGD("SMBus: Read ISR entered, msgReadIdx=%d, msgsNum=%d, rxOutstanding=%d\n",
-         dev->msgReadIdx, dev->msgsNum, dev->rxOutstanding);
+        /* Read actual FIFO level from hardware (KEY: no software counter) */
+        rxValid = regBase->icRxflr;
+        LOGD("SMBus: Hardware FIFO level=%u, remaining len=%u\n", rxValid, len);
 
-    /* CRITICAL: Use actual RX FIFO level instead of rxOutstanding count */
-    rx_fifo_level = regBase->icRxflr;
-    LOGD("SMBus: RX FIFO level=%d (actual data available)\n", rx_fifo_level);
+        /* Drain FIFO while data is available and buffer has space */
+        for (; len > 0 && rxValid > 0; len--, rxValid--) {
+            flags = msgs[dev->msgReadIdx].flags;
 
-    /* If FIFO is empty, there's nothing to read */
-    if (rx_fifo_level == 0) {
-        LOGD("SMBus: RX FIFO is empty, nothing to read\n");
-        return;
-    }
+            LOGD("SMBus: Reading byte, len=%u, rxValid=%u, flags=0x%X\n", 
+                 len, rxValid, flags);
 
-    /* Calculate how many data we should actually read from FIFO */
-    /* Take the minimum of: FIFO level, rxOutstanding, and expected message length */
-    data_to_read = rx_fifo_level;
-    if ((S32)dev->rxOutstanding > 0 && data_to_read > dev->rxOutstanding) {
-        data_to_read = dev->rxOutstanding;
-    }
+            /* Read data from hardware FIFO */
+            tmp = regBase->icDataCmd.value;
+            tmp &= 0xFF;  /* Extract data byte */
 
-    /* CRITICAL FIX: Proper buffer management for Block Read protocol */
-    if (msg->buf != NULL) {
-        /* For Block Read:
-         * - msg->len is total bytes to read from I2C (including count byte)
-         * - stored_data_count is actual bytes we have stored (including count byte)
-         * - We need to calculate remaining space correctly!
-         */
-
-        U32 max_user_data = SMBUS_MAX_BLOCK_LEN;  /* Max data bytes for user */
-        current_user_data = (stored_data_count > 1) ? (stored_data_count - 1) : 0;  /* Data bytes, excluding count byte */
-        U32 remaining_user_space = max_user_data - current_user_data;
-
-        LOGD("SMBus: Message[%d] - total_read=%d, stored=%d, current_data=%d, remaining_space=%d\n",
-             dev->msgReadIdx, msg->len, stored_data_count, current_user_data, remaining_user_space);
-
-        /* CRITICAL FIX: If we have no space for more user data */
-        if (remaining_user_space == 0) {
-            LOGW("SMBus: User buffer full (data=%d, max=%d), consuming remaining bytes\n",
-                 current_user_data, max_user_data);
-
-            /* CRITICAL: This might be normal - we have received the maximum allowed data */
-            /* Check if we have at least some valid data */
-            if (current_user_data >= 1) {
-                LOGI("SMBus: Successfully received %d data bytes, treating as success\n", current_user_data);
-                /* This is a successful partial read, not an error */
-                dev->msgErr = 0;  /* Clear error */
-
-                /* Still consume remaining bytes to clear interrupt */
-                LOGD("SMBus: Consuming remaining %d bytes from FIFO to clear interrupt\n", data_to_read);
-                for (U32 i = 0; i < data_to_read && i < 20; i++) {  /* Increased limit */
-                    (void)regBase->icDataCmd.value;  /* Read and discard */
-                }
-            } else {
-                LOGE("SMBus: ERROR - No data received and buffer is full!\n");
-
-                /* Still need to consume the remaining bytes from FIFO to clear the interrupt */
-                LOGW("SMBus: Consuming remaining %d bytes from FIFO to clear interrupt\n", data_to_read);
-                for (U32 i = 0; i < data_to_read && i < 10; i++) {  /* Limit to prevent infinite loop */
-                    (void)regBase->icDataCmd.value;  /* Read and discard */
+            /* Handle Block Read length byte (I2C_M_RECV_LEN) */
+            if (flags & SMBUS_M_RECV_LEN) {
+                /*
+                 * CRITICAL: DW I2C Databook mechanism for Block Read
+                 * 
+                 * If IC_EMPTYFIFO_HOLD_MASTER_EN is set, the controller 
+                 * can be disabled if STOP bit is set. But it is only set
+                 * after receiving block data response length in Block Read.
+                 * That needs to read another byte with STOP bit when the
+                 * block data response length is invalid to complete transaction.
+                 */
+                if (!tmp || tmp > SMBUS_BLOCK_MAXLEN) {
+                    tmp = 1;  /* Minimal valid length to complete transfer */
                 }
 
-                /* Force completion */
-                dev->msgErr = -ENOSPC;
+                /* Adjust length and re-enable TX_EMPTY (KEY MECHANISM) */
+                len = smbusDwRecvLen(dev, tmp);
+            }
+
+            /* Store received byte */
+            *buf++ = tmp;
+            dev->rxOutstanding--;
+        }
+
+        /* Check if current message is complete */
+        if (len > 0) {
+            /* 
+             * Message not complete - save state and wait for next RX_FULL
+             * This is the hardware flow control mechanism
+             */
+            dev->status |= SMBUS_STATUS_READ_IN_PROGRESS;
+            pDrvData->rxLength = len;
+            pDrvData->rxBuffer = buf;
+            LOGD("SMBus: Read incomplete, %u bytes remaining\n", len);
             return;
-        }
-
-            /* Clear outstanding count */
-            dev->rxOutstanding = 0;
-        }
-
-        /* Limit data reading to available user space */
-        U32 max_data_we_can_read = remaining_user_space + 1;  /* +1 for count byte */
-        if (data_to_read > max_data_we_can_read) {
-            data_to_read = max_data_we_can_read;
-            LOGD("SMBus: Limited data_to_read to %d (user space limit)\n", data_to_read);
-        }
-    } else {
-        LOGE("SMBus: ERROR - msg->buf is NULL, cannot store read data!\n");
-        dev->rxOutstanding = 0;
-        dev->msgErr = -EINVAL;
-        return;
-    }
-
-    LOGD("SMBus: Will read %d data items (FIFO=%d, outstanding=%d)\n",
-         data_to_read, rx_fifo_level, dev->rxOutstanding);
-
-    for (read_count = 0; read_count < data_to_read && read_count < MAX_READ_COUNT; read_count++) {
-        /* Directly read from FIFO - data should already be there due to RX_FULL interrupt */
-        if (regBase->icRxflr > 0) {
-            /* Read the actual data directly from FIFO */
-            val = regBase->icDataCmd.value;
-
-            /* CRITICAL FIX: Proper Block Read protocol with separate counting */
-            if (stored_data_count == 0) {
-                /* First byte - this is the data count byte */
-                msg->buf[0] = (U8)(val & 0xFF);
-                stored_data_count = 1;  /* Only count byte stored so far */
-                LOGD("SMBus: Read count byte: 0x%02X\n", val & 0xFF);
-            } else {
-                /* Data bytes - store in user buffer */
-                if (msg->buf != NULL && stored_data_count < SMBUS_MAX_BLOCK_LEN) {
-                    msg->buf[stored_data_count] = (U8)(val & 0xFF);
-                    LOGD("SMBus: Data read: 0x%02X, buffer pos=%d\n", val & 0xFF, stored_data_count);
-                    stored_data_count++;
-                } else {
-                    LOGW("SMBus: Buffer overflow at pos %d, dropping data 0x%02X\n", stored_data_count, val & 0xFF);
-                dev->msgErr = -ENOSPC;
-                break;
-                }
-            }
         } else {
-            LOGW("SMBus: FIFO empty before reading item %d\n", read_count);
-            break;
+            /* Message complete - clear read-in-progress flag */
+            dev->status &= ~SMBUS_STATUS_READ_IN_PROGRESS;
+            LOGD("SMBus: Message[%d] read complete\n", dev->msgReadIdx);
         }
     }
 
-    /* CRITICAL: Update the buffer space calculation with correct count */
-    current_user_data = stored_data_count;  /* Use stored_data_count instead of msg->len */
-
-    /* CRITICAL FIX: Update rxOutstanding based on what we actually read */
-    if ((S32)dev->rxOutstanding > 0) {
-        LOGD("SMBus: Before update - rxOutstanding=%d, read_count=%d\n", dev->rxOutstanding, read_count);
-
-        if (read_count < dev->rxOutstanding) {
-            dev->rxOutstanding -= read_count;
-        } else {
-            dev->rxOutstanding = 0;
-        }
-
-        LOGD("SMBus: After update - rxOutstanding=%d\n", dev->rxOutstanding);
-    }
-
-    LOGD("SMBus: Read completed - read %d items, rxOutstanding now=%d\n",
-         read_count, dev->rxOutstanding);
-
-    /* CRITICAL FIX: Check if transfer is truly complete and handle completion */
-    if (dev->rxOutstanding == 0) {
-        LOGD("SMBus: All outstanding data read, checking transfer completion\n");
-        LOGD("SMBus: Message state - msgReadIdx=%d, msgWriteIdx=%d, msgsNum=%d\n",
-             dev->msgReadIdx, dev->msgWriteIdx, dev->msgsNum);
-
-        /* CRITICAL FIX: Force message index completion if all data is read */
-        /* Since all outstanding data is read and msgWriteIdx >= msgsNum, mark as complete */
-        if (dev->msgWriteIdx >= dev->msgsNum) {
-            LOGD("SMBus: All messages written, advancing msgReadIdx to completion\n");
-            dev->msgReadIdx = dev->msgsNum - 1;  /* Point to last message */
-
-            /* CRITICAL: Clear all active status to signal completion */
-            dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
-            LOGD("SMBus: Transfer marked complete - status cleared\n");
-        } else {
-            /* Move to next message if current one is complete */
-            if (dev->msgWriteIdx > dev->msgReadIdx + 1) {
-                dev->msgReadIdx++;
-                msg = dev->msgs + dev->msgReadIdx;
-                if (msg != NULL && msg->flags == 1) { /* Read message */
-                    dev->rxOutstanding = msg->len;
-                    LOGD("SMBus: Moving to next read message, rxOutstanding=%d\n", dev->rxOutstanding);
-                }
-                LOGD("SMBus: Advanced to next message (readIdx=%d, writeIdx=%d)\n",
-                     dev->msgReadIdx, dev->msgWriteIdx);
-            }
-        }
-    } else {
-        LOGW("SMBus: Still have %d outstanding data items\n", dev->rxOutstanding);
-
-        /* CRITICAL: Force completion if we're stuck in a loop with small outstanding count */
-        if (dev->rxOutstanding <= 2 && dev->msgWriteIdx >= dev->msgsNum) {
-            LOGW("SMBus: Forcing completion due to remaining %d outstanding items (protocol completion)\n", dev->rxOutstanding);
-            LOGW("SMBus: This is normal for Block Read where remaining items are protocol overhead\n");
-            dev->rxOutstanding = 0;
-            dev->msgReadIdx = dev->msgsNum - 1;
-            dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
-        }
-    }
-
-    /* Log if we hit the read limit */
-    if (read_count >= MAX_READ_COUNT) {
-        LOGW("SMBus: Read limit reached (%d), breaking to prevent infinite loop\n", MAX_READ_COUNT);
-    }
+    LOGD("SMBus: All read messages processed\n");
 }
 
 /**
- * @brief Handle message transmission in async interrupt mode
- * @details Processes message queue and transmits data/writes commands
- *          to TX FIFO during interrupt service for async transfers.
+ * @brief Initiate and continue low level SMBus master read/write transaction
+ * @details This function is called from smbusDwIsr to pump SmbusMsg_t messages
+ *          into the TX buffer. Handles messages longer than FIFO depth by
+ *          processing them in multiple interrupt cycles.
  * @param[in] dev Pointer to SMBus device structure
- * @note Based on I2C's i2c_dw_xfer_msg implementation
- * @note Called from interrupt service routine when TX_EMPTY interrupt occurs
- * @note Handles both read and write operations with proper SMBus protocol
- * @note Manages message indices and interrupt masks automatically
+ * @return void
+ *
+ * @note Based on Linux i2c_dw_xfer_msg with SMBus-specific enhancements
+ * @note Follows DW_apb_i2c 2.03a databook recommendations
+ * [HAL] Hardware abstraction layer - transfer message handling
+ */
+/**
+ * @brief Initiate and continue low level SMBus master read/write transaction
+ * @details This function is called from smbusDwIsr to pump SmbusMsg_t messages
+ *          into the TX buffer. Handles messages longer than FIFO depth.
+ * @param[in] dev Pointer to SMBus device structure
+ * @note Based on Linux i2c_dw_xfer_msg, adapted for your project structure
+ * @note Follows DW_apb_i2c 2.03a databook section 7.5
+ */
+/**
+ * @brief Initiate and continue low level SMBus master read/write transaction
+ * @details This function is called from smbusDwIsr to pump SmbusMsg_t messages
+ *          into the TX buffer. Handles messages longer than FIFO depth by
+ *          processing them in multiple interrupt cycles.
+ * @param[in] dev Pointer to SMBus device structure
+ * @return void
+ *
+ * @note Based on Linux i2c_dw_xfer_msg with SMBus-specific enhancements
+ * @note Follows DW_apb_i2c 2.03a databook recommendations
+ * [HAL] Hardware abstraction layer - transfer message handling
  */
 static void smbusDwXferMsg(SmbusDev_s *dev)
 {
-    volatile SmbusRegMap_s *regBase = dev->regBase;
-    SmbusMsg_t *msg = NULL;
-    U32 tx_limit, rx_limit, intr_mask;
-    U32 cmd = 0;
-    U32 buf_len = 0;
-    U8 *buf = NULL;
+    volatile SmbusRegMap_s *regBase;
+    SmbusMsg_t *msgs;
+    SmbusMsg_t *msg;
+    U32 intrMask;
+    U32 txLimit, rxLimit;
+    U32 addr;
+    U32 bufLen;
+    U8 *buf;
+    Bool needRestart = FALSE;
+    U32 flr;
+    U32 flags;
+    U32 cmd;
 
-    LOGD("SMBus: smbusDwXferMsg entered, msgWriteIdx=%d, msgsNum=%d\n",
-         dev->msgWriteIdx, dev->msgsNum);
-
-    if (regBase == NULL) {
-        LOGE("SMBus: Invalid device in TX ISR\n");
+    if (dev == NULL || dev->regBase == NULL || dev->msgs == NULL) {
+        LOGE("SMBus: Invalid device or messages in xfer_msg\n");
         return;
     }
 
-    /* SPECIAL HANDLING: For I2C write operations, msgs may be NULL or point to raw data */
-    /* This happens when called from smbusI2cWrite with temporary device structure */
-    if (dev->msgs == NULL) {
-        /*
-         * CRITICAL: We cannot use static variables here because this function
-         * may be called multiple times in interrupt context. Instead, we need
-         * to handle the I2C write operation directly using the device state.
+    regBase = dev->regBase;
+    msgs = dev->msgs;
+    
+    /* Default interrupt mask for master mode */
+    intrMask = SMBUS_IC_INTR_TX_EMPTY_MASK | 
+               SMBUS_IC_INTR_TX_ABRT_MASK | 
+               SMBUS_IC_INTR_STOP_DET_MASK |
+               SMBUS_IC_INTR_RX_FULL_MASK;
+
+    /* Get target address from first message */
+    addr = msgs[dev->msgWriteIdx].addr;
+
+    /* Main message processing loop */
+    for (; dev->msgWriteIdx < dev->msgsNum; dev->msgWriteIdx++) {
+        msg = &msgs[dev->msgWriteIdx];
+        flags = msg->flags;
+
+        LOGD("SMBus: Processing msg[%d/%d], flags=0x%X, len=%d, status=0x%X\n",
+             dev->msgWriteIdx, dev->msgsNum, flags, msg->len, dev->status);
+
+        /* 
+         * Verify target address hasn't changed within message array
+         * All messages in a transfer must use same target address
          */
-
-        /* For I2C write, we directly write the register address to the TX FIFO */
-        U32 data_cmd = dev->cmdReg & 0xFF;
-        data_cmd &= ~0x01;  /* Write operation */
-
-        /* Write the register address */
-        regBase->icDataCmd.fields.dat = data_cmd;
-
-        LOGD("SMBus: Direct I2C write - addr=0x%02X, regAddr=0x%02X, data=0x%02X\n",
-             dev->slaveAddr, dev->cmdReg, data_cmd);
-
-        /* Increment message write index to indicate completion */
-        dev->msgWriteIdx = 1;
-        dev->msgsNum = 1;
-
-        /* Disable TX_EMPTY interrupt since we've completed the transfer */
-        regBase->icIntrMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
-
-        return;  /* Exit early - transfer completed */
-    } else {
-        msg = &dev->msgs[dev->msgWriteIdx];
-    }
-
-    tx_limit = dev->txFifoDepth - regBase->icTxflr;
-    rx_limit = dev->rxFifoDepth - regBase->icRxflr;
-
-    LOGD("SMBus: Starting message processing - writeIdx=%d, num=%d\n", dev->msgWriteIdx, dev->msgsNum);
-
-    while (dev->msgWriteIdx < dev->msgsNum) {
-        msg = dev->msgs + dev->msgWriteIdx;
-        if (msg == NULL) {
-            LOGE("SMBus: Invalid message write index\n");
-            return;
-        }
-
-        /* Check if we have space in FIFO */
-        if (tx_limit == 0) {
+        if (msg->addr != addr) {
+            LOGE("SMBus: Target address changed (0x%02X->0x%02X)\n", 
+                 addr, msg->addr);
+            dev->msgErr = -EINVAL;
             break;
         }
 
-        /* DEBUG: Log message details */
-        LOGD("SMBus: Processing msg[%d] - addr=0x%02X, flags=0x%04X, len=%d\n",
-             dev->msgWriteIdx, msg->addr, msg->flags, msg->len);
+        /* Initialize buffer pointers for new message */
+        if (!(dev->status & SMBUS_STATUS_WRITE_IN_PROGRESS)) {
+            buf = msg->buf;
+            bufLen = msg->len;
 
-        /* Handle read operation */
-        if (msg->flags & 1) { /* Read operation */
-            /* For read operations, we need to send read commands */
-            U32 read_len = msg->len;
-            if (read_len > rx_limit) {
-                read_len = rx_limit;
+            /*
+             * If both IC_EMPTYFIFO_HOLD_MASTER_EN and IC_RESTART_EN are set,
+             * we must manually set RESTART bit between messages
+             */
+            if ((dev->masterCfg & SMBUS_IC_CON_RESTART_EN) && 
+                (dev->msgWriteIdx > 0)) {
+                needRestart = TRUE;
+                LOGD("SMBus: RESTART required for msg[%d]\n", dev->msgWriteIdx);
+            }
+        } else {
+            /* Continue with current buffer position */
+            buf = dev->masterTxBuf;
+            bufLen = dev->masterTxBufLen;
+        }
+
+        /*
+         * CRITICAL: Read FIFO levels dynamically on each iteration
+         * as recommended by DW_apb_i2c databook section 7.5
+         */
+        flr = regBase->icTxflr;
+        txLimit = dev->txFifoDepth - flr;
+
+        flr = regBase->icRxflr;
+        rxLimit = dev->rxFifoDepth - flr;
+
+        LOGD("SMBus: FIFO status - TX: %d/%d, RX: %d/%d, rxOut=%d\n",
+             txLimit, dev->txFifoDepth, rxLimit, dev->rxFifoDepth, 
+             dev->rxOutstanding);
+
+        /* Process data while FIFO has space and data remains */
+        while (bufLen > 0 && txLimit > 0 && rxLimit > 0) {
+            cmd = 0;
+
+            /*
+             * Set STOP bit on last byte of last message
+             * Exception: I2C_M_RECV_LEN requires dynamic length adjustment
+             */
+            if (((dev->msgWriteIdx == dev->msgsNum - 1) || 
+                 (flags & SMBUS_M_STOP)) &&
+                (bufLen == 1) && 
+                !(flags & SMBUS_M_RECV_LEN)) {
+                cmd |= SMBUS_IC_DATA_CMD_STOP;
+                LOGD("SMBus: Setting STOP bit on final byte\n");
             }
 
-            LOGD("SMBus: Sending %d read commands, rxOutstanding before=%d\n", read_len, dev->rxOutstanding);
-            while (read_len > 0 && tx_limit > 0) {
-                cmd = SMBUS_IC_DATA_CMD_READ_CMD;  /* Read command */
-                if (dev->msgWriteIdx == dev->msgsNum - 1 && read_len == 1) {
-                    cmd |= SMBUS_IC_DATA_CMD_STOP;  /* STOP condition */
-                    LOGD("SMBus: Sending final read command with STOP\n");
+            /* Set RESTART bit if needed between messages */
+            if (needRestart) {
+                cmd |= SMBUS_IC_DATA_CMD_RESTART;
+                needRestart = FALSE;
+                LOGD("SMBus: Setting RESTART bit\n");
+            }
+
+            /* Handle read vs write operations */
+            if (flags & SMBUS_M_RD) {
+                /*
+                 * CRITICAL: Prevent RX FIFO overflow
+                 * Check outstanding read commands against FIFO depth
+                 */
+                if (dev->rxOutstanding >= dev->rxFifoDepth) {
+                    LOGD("SMBus: RX FIFO full, breaking (outstanding=%d)\n",
+                         dev->rxOutstanding);
+                    break;
                 }
 
+                /* Write read command to TX FIFO */
+                cmd |= SMBUS_IC_DATA_CMD_READ_CMD;
                 regBase->icDataCmd.value = cmd;
+                
+                rxLimit--;
                 dev->rxOutstanding++;
-                LOGD("SMBus: Read command sent, cmd=0x%08X, rxOutstanding now=%d\n", cmd, dev->rxOutstanding);
-                LOGD("SMBus: Read command read len, cmd=0x%08X, rxOutstanding now=%d\n", read_len, tx_limit);
-                read_len--;
-                tx_limit--;
-            }
-
-            /* For read operations, advance to next message when all read commands are sent */
-            if (read_len == 0) {
-                dev->msgWriteIdx++;
-            }
-        } else { /* Write operation */
-            LOGD("SMBus: Write operation - len=%d, data[0]=0x%02X\n", msg->len, msg->buf ? msg->buf[0] : 0);
-            buf = msg->buf;  // Fixed: start from beginning of buffer, not end!
-            buf_len = msg->len;
-
-            while (buf_len > 0 && tx_limit > 0) {
-                cmd = *buf++;
-                if (dev->msgWriteIdx == dev->msgsNum - 1 && buf_len == 1) {
-                    cmd |= SMBUS_IC_DATA_CMD_STOP;  /* STOP condition */
-                }
-
+                
+                LOGD("SMBus: Queued READ cmd=0x%03X, rxOut now=%d\n",
+                     cmd, dev->rxOutstanding);
+            } else {
+                /* Write data byte to TX FIFO */
+                cmd |= (*buf & 0xFF);
                 regBase->icDataCmd.value = cmd;
-                buf_len--;
-                tx_limit--;
+                
+                buf++;
+                
+                LOGD("SMBus: Queued WRITE cmd=0x%03X\n", cmd);
             }
 
-            if (buf_len == 0) {
-                dev->msgWriteIdx++;
-            }
+            txLimit--;
+            bufLen--;
+        }
+
+        /* Save current buffer state */
+        if (buf != NULL && bufLen > 0 && bufLen <= 32) {
+            /* Copy data to masterTxBuf array */
+            U32 copyLen = (bufLen < sizeof(dev->masterTxBuf)) ? bufLen : sizeof(dev->masterTxBuf);
+            memcpy(dev->masterTxBuf, buf, copyLen);
+            dev->masterTxBufLen = bufLen;
+            LOGD("SMBus: Saved %u bytes to masterTxBuf array\n", copyLen);
+        } else {
+            dev->masterTxBufLen = 0;
+        }
+
+        /*
+         * Handle SMBus Block Read with dynamic length (first byte is count)
+         * Disable TX_EMPTY interrupt while waiting for length byte
+         * to avoid interrupt flood
+         */
+        if (flags & SMBUS_M_RECV_LEN) {
+            dev->status |= SMBUS_STATUS_WRITE_IN_PROGRESS;
+            intrMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
+            LOGD("SMBus: RECV_LEN mode, disabling TX_EMPTY\n");
+            break;
+        } else if (bufLen > 0) {
+            /* More bytes to write in current message */
+            dev->status |= SMBUS_STATUS_WRITE_IN_PROGRESS;
+            LOGD("SMBus: %d bytes remaining in current msg\n", bufLen);
+            break;
+        } else {
+            /* Current message complete */
+            dev->status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS;
+            LOGD("SMBus: Message[%d] queued completely\n", dev->msgWriteIdx);
         }
     }
-
-    /* Update interrupt mask */
-    intr_mask = SMBUS_IC_INTR_TX_EMPTY_MASK | SMBUS_IC_INTR_TX_ABRT_MASK | SMBUS_IC_INTR_STOP_DET_MASK;
-
-    if (dev->msgWriteIdx == dev->msgsNum) {
-        /* All messages queued, disable TX_EMPTY and enable RX_FULL */
-        intr_mask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
-        intr_mask |= SMBUS_IC_INTR_RX_FULL_MASK;
-        dev->status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS;
-        dev->status |= SMBUS_STATUS_READ_IN_PROGRESS;
-        LOGD("SMBus: All messages sent, disabling TX_EMPTY interrupt\n");
-
-        /* CRITICAL FIX: Ensure complete TX_EMPTY disable to prevent continuous triggering */
-        U32 finalMask = intr_mask;
-        finalMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
-        regBase->icIntrMask = finalMask;
-        LOGD("SMBus: Final TX_EMPTY disable confirmed - mask=0x%08X\n", finalMask);
-
-        /* If this is a write-only operation, mark as complete since all data is sent */
-        U32 hasReadMessages = 0;
-        for (U32 i = 0; i < dev->msgsNum; i++) {
-            if (dev->msgs[i].flags & 1) {  /* Read operation */
-                hasReadMessages = 1;
-                break;
-            }
-        }
-
-        if (!hasReadMessages && dev->rxOutstanding == 0) {
-            /* Write-only operation complete */
-            dev->status &= ~SMBUS_STATUS_READ_IN_PROGRESS;
-            LOGD("SMBus: Write-only operation marked complete\n");
-        }
+    
+    /*
+     * If all messages are queued, disable TX_EMPTY interrupt
+     * and enable RX_FULL for reading responses
+     */
+    if (dev->msgWriteIdx >= dev->msgsNum) {
+        U32 timeout = 10000;
+        while (timeout-- && regBase->icStatus.fields.tfe == 0) {
+        udelay(1);
+    }
+    
+    /* Step 2: Now disable TX_EMPTY and wait for STOP_DET */
+    intrMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
+    intrMask |= SMBUS_IC_INTR_STOP_DET_MASK;
+    
+    LOGD("SMBus: All queued, TFE=%d, timeout=%d\n", 
+         regBase->icStatus.fields.tfe, timeout);
     }
 
-    LOGD("SMBus: Setting interrupt mask=0x%08X, TX_EMPTY=%s\n",
-         intr_mask, (intr_mask & SMBUS_IC_INTR_TX_EMPTY_MASK) ? "ENABLED" : "DISABLED");
-    regBase->icIntrMask = intr_mask;
+    /* Disable all interrupts if error occurred */
+    if (dev->msgErr) {
+        intrMask = 0;
+        LOGE("SMBus: Error detected (0x%X), disabling all interrupts\n",
+             dev->msgErr);
+    }
+
+    /* Update interrupt mask register */
+    regBase->icIntrMask = intrMask;
+    LOGD("SMBus: Updated interrupt mask=0x%08X\n", intrMask);
 }
 
 /**
@@ -3541,7 +3585,6 @@ SmbusHalOps_s* smbusGetHalOps(void)
         .enable = smbusEnable,
         .disable = smbusDisable,
         .devAddrAssignCore = smbusDevAddrAssignCore,
-        .smbusDwXfer = smbusDwXfer,
         .hostNotifyCore = smbusHostNotifyCore,
         .modeSwitchCore = smbusModeSwitchCore,
         .i2cWrite = smbusI2cWrite,

@@ -28,11 +28,44 @@
 #include "osp_interrupt.h"
 #include "drv_smbus_api.h"
 
-/* I2C Message Flags */
-#define I2C_M_RD            0x0001      /**< Read data from slave (direction bit) */
-#define I2C_M_TEN           0x0010      /**< Use 10-bit addressing */
-#define I2C_M_STOP          0x8000      /**< Send STOP after this message */
-#define I2C_M_NOSTART       0x4000      /**< No RESTART before this message */
+/* Message direction flag */
+#define SMBUS_M_RD              0x0001  /**< Read data, from slave to master*/
+
+/* Special message flags for SMBus Block operations */
+#define SMBUS_M_RECV_LEN        0x0400  /**< Length will be first received byte */
+                                        /* Used for Block Read to indicate the first
+                                         * byte received is the block length */
+
+/* PEC (Packet Error Code) support */
+#define SMBUS_M_PEC             0x0008  /**< Enable PEC for this message */
+                                        /* SMBus Packet Error Checking */
+
+/* Other common I2C flags you may need */
+#define SMBUS_M_TEN             0x0010  /**< 10-bit address mode */
+#define SMBUS_M_IGNORE_NAK      0x1000  /**< Treat NACK as ACK */
+#define SMBUS_M_REV_DIR_ADDR    0x2000  /**< Toggle R/W bit */
+#define SMBUS_M_NOSTART         0x4000  /**< No (re)start before this message */
+#define SMBUS_M_STOP            0x8000  /**< Send STOP after this message */
+
+/* Local constant definitions to avoid circular include */
+#define SMBUS_TX_READY_TIMEOUT_US     (10000U)
+#define SMBUS_RX_READY_TIMEOUT_US     (10000U)
+#define SMBUS_TRANSACTION_TIMEOUT_US  (100000U)
+#define SMBUS_ARP_ADDR                (0x61)
+#define SMBUS_HOST_NOTIFY_ADDR        (0x08)
+#define SMBUS_ARP_ABORT_MASK          (0x09)
+#define SMBUS_MODE_SLAVE              (0)
+#define SMBUS_DEFAULT_TIMEOUT_MS      (5000)
+
+/* IC_DATA_CMD Register Bit Definitions */
+#define SMBUS_IC_DATA_CMD_READ_CMD    (0x1 << 8)  /**< Bit 8: Read command (1=read, 0=write) */
+#define SMBUS_IC_DATA_CMD_STOP        (0x1 << 9)  /**< Bit 9: Stop condition */
+#define SMBUS_IC_DATA_CMD_RESTART     (0x1 << 10) /**< Bit 10: Restart condition */
+
+/* IC_CON register bit definitions */
+#define SMBUS_IC_CON_RESTART_EN     (1U << 5)   /* Restart enable */
+#define SMBUS_IC_CON_MASTER         (1U << 0)   /* Master mode */
+
 
 /* Forward declarations */
 typedef struct SmbusDev SmbusDev_s;
@@ -406,14 +439,13 @@ typedef struct SmbusHalOps {
     void (*enable)(SmbusDev_s *dev);
     void (*disable)(SmbusDev_s *dev);
     U32 (*devAddrAssignCore)(volatile SmbusRegMap_s *regBase, U8 assign_addr);
-    U32  (*smbusDwXfer)(SmbusDev_s *dev, void *msg, U32 num);
     S32 (*hostNotifyCore)(volatile SmbusRegMap_s *regBase, SmbusHostNotifyData_s *data);
     S32 (*modeSwitchCore)(SmbusDev_s *dev, SmbusMode_e targetMode);
     S32 (*i2cWrite)(SmbusDev_s *dev, U16 slaveAddr, const U8 *dataBuf, U32 length);
     S32 (*i2cRead)(SmbusDev_s *dev, U16 slaveAddr, U8 *dataBuf, U32 length);
     S32 (*i2cWriteRead)(SmbusDev_s *dev, U16 slaveAddr, const U8 *writeBuf, U32 writeLen, U8 *readBuf, U32 readLen);
     S32 (*i2cReset)(SmbusDev_s *dev, DevList_e devId);
-    void (*smbusDwRead)(SmbusDev_s *dev);
+    void (*smbusDwRead)(SmbusDrvData_s *pDrvData);
     void (*smbusDwXferMsg)(SmbusDev_s *dev);
 } SmbusHalOps_s;
 
