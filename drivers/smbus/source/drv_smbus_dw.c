@@ -75,6 +75,7 @@ __attribute((unused)) static S32 smbusAllocateSlaveBuffers(SmbusDrvData_s *pDrvD
             return -ENOMEM;
         }
         pDrvData->pSmbusDev.slaveValidTxLen = 0;
+        pDrvData->slaveTxIndex = 0;
 
         LOGD("%s: Slave buffers allocated successfully\n", __func__);
     }
@@ -155,6 +156,7 @@ static S32 smbusInitSlaveResources(SmbusDrvData_s *pDrvData)
             return -ENOMEM;
         }
         pDrvData->pSmbusDev.slaveValidTxLen = 0;
+        pDrvData->slaveTxIndex = 0;
     }
 
     LOGI("%s: Slave resources initialized successfully\n", __func__);
@@ -399,7 +401,6 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
     pDrvData->pSmbusDev.enabled = 0;
     pDrvData->pSmbusDev.mode = DW_SMBUS_MODE_MASTER;  /* Default to master mode */
     pDrvData->pSmbusDev.flags = 0;
-    pDrvData->pSmbusDev.rxStallCount = 0;  /* Initialize RX stall counter */
     pDrvData->pSmbusDev.transferTimeout = SMBUS_DEFAULT_TIMEOUT_MS;  /* Default timeout */
     pDrvData->pSmbusDev.transferStartTime = 0;
     memset(pDrvData->pSmbusDev.msgs, 0, sizeof(SmbusMsg_t) *32);
@@ -657,14 +658,17 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
     LOGD("SMBus Master: Device addresses - pDrvData=%p, pSmbusDev=%p, regBase=%p\n",
          (void*)pDrvData, (void*)&pDrvData->pSmbusDev, (void*)pDrvData->pSmbusDev.regBase);
 
-    if (pDrvData->sbrCfg.interruptMode == 1 &&
-        (pDrvData->pSmbusDev.status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS))) {
-        LOGD("SMBus Master: Async mode active - status=0x%08X\n", pDrvData->pSmbusDev.status);
-        /* Async interrupt mode handling - similar to I2C implementation */
-        SmbusDev_s *dev = &pDrvData->pSmbusDev;
+    if (pDrvData->sbrCfg.interruptMode == 1) {
+        LOGD("SMBus Master: Async mode processing - status=0x%08X\n", pDrvData->pSmbusDev.status);
 
-        /* Initialize transfer completion tracking */
-        pDrvData->txComplete = 0;
+        /* Only process transfer logic if actively transferring */
+        if (pDrvData->pSmbusDev.status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS)) {
+            LOGD("SMBus Master: Active transfer detected - processing async interrupts\n");
+            /* Async interrupt mode handling - similar to I2C implementation */
+            SmbusDev_s *dev = &pDrvData->pSmbusDev;
+
+            /* Initialize transfer completion tracking */
+            pDrvData->txComplete = 0;
 
         /* Handle TX abort in async mode */
         if (intrStat & SMBUS_IC_INTR_TX_ABRT_MASK) {
@@ -760,7 +764,6 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                     LOGE("SMBus Async: HAL functions not available - halOps=%p, smbusDwXferMsg=%p\n",
                          halOps, halOps ? halOps->smbusDwXferMsg : NULL);
                     /* Force completion if HAL functions unavailable */
-                    dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
                     asyncComplete = true;
                 }
 
@@ -847,100 +850,10 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                     }
                     dev->rxOutstanding = 0;
                 }
-
-                /* Clear all interrupt status bits using dummy read approach */
-                volatile U32 dummy;
-                dummy = regBase->icClrIntr;        /* Dummy read to clear combined interrupt */
-                dummy = regBase->icClrTxAbrt;      /* Dummy read to clear TX abort */
-                dummy = regBase->icClrRxUnder;    /* Dummy read to clear RX underflow */
-                dummy = regBase->icClrRxOver;     /* Dummy read to clear RX overflow */
-                dummy = regBase->icClrTxOver;     /* Dummy read to clear TX overflow */
-                dummy = regBase->icClrRdReq;      /* Dummy read to clear read request */
-                dummy = regBase->icClrRxDone;     /* Dummy read to clear RX done */
-                dummy = regBase->icClrActivity;   /* Dummy read to clear activity */
-                dummy = regBase->icClrStopDet;    /* Dummy read to clear stop detection */
-                dummy = regBase->icClrStartDet;   /* Dummy read to clear start detection */
-                dummy = regBase->icClrGenCall;    /* Dummy read to clear general call */
-                (void)dummy; /* Suppress unused variable warning */
-
                 /* Reset transfer state completely */
                 dev->msgWriteIdx = 0;
                 dev->msgReadIdx = 0;
                 dev->msgsNum = 0;
-            }
-        }
-
-        /* Additional protection: Check for RX data stall during read operations */
-        if ((intrStat & SMBUS_IC_INTR_RX_FULL_MASK) &&
-            (dev->status & SMBUS_STATUS_READ_IN_PROGRESS) &&
-            (dev->rxOutstanding > 0)) {
-
-            /* Check if we're getting stuck with same data pattern repeatedly */
-            U32 currentRxDataCount = regBase->icRxflr;
-
-            /* Use device structure fields to track stall detection instead of static variables */
-            if (currentRxDataCount > 0) {
-                /* Check if this looks like the same data pattern (e.g., all 0xE8) */
-                U32 sampleData = regBase->icDataCmd.value;
-                bool isStuckData = (sampleData == 0xE8);  /* Based on your debug output */
-
-                if (isStuckData) {
-                    dev->rxStallCount++;
-
-                    LOGW("SMBus Async: Potential RX stall - stuck data=0x%02X, count=%d\n",
-                         sampleData & 0xFF, dev->rxStallCount);
-
-                    /* If we detect stuck data multiple times, likely stalled */
-                    if (dev->rxStallCount > 10) {  /* Threshold for stall detection */
-                        LOGE("SMBus Async: RX stall confirmed - repeated stuck data=0x%02X for %d iterations\n",
-                             sampleData & 0xFF, dev->rxStallCount);
-
-                        /* Force timeout to recover from stall */
-                        dev->status &= ~SMBUS_STATUS_ACTIVE;
-                        dev->msgErr = -ETIMEDOUT;
-                        asyncComplete = true;
-
-                        /* CRITICAL: Disable ALL interrupts to prevent ISR loop */
-                        U32 currentMask = regBase->icIntrMask;
-                        currentMask &= ~(SMBUS_IC_INTR_TX_EMPTY_MASK | SMBUS_IC_INTR_RX_FULL_MASK |
-                                        SMBUS_IC_INTR_TX_ABRT_MASK | SMBUS_IC_INTR_STOP_DET_MASK |
-                                        SMBUS_IC_INTR_ACTIVITY_MASK);
-                        regBase->icIntrMask = currentMask;
-                        LOGE("SMBus Async: RX Stall - Disabled ALL interrupts to prevent ISR loop\n");
-
-                        /* Clear RX FIFO completely */
-                        LOGW("SMBus Async: Clearing RX FIFO due to stall detection\n");
-                        while (regBase->icRxflr > 0) {
-                            volatile U32 dummy = regBase->icDataCmd.value;
-                            (void)dummy;
-                        }
-                        dev->rxOutstanding = 0;
-                        dev->rxStallCount = 0;  /* Reset counter */
-
-                        /* Clear all interrupt status bits using dummy read approach */
-                        volatile U32 stallDummy;
-                        stallDummy = regBase->icClrIntr;        /* Dummy read to clear combined interrupt */
-                        stallDummy = regBase->icClrTxAbrt;      /* Dummy read to clear TX abort */
-                        stallDummy = regBase->icClrRxUnder;    /* Dummy read to clear RX underflow */
-                        stallDummy = regBase->icClrRxOver;     /* Dummy read to clear RX overflow */
-                        stallDummy = regBase->icClrTxOver;     /* Dummy read to clear TX overflow */
-                        stallDummy = regBase->icClrRdReq;      /* Dummy read to clear read request */
-                        stallDummy = regBase->icClrRxDone;     /* Dummy read to clear RX done */
-                        stallDummy = regBase->icClrActivity;   /* Dummy read to clear activity */
-                        stallDummy = regBase->icClrStopDet;    /* Dummy read to clear stop detection */
-                        stallDummy = regBase->icClrStartDet;   /* Dummy read to clear start detection */
-                        stallDummy = regBase->icClrGenCall;    /* Dummy read to clear general call */
-                        (void)stallDummy; /* Suppress unused variable warning */
-
-                        if (dev->semaphoreId != (rtems_id)0) {
-                            S32 releaseResult = rtems_semaphore_release(dev->semaphoreId);
-                            LOGE("SMBus Async: RX Stall - Semaphore released with result=%d\n", releaseResult);
-                        }
-                    }
-                } else {
-                    /* Reset counter when we see different data */
-                    dev->rxStallCount = 0;
-                }
             }
         }
         /* Always clear handled interrupts in async mode */
@@ -960,26 +873,7 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                 }
                 LOGD("SMBus Async: TX_EMPTY interrupt handled\n");
             }
-            if (intrStat & SMBUS_IC_INTR_RX_UNDER_MASK)
-                (void)regBase->icClrRxUnder;      /* Dummy read to clear RX underflow */
-            if (intrStat & SMBUS_IC_INTR_RX_OVER_MASK)
-                (void)regBase->icClrRxOver;       /* Dummy read to clear RX overflow */
-            if (intrStat & SMBUS_IC_INTR_TX_OVER_MASK)
-                (void)regBase->icClrTxOver;       /* Dummy read to clear TX overflow */
-            if (intrStat & SMBUS_IC_INTR_RD_REQ_MASK)
-                (void)regBase->icClrRdReq;        /* Dummy read to clear read request */
-            if (intrStat & SMBUS_IC_INTR_RX_DONE_MASK)
-                (void)regBase->icClrRxDone;       /* Dummy read to clear RX done */
-            if (intrStat & SMBUS_IC_INTR_ACTIVITY_MASK)
-                (void)regBase->icClrActivity;     /* Dummy read to clear activity */
-            if ((intrStat & SMBUS_IC_INTR_STOP_DET_MASK) &&
-                ((dev->rxOutstanding == 0) || (intrStat & SMBUS_IC_INTR_RX_FULL_MASK)))
-                (void)regBase->icClrStopDet;      /* Dummy read to clear stop detection */
-            if (intrStat & SMBUS_IC_INTR_START_DET_MASK)
-                (void)regBase->icClrStartDet;     /* Dummy read to clear start detection */
-            if (intrStat & SMBUS_IC_INTR_GEN_CALL_MASK)
-                (void)regBase->icClrGenCall;      /* Dummy read to clear general call */
-
+ 
             /* CRITICAL FIX: Check for transfer completion status before exiting */
             if (!asyncComplete && !(dev->status & (SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS))) {
                 LOGD("SMBus Async: All status bits cleared, marking asyncComplete=true\n");
@@ -1008,6 +902,7 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
             }
         }
     }
+   }
 
     /* ========== LEGACY MODE: Original interrupt handling ========== */
     /* ========== TX ABORT ========== */
@@ -1065,12 +960,6 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
             /* In async mode, RX_FULL should be handled by the async handler above */
             LOGD("SMBus Master: RX_FULL in async mode - should be handled by async handler\n");
         }
-
-        /* CRITICAL FIX: Clear RX_FULL interrupt status */
-        if (intrStat & SMBUS_IC_INTR_RX_FULL_MASK) {
-            /* RX_FULL doesn't have a dedicated clear register - it's cleared by reading data */
-            LOGD("SMBus Master: RX_FULL interrupt handled (cleared by data read)\n");
-        }
     }
 #if 1
     /* ========== TX READY ========== */
@@ -1088,7 +977,6 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
             LOGD("SMBus Master: TX_EMPTY disabled due to transfer completion\n");
 
             /* Clear device active status and release semaphore */
-            pDrvData->pSmbusDev.status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
             LOGD("SMBus Master: Transfer completed, releasing semaphore (semId=%d)\n",
                  pDrvData->pSmbusDev.semaphoreId);
 
@@ -1099,7 +987,6 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
                 LOGE("SMBus Master: Invalid semaphoreId (0)\n");
             }
         }
-
         LOGD("SMBus Master TX Ready\n");
     }
 #endif
@@ -1118,6 +1005,20 @@ static void smbusHandleMasterInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
     /* Clear interrupt status */
     (void)regBase->icClrIntr;  /* Read to clear interrupt status */
     (void)regBase->icClrTxAbrt;  /* Read to clear TX abort */
+/* Clear all interrupt status bits using dummy read approach */
+    volatile U32 dummy;
+    dummy = regBase->icClrIntr;        /* Dummy read to clear combined interrupt */
+    dummy = regBase->icClrTxAbrt;      /* Dummy read to clear TX abort */
+    dummy = regBase->icClrRxUnder;    /* Dummy read to clear RX underflow */
+    dummy = regBase->icClrRxOver;     /* Dummy read to clear RX overflow */
+    dummy = regBase->icClrTxOver;     /* Dummy read to clear TX overflow */
+    dummy = regBase->icClrRdReq;      /* Dummy read to clear read request */
+    dummy = regBase->icClrRxDone;     /* Dummy read to clear RX done */
+    dummy = regBase->icClrActivity;   /* Dummy read to clear activity */
+    dummy = regBase->icClrStopDet;    /* Dummy read to clear stop detection */
+    dummy = regBase->icClrStartDet;   /* Dummy read to clear start detection */
+    dummy = regBase->icClrGenCall;    /* Dummy read to clear general call */
+    (void)dummy; /* Suppress unused variable warning */
 }
 
 /* ======================================================================== */
@@ -1796,6 +1697,7 @@ static void smbusFreeDriverData(SmbusDrvData_s *pDrvData)
         free(pDrvData->pSmbusDev.slaveTxBuf);
         pDrvData->pSmbusDev.slaveTxBuf = NULL;
         pDrvData->pSmbusDev.slaveValidTxLen = 0;
+        pDrvData->slaveTxIndex = 0;
     }
 
     /* Clear master TX buffer array - no need to free as it's a static array */
@@ -1976,6 +1878,8 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
 
     /* ========== RD REQUEST (Read from Master) ========== */
     if (intrStat & SMBUS_IC_INTR_RD_REQ_MASK) {
+        LOGE("SMBus Slave: RD_REQ interrupt detected! status=0x%08X\n", intrStat);
+
         /* CRITICAL FIX: Prevent duplicate RD_REQ processing to avoid interrupt storm */
         if (!(pDrvData->pSmbusDev.status & SMBUS_STATUS_READ_IN_PROGRESS_MASK)) {
             /* Only process if not already in read mode */
@@ -1983,8 +1887,44 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
             pDrvData->slaveTransferActive = 1;
 
+            /* CRITICAL FIX: Clear RD_REQ interrupt immediately to prevent storm */
+            U32 rdReqMask = SMBUS_IC_INTR_RD_REQ_MASK;
+            regBase->icIntrStat.value = rdReqMask;
+            LOGE("SMBus Slave: RD_REQ interrupt cleared - mask=0x%08X\n", rdReqMask);
+
             /* Trigger read request callback */
             smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_READ_REQ, NULL, 0);
+
+            /* CRITICAL FIX: Immediately check if slave activity is present and fill TX FIFO */
+            U32 statusReg = regBase->icStatus.value;
+            U32 slaveActivity = (statusReg & SMBUS_IC_STATUS_SLAVE_ACTIVITY_MASK) >> SMBUS_IC_STATUS_SLAVE_ACTIVITY_SHIFT;
+
+            LOGE("SMBus Slave: RD_REQ activity check - status=0x%08X, activity=%d\n", statusReg, slaveActivity);
+
+            if (slaveActivity == 1) {
+                /* Master is requesting data, we must fill TX FIFO immediately */
+                U8 txData = 0xFF;  // Default response if no callback data available
+
+                /* Try to get data from callback or buffer */
+                if (pDrvData->pSmbusDev.slaveTxBuf && pDrvData->slaveTxIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
+                    txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->slaveTxIndex++];
+                    LOGE("SMBus Slave: TX data from buffer[0x%02X] (idx=%d)\n", txData, pDrvData->slaveTxIndex-1);
+                } else {
+                    LOGE("SMBus Slave: Using default TX data 0xFF due to empty buffer\n");
+                }
+
+                /* CRITICAL STEP: Write data to TX FIFO to release SCL */
+                regBase->icDataCmd.value = (U32)txData;
+                LOGE("SMBus Slave: CRITICAL - Filled TX FIFO with 0x%02X to release SCL\n", txData);
+
+                /* Enable TX_EMPTY interrupt for subsequent data */
+                U32 currentMask = regBase->icIntrMask;
+                currentMask |= SMBUS_IC_INTR_TX_EMPTY_MASK;
+                regBase->icIntrMask = currentMask;
+                LOGE("SMBus Slave: TX_EMPTY enabled for continued transmission (mask=0x%08X)\n", currentMask);
+            } else {
+                LOGE("SMBus Slave: No slave activity detected during RD_REQ\n");
+            }
 
             LOGD("SMBus Slave read request - new request processed\n");
         } else {
@@ -1994,6 +1934,8 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
 
     /* ========== TX_EMPTY (Slave mode handling) ========== */
     if (intrStat & SMBUS_IC_INTR_TX_EMPTY_MASK) {
+        LOGE("SMBus Slave: TX_EMPTY interrupt detected! status=0x%08X\n", intrStat);
+
         /* In Slave mode, TX_EMPTY should only be enabled during actual data transmission */
         /* If we get TX_EMPTY without an active read operation, disable it to prevent storm */
         if (!(pDrvData->pSmbusDev.status & SMBUS_STATUS_READ_IN_PROGRESS_MASK)) {
@@ -2002,11 +1944,49 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             currentMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
             regBase->icIntrMask = currentMask;
 
-            LOGD("SMBus Slave: Disabled spurious TX_EMPTY interrupt (mask=0x%08X)\n", currentMask);
+            LOGE("SMBus Slave: Disabled spurious TX_EMPTY interrupt (mask=0x%08X)\n", currentMask);
         } else {
-            /* Active read operation - handle TX_EMPTY for Slave transmit */
-            /* This would normally be handled by the callback/application */
-            LOGD("SMBus Slave: TX_EMPTY during read operation\n");
+            /* CRITICAL FIX: Active read operation - must fill TX FIFO immediately */
+            LOGE("SMBus Slave: TX_EMPTY during read operation - filling FIFO\n");
+
+            /* Check slave activity status */
+            SmbusIcStatusReg_u status;
+            status.value = regBase->icStatus.value;
+            U32 slaveActivity = (status.value & SMBUS_IC_STATUS_SLAVE_ACTIVITY_MASK) >> SMBUS_IC_STATUS_SLAVE_ACTIVITY_SHIFT;
+            U32 txFifoNotFull = status.fields.tfnf;
+
+            LOGE("SMBus Slave: TX_EMPTY status - activity=%d, TFNF=%d\n", slaveActivity, txFifoNotFull);
+
+            if (slaveActivity == 1 && txFifoNotFull == 1) {
+                /* Fill TX FIFO with data */
+                U8 txData = 0xFF;  // Default response
+
+                /* Try to get data from callback buffer */
+                if (pDrvData->pSmbusDev.slaveTxBuf && pDrvData->slaveTxIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
+                    txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->slaveTxIndex++];
+                    LOGE("SMBus Slave: TX_EMPTY filled with buffer data[0x%02X] (idx=%d)\n", txData, pDrvData->slaveTxIndex-1);
+                } else {
+                    LOGE("SMBus Slave: TX_EMPTY filled with default data[0x%02X]\n", txData);
+                }
+
+                /* Write data to TX FIFO */
+                regBase->icDataCmd.value = (U32)txData;
+                LOGE("SMBus Slave: TX_EMPTY data written to FIFO - 0x%02X\n", txData);
+            } else if (slaveActivity == 0) {
+                /* No more slave activity - disable TX_EMPTY and end read operation */
+                U32 currentMask = regBase->icIntrMask;
+                currentMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
+                regBase->icIntrMask = currentMask;
+
+                /* Clear read status */
+                pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
+                pDrvData->slaveTransferActive = 0;
+
+                LOGE("SMBus Slave: Read operation completed - TX_EMPTY disabled (mask=0x%08X)\n", currentMask);
+            } else {
+                /* FIFO is full - just wait */
+                LOGE("SMBus Slave: TX FIFO full, waiting for space\n");
+            }
         }
     }
 
