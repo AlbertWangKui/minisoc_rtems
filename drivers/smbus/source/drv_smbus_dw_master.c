@@ -203,12 +203,12 @@ S32 smbusI2CRawRead(DevList_e devId, U8 slaveAddr, U8 *buf, U32 len)
     }
 
     /* ===== 4. Log Results for Debugging ===== */
-    LOGD("SMBus RAW I2C: Successfully read %d bytes from slave 0x%02X\n", len, slaveAddr);
-    LOGD("SMBus RAW I2C: Read data: ");
+    LOGE("SMBus RAW I2C: Successfully read %d bytes from slave 0x%02X\n", len, slaveAddr);
+    LOGE("SMBus RAW I2C: Read data: ");
     for (U32 i = 0; i < len && i < 8; i++) {  /* Log first 8 bytes */
-        LOGD("0x%02X ", buf[i]);
+        LOGE("0x%02X ", buf[i]);
     }
-    LOGD("\n");
+    LOGE("\n");
 
     /* ===== 5. Success Path ===== */
     ret = EXIT_SUCCESS;
@@ -2485,6 +2485,9 @@ S32 smbusReset(DevList_e devId)
         goto exit;
     }
 
+       /* Verify controller status */
+    volatile U32 sar2 = pDrvData->pSmbusDev.regBase->icSar2.value;
+    LOGD("SMBus I2C Reset: Controller status after reset: 0x%08X\n", sar2);
     /* ===== 3. Get HAL Operations ===== */
     halOps = smbusGetHalOps();
     if (halOps == NULL) {

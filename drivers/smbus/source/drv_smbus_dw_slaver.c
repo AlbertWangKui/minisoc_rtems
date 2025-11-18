@@ -90,6 +90,17 @@ static void smbusConfigureSlave(SmbusDev_s *dev)
     /* Write configuration */
     dev->regBase->icCon.value = con.value;
 
+    /* Configure optimal interrupt mask for Slave mode */
+    U32 intrMask = 0;
+    intrMask |= SMBUS_IC_INTR_RD_REQ_MASK;    // bit[5] - Master 读请求
+    intrMask |= SMBUS_IC_INTR_RX_FULL_MASK;   // bit[2] - RX FIFO 满
+    intrMask |= SMBUS_IC_INTR_RX_DONE_MASK;   // bit[7] - 接收完成
+    intrMask |= SMBUS_IC_INTR_STOP_DET_MASK;  // bit[9] - STOP 条件
+    intrMask |= SMBUS_IC_INTR_TX_ABRT_MASK;   // bit[6] - 传输终止
+
+    dev->regBase->icIntrMask = intrMask;
+    LOGD("SMBus Slave: Configured interrupt mask=0x%08X (RD_REQ+RX_FULL+RX_DONE+STOP_DET+TX_ABRT)\n", intrMask);
+
     /* Set slave address */
     if (halOps->setSlaveAddr != NULL) {
         halOps->setSlaveAddr(dev);

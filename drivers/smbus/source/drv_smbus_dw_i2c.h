@@ -171,12 +171,11 @@ typedef union SmbusIcSarReg {
  */
 typedef union SmbusIcDataCmdReg {
     struct {
-        U32 dat                  : 8;   /**< [7:0] TX/RX data byte */
-        U32 cmd                  : 1;   /**< [8] Command: 0=write, 1=read */
-        U32 stop                 : 1;   /**< [9] Issue STOP after byte */
-        U32 restart              : 1;   /**< [10] Issue RESTART before byte */
-        U32 firstDataByte        : 1;   /**< [11] First data byte indicator */
-        U32 reserved             : 20;  /**< [31:12] Reserved */
+        U32 dat                  : 8;   /**< [7:0] 数据 */
+        U32 cmd                  : 1;   /**< [8] 命令 (1=read, 0=write) */
+        U32 stop                 : 1;   /**< [9] STOP 位 */
+        U32 restart              : 1;   /**< [10] RESTART 位 */
+        U32 rsvd                 : 21;  /**< [31:11] 保留 */
     } fields;
     U32 value;
 } SmbusIcDataCmdReg_u;
@@ -433,9 +432,8 @@ typedef struct SmbusRegMap {
 typedef struct SmbusHalOps {
     S32 (*checkTxReady)(volatile SmbusRegMap_s *regBase);
     S32 (*checkRxReady)(volatile SmbusRegMap_s *regBase);
-    S32 (*waitTransmitComplete)(volatile SmbusRegMap_s *regBase);
-    S32 (*waitBusNotBusy)(SmbusDev_s *dev);
     S32 (*setSlaveAddr)(SmbusDev_s *dev);
+    S32 (*waitTransmitComplete)(volatile SmbusRegMap_s *regBase);
     void (*enable)(SmbusDev_s *dev);
     void (*disable)(SmbusDev_s *dev);
     U32 (*devAddrAssignCore)(volatile SmbusRegMap_s *regBase, U8 assign_addr);
@@ -446,7 +444,7 @@ typedef struct SmbusHalOps {
     S32 (*i2cWriteRead)(SmbusDev_s *dev, U16 slaveAddr, const U8 *writeBuf, U32 writeLen, U8 *readBuf, U32 readLen);
     S32 (*i2cReset)(SmbusDev_s *dev, DevList_e devId);
     void (*smbusDwRead)(SmbusDrvData_s *pDrvData);
-    void (*smbusDwXferMsg)(SmbusDev_s *dev);
+    void (*smbusDwXferMsg)(SmbusDev_s *dev);    ///< block write TX empty used
 } SmbusHalOps_s;
 
 /* ======================================================================== */

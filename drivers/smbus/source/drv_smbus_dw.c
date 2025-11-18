@@ -384,11 +384,7 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
     memset(pDrvData->pSmbusDev.masterTxBuf, 0, sizeof(pDrvData->pSmbusDev.masterTxBuf));
     pDrvData->pSmbusDev.masterTxBufLen = 0;
 
-    /* Initialize callback queue (fix ISR blocking issue) */
-    pDrvData->callbackQueue.head = 0;
-    pDrvData->callbackQueue.tail = 0;
-    pDrvData->callbackPending = false;
-
+    
     /* CRITICAL FIX: Initialize callback structure to prevent NULL pointer issues */
     pDrvData->callback.cb = NULL;           /* Initialize callback pointer to NULL */
     pDrvData->callback.userData = NULL;     /* Initialize user data to NULL */
@@ -528,17 +524,18 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
     if (pDrvData->sbrCfg.masterMode == 0) {
         volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
 
-        /* CRITICAL: Override any previous incorrect interrupt mask settings */
+        /* CRITICAL: Override any previous incorrect interrupt mask settings with TX_EMPTY */
         U32 slaveMask = SMBUS_IC_INTR_RX_FULL_MASK |      /* 0x004 */
+                          SMBUS_IC_INTR_TX_EMPTY_MASK |     /* 0x010 (handle RD_REQ timing) */
                           SMBUS_IC_INTR_RD_REQ_MASK |       /* 0x020 */
                           SMBUS_IC_INTR_TX_ABRT_MASK |      /* 0x040 */
                           SMBUS_IC_INTR_RX_DONE_MASK |      /* 0x080 */
                           SMBUS_IC_INTR_STOP_DET_MASK;     /* 0x200 */
 
-        /* Calculate: 0x004 | 0x020 | 0x040 | 0x080 | 0x200 = 0x2E4 */
+        /* Calculate: 0x004 | 0x010 | 0x020 | 0x040 | 0x080 | 0x200 = 0x2F4 */
         regBase->icIntrMask = slaveMask;
 
-        LOGI("FINAL OVERRIDE: Slave interrupt mask FORCED to 0x%08X (expected: 0x2E4)\n", regBase->icIntrMask);
+        LOGI("FINAL OVERRIDE: Slave interrupt mask FORCED to 0x%08X (expected: 0x2F4)\n", regBase->icIntrMask);
 
         /* Verify final setting */
         U32 finalMask = regBase->icIntrMask;
@@ -1754,162 +1751,20 @@ static void smbusFreeDriverData(SmbusDrvData_s *pDrvData)
 static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase,
                                       U32 intrStat, U32 smbusIntrStat)
 {
-    U32 rawStat, rxValid, tmp;
-    U8 val = 0, slaveActivity;
-    U32 readCount = 0;
+    /* ✓ 关键修复：优先处理 RD_REQ，顺序很重要！ */
 
-    /* CRITICAL FIX: Comprehensive parameter validation to prevent core dump */
-    if (pDrvData == NULL) {
-        LOGE("SMBus Slave: NULL driver data - cannot handle interrupt\n");
+    /* 基本参数验证 */
+    if (pDrvData == NULL || regBase == NULL) {
+        LOGE("SMBus Slave: Invalid parameters\n");
         return;
     }
 
-    if (regBase == NULL) {
-        LOGE("SMBus Slave: NULL register base - cannot handle interrupt\n");
-        return;
-    }
-    /* Validate device is in slave mode */
-    if (pDrvData->pSmbusDev.mode != DW_SMBUS_MODE_SLAVE) {
-        LOGW("SMBus Slave: Device not in slave mode (mode=%d) - handling anyway\n",
-             pDrvData->pSmbusDev.mode);
-        /* Continue processing but log warning */
-    }
-
-    /* CRITICAL FIX: Validate hardware register accessibility before accessing */
-    /* Try to read a harmless register first to detect hardware issues */
-    volatile U32 registerTest = regBase->icEnable.value;
-    if (registerTest == 0xFFFFFFFFU) {
-        LOGE("SMBus Slave: Hardware registers not accessible (read=0x%08X) - aborting\n", registerTest);
-        return;
-    }
-
-    /* Read additional status information */
-    rawStat = regBase->icRawIntrStat.value;
-    tmp = regBase->icStatus.value;
-    slaveActivity = (tmp & SMBUS_IC_STATUS_SLAVE_ACTIVITY_MASK) >> SMBUS_IC_STATUS_SLAVE_ACTIVITY_SHIFT;
-    rxValid = regBase->icRxflr;
-
-    LOGD("SMBus Slave: activity=%d, raw_intr=0x%08X, rx_valid=%u\n",
-         slaveActivity, rawStat, rxValid);
-
-    /* CRITICAL FIX: Read interrupt status BEFORE clearing for proper processing */
-    intrStat = regBase->icIntrStat.value;
-    LOGD("SMBus Slave: interrupt status before processing = 0x%08X\n", intrStat);
-
-    /* ========== RX FULL (Write from Master) ========== */
-    if (intrStat & SMBUS_IC_INTR_RX_FULL_MASK) {
-        LOGE("SMBus Slave: RX_FULL interrupt detected! intrStat=0x%08X, rx_valid=%u\n", intrStat, rxValid);
-
-        if (!(pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK)) {
-            pDrvData->pSmbusDev.status |= SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
-            pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
-            pDrvData->slaveValidRxLen = 0;  ///<<Reset RX buffer for new transfer
-
-            /* Trigger write request callback */
-            smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_WRITE_REQ, NULL, 0);
-        }
-
-        /* Read data from FIFO */
-        U32 maxReadCount = rxValid;  /* Limit reads to initial FIFO level to prevent infinite loop */
-
-        /* CRITICAL FIX: Additional safety checks for buffer operations */
-        if (pDrvData->pSmbusDev.slaveRxBuf == NULL) {
-            LOGE("SMBus Slave: NULL RX buffer pointer - cannot read data\n");
-            return;
-        }
-
-        /* Prevent excessive read counts that could cause system hang */
-        if (maxReadCount > SMBUS_SLAVE_BUF_LEN) {
-            LOGW("SMBus Slave: Limiting read count from %u to %u\n",
-                 maxReadCount, SMBUS_SLAVE_BUF_LEN);
-            maxReadCount = SMBUS_SLAVE_BUF_LEN;
-        }
-
-        while (readCount < maxReadCount) {
-            tmp = regBase->icDataCmd.value;
-            if (tmp & SMBUS_IC_DATA_CMD_FIRST_DATA_BYTE_MASK) {
-                /* First data byte received */
-                smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_WRITE_REQ, NULL, 0);
-            }
-
-            /* CRITICAL FIX: Extract data byte from tmp register */
-            val = (U8)tmp;
-
-            /* Store data in slave RX buffer with enhanced bounds checking */
-            if (pDrvData->slaveValidRxLen < SMBUS_SLAVE_BUF_LEN) {
-                pDrvData->pSmbusDev.slaveRxBuf[pDrvData->slaveValidRxLen++] = val;
-            } else {
-                LOGE("SMBus Slave RX buffer overflow (len=%d, max=%d) - dropping data\n",
-                     pDrvData->slaveValidRxLen, SMBUS_SLAVE_BUF_LEN);
-                break;  /* Exit loop on buffer overflow */
-            }
-
-            readCount++;
-
-            /* Check if more data available */
-            tmp = regBase->icStatus.value;
-            if (!(tmp & SMBUS_IC_STATUS_RFNE_MASK)) {
-                break;  /* No more data in FIFO */
-            }
-        }
-    }
-
-    LOGE("SMBus Slave: RX_FULL processing completed. readCount=%u, slaveValidRxLen=%u\n",
-         readCount, pDrvData->slaveValidRxLen);
-
-    /* CRITICAL DEBUG: Print received slave RX buffer data */
-    if (pDrvData->slaveValidRxLen > 0 && pDrvData->pSmbusDev.slaveRxBuf != NULL) {
-        LOGE("SMBus Slave: Received data in slaveRxBuf (%u bytes): ", pDrvData->slaveValidRxLen);
-        U32 printCount = pDrvData->slaveValidRxLen;
-        if (printCount > 16) printCount = 16;  /* Limit print to first 16 bytes */
-
-        for (U32 i = 0; i < printCount; i++) {
-            LOGE("0x%02X ", pDrvData->pSmbusDev.slaveRxBuf[i]);
-        }
-        if (pDrvData->slaveValidRxLen > 16) {
-            LOGE("... (%u more bytes)", pDrvData->slaveValidRxLen - 16);
-        }
-        LOGE("\n");
-
-        /* CRITICAL FIX: Immediately sync slaveValidRxLen to device structure */
-        /* This is needed because STOP/RESTART detection may not trigger */
-        pDrvData->pSmbusDev.slaveValidRxLen = pDrvData->slaveValidRxLen;
-        LOGE("SMBus Slave: Synced slaveValidRxLen -> dev->slaveValidRxLen (%u)\n",
-             pDrvData->pSmbusDev.slaveValidRxLen);
-
-    } else {
-        LOGE("SMBus Slave: No valid data in slaveRxBuf (len=%d, buf=%p)\n",
-             pDrvData->slaveValidRxLen, pDrvData->pSmbusDev.slaveRxBuf);
-    }
-
-    /* ========== STOP/RESTART Detection ========== */
-    if ((intrStat & SMBUS_IC_INTR_STOP_DET_MASK) || (intrStat & SMBUS_IC_INTR_RESTART_DET_MASK)) {
-        if (pDrvData->pSmbusDev.status & SMBUS_STATUS_READ_IN_PROGRESS_MASK) {
-            pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
-        }
-        if (pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK) {
-            pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
-        }
-
-        /* Update valid RX buffer length */
-        pDrvData->pSmbusDev.slaveValidRxLen = pDrvData->slaveValidRxLen;
-
-        /* Trigger slave done callback */
-        smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_DONE, &val, 1);
-        pDrvData->slaveTransferActive = 0;
-
-        LOGD("SMBus Slave STOP detected\n");
-    }
-
-    /* ========== RD REQUEST (Read from Master) ========== */
+    /* 1. 首先处理 RD_REQ（最高优先级） */
     if (intrStat & SMBUS_IC_INTR_RD_REQ_MASK) {
-        LOGD("SMBus Slave: RD_REQ triggered\n");
+        LOGD("SMBus Slave: RD_REQ - Master requests data\n");
 
-        /* 清除 RD_REQ */
-        smbusReadClearIntrBitsMasked(pDrvData, SMBUS_IC_INTR_RD_REQ_MASK);
-
-        /* 获取数据 */
-        U8 txData = 0xA1;
+        /* 立即填充 TX FIFO */
+        U8 txData = 0xA5;
         if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
             pDrvData->pSmbusDev.slaveValidTxLen > 0) {
             static U32 txIndex = 0;
@@ -1917,119 +1772,133 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             txIndex++;
         }
 
-        LOGD("SMBus Slave: Preparing to send 0x%02X\n", txData);
-
-        /* ⚠️ 关键修改：正确写入 TX FIFO */
-        /* 方法 1：直接写 value（推荐） */
+        /* 立即写入 */
         regBase->icDataCmd.value = (U32)txData;
 
-        /* 方法 2：如果上面不行，使用指针 */
-        // volatile U32 *pDataCmd = (volatile U32 *)((U32)regBase + 0x10);
-        // *pDataCmd = (U32)txData;
+        /* 清除 RD_REQ */
+        (void)regBase->icClrRdReq;
 
-        /* ⚠️ 添加内存屏障确保写入生效 */
-        __asm__ volatile("" ::: "memory");
+        LOGD("SMBus Slave: Sent 0x%02X\n", txData);
 
-        /* 读回验证 */
-        U32 txflr = regBase->icTxflr;
+        /* ⚠️ 不要 return！继续处理其他中断 */
+    }
+
+    /* 2. 处理 TX_EMPTY（仅在 Master 读取 Slave 时） */
+    if (intrStat & SMBUS_IC_INTR_TX_EMPTY_MASK) {
+
+        /* ⚠️ 关键：检查是否是真正的读请求 */
         U32 status = regBase->icStatus.value;
+        U32 slaveActivity = (status >> 6) & 1;  // SLV_ACTIVITY bit
 
-        LOGD("SMBus Slave: After TX write - TXFLR=%d, STATUS=0x%08X, TFE=%d\n",
-             txflr, status, regBase->icStatus.fields.tfe);
+        if (slaveActivity) {
+            /* Slave 正在被读取，填充 TX FIFO */
+            LOGD("SMBus Slave: TX_EMPTY - refilling for Master read\n");
 
-        /* 验证写入是否成功 */
-        if (txflr == 0) {
-            LOGE("!!! TX FIFO still empty after write!\n");
-            /* 尝试再写一次 */
+            U8 txData = 0xFF;
+            if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
+                pDrvData->pSmbusDev.slaveValidTxLen > 0) {
+                static U32 txIndex = 0;
+                txData = pDrvData->pSmbusDev.slaveTxBuf[txIndex % pDrvData->pSmbusDev.slaveValidTxLen];
+                txIndex++;
+            }
+
             regBase->icDataCmd.value = (U32)txData;
-            LOGD("SMBus Slave: Retry write, TXFLR=%d\n", regBase->icTxflr);
+            LOGD("SMBus Slave: Refilled 0x%02X\n", txData);
         } else {
-            LOGI("✓ TX FIFO write success, level=%d\n", txflr);
+            /* Master 正在写入 Slave，TX_EMPTY 是伪中断 */
+            LOGW("SMBus Slave: Spurious TX_EMPTY during Master write - ignoring\n");
+
+            /* 在接收模式下禁用 TX_EMPTY */
+            regBase->icIntrMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
         }
     }
 
-    /* ========== TX_EMPTY (Slave mode handling) ========== */
-    if (intrStat & SMBUS_IC_INTR_TX_EMPTY_MASK) {
-        LOGE("SMBus Slave: TX_EMPTY interrupt detected! status=0x%08X\n", intrStat);
+    /* 3. 处理 RX_FULL */
+    if (intrStat & SMBUS_IC_INTR_RX_FULL_MASK) {
+        LOGD("SMBus Slave: RX_FULL - receiving data\n");
 
-        /* In Slave mode, TX_EMPTY should only be enabled during actual data transmission */
-        /* If we get TX_EMPTY without an active read operation, disable it to prevent storm */
-        if (!(pDrvData->pSmbusDev.status & SMBUS_STATUS_READ_IN_PROGRESS_MASK)) {
-            /* No active read operation - disable TX_EMPTY interrupt */
-            U32 currentMask = regBase->icIntrMask;
-            currentMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
-            regBase->icIntrMask = currentMask;
-            LOGE("SMBus Slave: Disabled spurious TX_EMPTY interrupt (mask=0x%08X)\n", currentMask);
-        } else {
-            /* CRITICAL FIX: Active read operation - must fill TX FIFO immediately */
-            LOGE("SMBus Slave: TX_EMPTY during read operation - filling FIFO\n");
+        U32 rxValid = regBase->icRxflr;
+        U32 readCount = 0;
+        U8 val = 0;
 
-            /* Check slave activity status */
-            SmbusIcStatusReg_u status;
-            status.value = regBase->icStatus.value;
-            U32 slaveActivity = (status.value & SMBUS_IC_STATUS_SLAVE_ACTIVITY_MASK) >> SMBUS_IC_STATUS_SLAVE_ACTIVITY_SHIFT;
-            U32 txFifoNotFull = status.fields.tfnf;
+        if (!(pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK)) {
+            pDrvData->pSmbusDev.status |= SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
+            pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
+            pDrvData->slaveValidRxLen = 0;
+            smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_WRITE_REQ, NULL, 0);
+        }
 
-            LOGE("SMBus Slave: TX_EMPTY status - activity=%d, TFNF=%d\n", slaveActivity, txFifoNotFull);
+        /* 读取FIFO数据 */
+        while (readCount < rxValid && readCount < SMBUS_SLAVE_BUF_LEN) {
+            U32 tmp = regBase->icDataCmd.value;
+            if (tmp & SMBUS_IC_DATA_CMD_FIRST_DATA_BYTE_MASK) {
+                smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_WRITE_REQ, NULL, 0);
+            }
 
-            if (slaveActivity == 1 && txFifoNotFull == 1) {
-                /* Fill TX FIFO with data */
-                U8 txData = 0xFF;  // Default response
+            val = (U8)tmp;
+            if (pDrvData->slaveValidRxLen < SMBUS_SLAVE_BUF_LEN) {
+                pDrvData->pSmbusDev.slaveRxBuf[pDrvData->slaveValidRxLen++] = val;
+            }
+            readCount++;
 
-                /* Try to get data from callback buffer */
-                if (pDrvData->pSmbusDev.slaveTxBuf && pDrvData->slaveTxIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
-                    txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->slaveTxIndex++];
-                    LOGE("SMBus Slave: TX_EMPTY filled with buffer data[0x%02X] (idx=%d)\n", txData, pDrvData->slaveTxIndex-1);
-                } else {
-                    LOGE("SMBus Slave: TX_EMPTY filled with default data[0x%02X]\n", txData);
-                }
-
-                /* Write data to TX FIFO */
-                regBase->icDataCmd.value = (U32)txData;
-                LOGE("SMBus Slave: TX_EMPTY data written to FIFO - 0x%02X\n", txData);
-            } else if (slaveActivity == 0) {
-                /* No more slave activity - disable TX_EMPTY and end read operation */
-                U32 currentMask = regBase->icIntrMask;
-                currentMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
-                regBase->icIntrMask = currentMask;
-
-                /* Clear read status */
-                pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
-                pDrvData->slaveTransferActive = 0;
-
-                LOGE("SMBus Slave: Read operation completed - TX_EMPTY disabled (mask=0x%08X)\n", currentMask);
-            } else {
-                /* FIFO is full - just wait */
-                LOGE("SMBus Slave: TX FIFO full, waiting for space\n");
+            /* 检查是否还有数据 */
+            tmp = regBase->icStatus.value;
+            if (!(tmp & SMBUS_IC_STATUS_RFNE_MASK)) {
+                break;
             }
         }
+
+        LOGD("SMBus Slave: RX_FULL processed, readCount=%u\n", readCount);
     }
 
-    /* ========== SMBus Specific Interrupts (Slave) ========== */
+    /* 4. 处理 STOP_DET */
+    if (intrStat & SMBUS_IC_INTR_STOP_DET_MASK) {
+        LOGD("SMBus Slave: STOP_DET\n");
+        (void)regBase->icClrStopDet;
+
+        /* 传输结束，现在可以禁用 TX_EMPTY */
+        regBase->icIntrMask &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
+
+        /* 清除状态 */
+        if (pDrvData->pSmbusDev.status & SMBUS_STATUS_READ_IN_PROGRESS_MASK) {
+            pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
+        }
+        if (pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK) {
+            pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
+        }
+
+        /* 同步RX缓冲区长度 */
+        pDrvData->pSmbusDev.slaveValidRxLen = pDrvData->slaveValidRxLen;
+
+        /* 触发完成事件 */
+        smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_DONE, NULL, 0);
+        pDrvData->slaveTransferActive = 0;
+
+        /* 释放信号量 */
+        if (pDrvData->pSmbusDev.semaphoreId != 0) {
+            rtems_semaphore_release(pDrvData->pSmbusDev.semaphoreId);
+        }
+    }
+
+    /* 5. 处理其他中断 */
+    if (intrStat & SMBUS_IC_INTR_TX_ABRT_MASK) {
+        LOGD("SMBus Slave: TX_ABRT\n");
+        (void)regBase->icClrTxAbrt;
+    }
+
+    if (intrStat & SMBUS_IC_INTR_RX_DONE_MASK) {
+        LOGD("SMBus Slave: RX_DONE\n");
+        (void)regBase->icClrRxDone;
+    }
+
+    /* 6. 处理 SMBus 特定中断 */
     if (smbusIntrStat) {
         smbusHandleSlaveSpecificInterrupts(pDrvData, regBase, smbusIntrStat);
     }
 
-    /* CRITICAL FIX: Use comprehensive interrupt clearing to prevent storm */
-    if (intrStat != 0 || rawStat != 0) {
-        LOGD("SMBus Slave: Comprehensive interrupt clearing (intrStat=0x%08X, rawStat=0x%08X)\n",
-             intrStat, rawStat);
-
-        /* CRITICAL FIX: Use the proven clearing function that handles all registers */
-        U32 clearedStat = smbusReadClearIntrBits(regBase);
-        LOGD("SMBus Slave: smbusReadClearIntrBits cleared = 0x%08X\n", clearedStat);
-
-        /* Additional Write-1-to-clear for main interrupt register */
-        if (intrStat != 0) {
-            regBase->icIntrStat.value = intrStat;
-            LOGD("SMBus Slave: Additional icIntrStat clear = 0x%08X\n", intrStat);
-        }
-
-        /* Clear raw interrupt status if needed */
-        if (rawStat != 0) {
-            regBase->icRawIntrStat.value = rawStat;
-            LOGD("SMBus Slave: Additional icRawIntrStat clear = 0x%08X\n", rawStat);
-        }
+    /* 7. 清除中断 */
+    if (intrStat != 0) {
+        regBase->icIntrStat.value = intrStat;
     }
 }
 
@@ -2080,27 +1949,9 @@ static void smbusIsr(void *arg)
         LOGE("SMBus ISR: enabled=0x%08X rawIntr=0x%08X intrStat=0x%08X\n", enabled, rawIntr, intrStat);
         return;
     }
-
     LOGD("SMBus IRQ: mode=%s, rawIntr=0x%08X, intrStat=0x%08X, smbus=0x%08X\n",
          (pDrvData->pSmbusDev.mode == DW_SMBUS_MODE_MASTER) ? "MASTER" : "SLAVE",
          rawIntr, intrStat, smbusIntrStat.value);
-
-    /* 🔥 CRITICAL RUNTIME FIX: Check and force correct Slave interrupt mask */
-    if (pDrvData->pSmbusDev.mode != DW_SMBUS_MODE_MASTER) {
-        U32 currentMask = regBase->icIntrMask;
-        if (currentMask == 0x00080001) {
-            LOGW("!!! ISR DETECTED WRONG INTERRUPT MASK - Fixing from 0x%08X to 0x2E4\n", currentMask);
-            regBase->icIntrMask = 0x000002E4;
-
-            /* Verify the fix worked */
-            U32 verifyMask = regBase->icIntrMask;
-            if (verifyMask == 0x000002E4) {
-                LOGI("✅ ISR SUCCESSFULLY FIXED interrupt mask to 0x%08X\n", verifyMask);
-            } else {
-                LOGE("❌ ISR FAILED TO FIX interrupt mask! Still: 0x%08X\n", verifyMask);
-            }
-        }
-    }
 
     /* Handle interrupts based on current mode - FIXED: Use raw interrupt status */
     if (pDrvData->pSmbusDev.mode == DW_SMBUS_MODE_MASTER) {
@@ -2166,12 +2017,12 @@ S32 smbusInit(DevList_e devId)
 
 #ifdef TEST_SUITS_1
     /* Use test configuration for development/testing */
-    pDrvData->sbrCfg.regAddr = (void *) (SMBUS_BASE_ADDR + 0 * SMBUS_BASE_OFFSET);
-    pDrvData->sbrCfg.irqNo = SYS_INT_NUM_SMBUS;
+    pDrvData->sbrCfg.regAddr = (void *) (SMBUS_BASE_ADDR + 1 * SMBUS_BASE_OFFSET);
+    pDrvData->sbrCfg.irqNo = (SYS_INT_NUM_SMBUS + 1);
     pDrvData->sbrCfg.irqPrio = SYS_INT_PRIORITY_SMBUS;
     pDrvData->sbrCfg.masterMode = DW_SMBUS_MODE_MASTER;//DW_SMBUS_MODE_MASTER;
     pDrvData->sbrCfg.interruptMode = 1;    
-    pDrvData->sbrCfg.speed = 2;
+    pDrvData->sbrCfg.speed = 1;
     pDrvData->sbrCfg.addrMode = 0;        
     pDrvData->sbrCfg.slaveAddrHigh = 0;
     pDrvData->sbrCfg.slaveAddrLow = SMBUS_ARP_DEFAULT_SLAVE_ADDR;

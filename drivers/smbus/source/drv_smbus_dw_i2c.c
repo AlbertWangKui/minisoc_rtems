@@ -35,7 +35,6 @@
 static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_t *msgs, U32 num);
 static S32 smbusWaitBusNotBusy(SmbusDev_s *dev);
 static bool smbusIsControllerActive(SmbusDev_s *dev);
-static void smbusDwDisable(SmbusDev_s *dev);
 static S32 smbusHandleTxAbort(SmbusDev_s *dev);
 
 /* ======================================================================== */
@@ -896,7 +895,7 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
 
         /* CRITICAL: Force completion to prevent hanging */
         LOGE("SMBus: Forcing transfer completion due to semaphore failure\n");
-        dev->status &= ~(SMBUS_STATUS_ACTIVE | SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
+        dev->status &= ~(SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
         dev->rxOutstanding = 0;
 
         ret = -EIO;
@@ -911,7 +910,11 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
     }
 
     ///< Disable controller to prevent spurious interrupts
-    smbusDwDisable(dev);
+    SmbusIcEnableReg_u enable;
+
+    enable.value = dev->regBase->icEnable.value;
+    enable.fields.enable = 0;
+    dev->regBase->icEnable.value = enable.value;
 
     ///< Handle transfer completion
     if (dev->msgErr) {
@@ -1156,29 +1159,6 @@ static bool smbusIsControllerActive(SmbusDev_s *dev)
 }
 
 /**
- * @brief Disable SMBus controller
- * @details Disables the SMBus controller immediately without waiting.
- * @param[in] dev Pointer to SMBus device structure
- * @return void
- *
- * @note This function disables IC_ENABLE.ENABLE bit
- * [HAL] Hardware abstraction layer - controller disable
- */
-static void smbusDwDisable(SmbusDev_s *dev)
-{
-    if (dev == NULL || dev->regBase == NULL) {
-        return;
-    }
-
-    volatile SmbusRegMap_s *regBase = dev->regBase;
-    SmbusIcEnableReg_u enable;
-
-    enable.value = regBase->icEnable.value;
-    enable.fields.enable = 0;
-    regBase->icEnable.value = enable.value;
-}
-
-/**
  * @brief Handle SMBus TX abort condition
  * @details Handles TX abort errors and returns appropriate error code.
  * @param[in] dev Pointer to SMBus device structure
@@ -1223,9 +1203,13 @@ static S32 smbusHandleTxAbort(SmbusDev_s *dev)
  */
 U32 smbusReadClearIntrBits(volatile SmbusRegMap_s *regBase)
 {
-    U32 stat;
+    U32 stat = 0;
 
+    // 读取中断状态
     stat = regBase->icIntrStat.value;
+
+    // 如果使用的是老式调用（兼容性处理），清除所有中断
+    LOGD("%s: Legacy call - clearing ALL interrupts: 0x%08X\n", __func__, stat);
 
     /* Read/clear interrupt status registers */
     (void)regBase->icClrIntr;
@@ -1240,8 +1224,72 @@ U32 smbusReadClearIntrBits(volatile SmbusRegMap_s *regBase)
     (void)regBase->icClrStopDet;
     (void)regBase->icClrStartDet;
     (void)regBase->icClrGenCall;
-    LOGD("%s: Read and cleared interrupts: 0x%08X\n", __func__, stat);
+
     return stat;
+}
+
+/**
+ * @brief Read and clear specific interrupts based on mask
+ * @details Selectively clears specific interrupts based on mask parameter
+ * @param[in] pDrvData Pointer to driver data structure
+ * @param[in] mask Bitmask of interrupts to clear
+ * @return Current interrupt status
+ *
+ * @note This function follows your recommended logic for selective interrupt clearing
+ */
+U32 smbusReadClearIntrBitsMasked(SmbusDrvData_s *pDrvData, U32 mask)
+{
+    volatile SmbusRegMap_s *regBase = pDrvData->sbrCfg.regAddr;
+    U32 stat = 0;
+
+    // 如果需要清除所有中断
+    if (mask == SMBUS_IC_INTR_ALL) {
+        stat = regBase->icClrIntr;  // 读取这个寄存器会清除所有中断
+        LOGD("%s: Cleared ALL interrupts: 0x%08X\n", __func__, stat);
+        return stat;
+    }
+
+    // 读取当前中断状态
+    stat = regBase->icIntrStat.value;
+
+    // 根据 mask 清除特定中断
+    if (mask & SMBUS_IC_INTR_RX_UNDER_MASK) {
+        (void)regBase->icClrRxUnder;
+    }
+    if (mask & SMBUS_IC_INTR_RX_OVER_MASK) {
+        (void)regBase->icClrRxOver;
+    }
+    if (mask & SMBUS_IC_INTR_RD_REQ_MASK) {
+        /* 关键：检查这个寄存器是否存在 */
+        (void)regBase->icClrRdReq;  // 如果这里 crash，说明寄存器定义错误
+        LOGD("%s: Cleared RD_REQ interrupt\n", __func__);
+    }
+    if (mask & SMBUS_IC_INTR_TX_ABRT_MASK) {
+        (void)regBase->icClrTxAbrt;
+    }
+    if (mask & SMBUS_IC_INTR_RX_DONE_MASK) {
+        (void)regBase->icClrRxDone;
+    }
+    if (mask & SMBUS_IC_INTR_ACTIVITY_MASK) {
+        (void)regBase->icClrActivity;
+    }
+    if (mask & SMBUS_IC_INTR_STOP_DET_MASK) {
+        (void)regBase->icClrStopDet;
+    }
+    if (mask & SMBUS_IC_INTR_START_DET_MASK) {
+        (void)regBase->icClrStartDet;
+    }
+    if (mask & SMBUS_IC_INTR_GEN_CALL_MASK) {
+        (void)regBase->icClrGenCall;
+    }
+    if (mask & SMBUS_IC_INTR_RESTART_DET_MASK) {
+        (void)regBase->icClrRestartDet;
+    }
+
+    LOGD("%s: Cleared specific interrupts (mask=0x%08X, stat=0x%08X)\n",
+         __func__, mask, stat);
+
+    return regBase->icIntrStat.value;
 }
 
 /**
@@ -1424,104 +1472,13 @@ void smbusTriggerSlaveEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data,
             return;
     }
 
-    /* FIXED: Defer callback to task context to prevent ISR blocking */
+    /* Direct callback execution */
     if (pDrvData->callback.cb) {
-        /* Check if callback queue has space */
-        U32 head = pDrvData->callbackQueue.head;
-        U32 tail = pDrvData->callbackQueue.tail;
-        U32 next = (tail + 1) % SMBUS_CALLBACK_QUEUE_SIZE;
-
-        if (next != head) {
-            /* Store callback in queue */
-            pDrvData->callbackQueue.events[tail].devId = devId;
-            pDrvData->callbackQueue.events[tail].eventType = eventType;
-            pDrvData->callbackQueue.events[tail].eventData = eventData;
-            pDrvData->callbackQueue.tail = next;
-
-            /* Signal callback task */
-            pDrvData->callbackPending = true;
-            LOGD("SMBus: Queued callback for event %d (queue size: %u/%u)\n",
-                 eventType,
-                 ((tail + SMBUS_CALLBACK_QUEUE_SIZE - head) % SMBUS_CALLBACK_QUEUE_SIZE),
-                 SMBUS_CALLBACK_QUEUE_SIZE);
-        } else {
-            /* Queue full - drop callback to prevent blocking */
-            LOGW("SMBus: Callback queue full, dropping event %d\n", eventType);
-            /* Return without calling callback */
-            return;
-        }
+        LOGD("SMBus: Direct callback for event %d\n", eventType);
+        pDrvData->callback.cb(devId, eventType, &eventData);
     }
 }
 
-/**
- * @brief Process pending callbacks from task context
- * @details Processes queued callbacks that were deferred from interrupt context.
- *          This function should be called periodically from a task context to
- *          execute queued callbacks without blocking ISR execution.
- * @param[in] pDrvData Pointer to driver data structure
- * @return void
- *
- * [CORE] Core protocol layer - callback processing (fix ISR blocking)
- */
-void smbusProcessPendingCallbacks(SmbusDrvData_s *pDrvData)
-{
-    /* CRITICAL FIX: Comprehensive safety checks to prevent system crashes */
-    if (pDrvData == NULL) {
-        LOGE("SMBus: NULL driver data in callback processing\n");
-        return;
-    }
-
-    /* Check if there are pending callbacks to process */
-    if (!pDrvData->callbackPending) {
-        return;  /* No pending callbacks */
-    }
-
-    /* Check if callback is registered */
-    if (pDrvData->callback.cb == NULL) {
-        LOGW("SMBus: No callback registered, clearing queue\n");
-        pDrvData->callbackQueue.head = 0;
-        pDrvData->callbackQueue.tail = 0;
-        pDrvData->callbackPending = false;
-        return;
-    }
-
-    /* Process all queued callbacks */
-    U32 head = pDrvData->callbackQueue.head;
-    U32 tail = pDrvData->callbackQueue.tail;
-    U32 processedCount = 0;
-
-    while (head != tail && processedCount < SMBUS_CALLBACK_QUEUE_SIZE) {
-        SmbusCallbackEvent_s *event = &pDrvData->callbackQueue.events[head];
-
-        /* CRITICAL FIX: Validate event data before processing */
-        if (event->eventType <= SMBUS_EVENT_PEC_ERROR) {
-            LOGD("SMBus: Processing queued callback - dev=%d, event=%d\n",
-                 event->devId, event->eventType);
-
-            /* Execute callback in task context (safe from ISR blocking) */
-            pDrvData->callback.cb(event->devId, event->eventType, &event->eventData);
-            processedCount++;
-        } else {
-            LOGE("SMBus: Invalid event type %d in queue, skipping\n", event->eventType);
-        }
-
-        /* Move to next event */
-        head = (head + 1) % SMBUS_CALLBACK_QUEUE_SIZE;
-    }
-
-    /* Update queue head pointer */
-    pDrvData->callbackQueue.head = head;
-
-    /* Clear pending flag if queue is empty */
-    if (head == tail) {
-        pDrvData->callbackPending = false;
-    }
-
-    LOGD("SMBus: Processed %u pending callbacks (queue: %u/%u)\n",
-         processedCount,
-         ((tail + SMBUS_CALLBACK_QUEUE_SIZE - head) % SMBUS_CALLBACK_QUEUE_SIZE),
-         SMBUS_CALLBACK_QUEUE_SIZE);
-}
 
 /**
  * @brief Handle master specific SMBus interrupts
@@ -2105,45 +2062,144 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
     }
     
     volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)dev->regBase;
-    /* Configure slave mode settings */
-    ic_con = regBase->icCon.value;
-    ic_con &= ~(1U << 0);  /* Master mode disable */
-    ic_con &= ~(1U << 6);  /* Slave enable */
-    ic_con |= (1U << 5);   /* Restart enable for combined transactions */
-    ic_con |= (2U << 1);   /* Fast mode by default */
 
-    /* Set address mode */
-    if (dev->addrMode == 1) {
-        ic_con |= (1U << 3);  /* 10-bit slave addressing */
+    /* Slave 模式初始化 */
+    if (dev->mode == SMBUS_MODE_SLAVE) {
+        LOGD("=== Starting Slave Mode Initialization ===\n");
+
+        /* 禁用设备 */
+        regBase->icEnable.value = 0;
+        LOGD("Device disabled (IC_ENABLE = 0x%08X)\n", regBase->icEnable.value);
+
+        /* 配置 IC_CON */
+        U32 icCon = 0;
+        icCon |= (0 << 0);  // MASTER_MODE = 0 (Slave mode)
+        icCon |= (2 << 1);  // SPEED = 2 (Fast mode 400kHz)
+        icCon |= (0 << 6);  // IC_SLAVE_DISABLE = 0 (Slave enabled)
+
+        /* Set address mode */
+        if (dev->addrMode == 1) {
+            icCon |= (1U << 3);  /* 10-bit slave addressing */
+        }
+
+        /* Configure SMBus features for slave mode */
+        icCon |= (1U << 5);   // Restart enable for combined transactions
+        icCon |= (1U << 14);  // ARP enabled in slave mode
+        icCon |= (1U << 15);  // SMBus slave quick command enable
+
+        regBase->icCon.value = icCon;
+        LOGD("IC_CON configured = 0x%08X\n", regBase->icCon.value);
+
+        /* 设置从机地址 */
+        regBase->icSar.fields.icSar = 0x21;  /* 直接设置为0x21 */
+        LOGD("IC_SAR set to 0x%02X\n", regBase->icSar.fields.icSar);
+
+        /* Set TX/RX FIFO thresholds for interrupt generation */
+        regBase->icTxTl = 0;  /* TX threshold: generate interrupt when TX FIFO is empty */
+        regBase->icRxTl = 0;  /* RX threshold: generate interrupt when RX FIFO has 1+ bytes */
+        LOGD("FIFO thresholds set: TX_TL=%d, RX_TL=%d\n", regBase->icTxTl, regBase->icRxTl);
+
+        /* 关键：使能设备时包含 SMBus 扩展位 */
+        U32 icEnable = 0;
+        icEnable |= (1 << 0);   // ENABLE
+        icEnable |= (1 << 19);  // 保留你原来的 bit[19]（可能是 SMBus Slave TX Enable）
+
+        regBase->icEnable.value = icEnable;
+        LOGI("Slave IC_ENABLE = 0x%08X\n", regBase->icEnable.value);
+
+        /* 配置中断掩码 - 包含 TX_EMPTY 处理时序问题 */
+        U32 slaveMask = 0;
+        slaveMask |= (1 << 2);  // RX_FULL   - 0x004
+        slaveMask |= (1 << 4);  // TX_EMPTY  - 0x010 (启用处理RD_REQ时序问题)
+        slaveMask |= (1 << 5);  // RD_REQ    - 0x020
+        slaveMask |= (1 << 6);  // TX_ABRT   - 0x040
+        slaveMask |= (1 << 7);  // RX_DONE   - 0x080
+        slaveMask |= (1 << 9);  // STOP_DET  - 0x200
+
+        /* 计算结果：0x004 | 0x010 | 0x020 | 0x040 | 0x080 | 0x200 = 0x2F4 */
+        regBase->icIntrMask = slaveMask;
+        LOGI("✓ Slave interrupt mask configured with TX_EMPTY: 0x%08X (expected: 0x2F4)\n",
+             regBase->icIntrMask);
+
+        /* 验证配置是否成功 */
+        udelay(100);  /* 短暂延时确保硬件稳定 */
+
+        LOGD("=== Slave Initialization Verification ===\n");
+        LOGD("Final IC_CON    = 0x%08X\n", regBase->icCon.value);
+        LOGD("Final IC_SAR    = 0x%02X\n", regBase->icSar.fields.icSar);
+        LOGD("Final IC_ENABLE = 0x%08X\n", regBase->icEnable.value);
+        LOGD("Final IC_INTR_MASK = 0x%08X\n", regBase->icIntrMask);
+        LOGD("Final IC_TX_TL  = %d\n", regBase->icTxTl);
+        LOGD("Final IC_RX_TL  = %d\n", regBase->icRxTl);
+
+        /* 验证写入是否成功 */
+        U32 readBack = regBase->icIntrMask;
+        if (readBack != slaveMask) {
+            LOGE("✗ Interrupt mask write failed! Read back: 0x%08X\n", readBack);
+        } else {
+            LOGI("✓ All slave configurations verified successfully\n");
+        }
+    } else {
+        /* Fallback to original logic for non-slave modes */
+        ic_con = regBase->icCon.value;
+        ic_con &= ~(1U << 0);  /* Master mode disable */
+        ic_con &= ~(1U << 6);  /* Slave enable */
+        ic_con |= (1U << 5);   /* Restart enable for combined transactions */
+        ic_con |= (2U << 1);   /* Fast mode by default */
+
+        /* Set address mode */
+        if (dev->addrMode == 1) {
+            ic_con |= (1U << 3);  /* 10-bit slave addressing */
+        }
+
+        /* Configure SMBus features for slave mode */
+        ic_con |= (1U << 14);  /* ARP enabled in slave mode */
+        ic_con |= (1U << 15);  /* SMBus slave quick command enable */
+
+        regBase->icCon.value = ic_con;
+
+        /* Set slave address using original method */
+        ret = smbusSetSlaveAddr(dev);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("SMBus: Slave address configuration failed: %d\n", ret);
+            return ret;
+        }
+
+        /* Set TX/RX FIFO thresholds for interrupt generation */
+        regBase->icTxTl = 0;  /* TX threshold: generate interrupt when TX FIFO is empty */
+        regBase->icRxTl = 0;  /* RX threshold: generate interrupt when RX FIFO has 1+ bytes */
     }
 
-    /* Configure SMBus features for slave mode */
-    ic_con |= (1U << 14);  /* ARP enabled in slave mode */
-    ic_con |= (1U << 15);  /* SMBus slave quick command enable */
+    /* For non-slave modes or fallback, configure remaining settings */
+    if (dev->mode != SMBUS_MODE_SLAVE) {
+        /* Slave mode interrupt configuration - configure correct mask */
+        /* 关键：必须在这里设置正确的中断掩码，包含TX_EMPTY */
+        U32 slaveMask = 0;
 
-    regBase->icCon.value = ic_con;
+        slaveMask |= (1 << 2);  // RX_FULL   - 0x004
+        slaveMask |= (1 << 4);  // TX_EMPTY  - 0x010 (启用处理RD_REQ时序问题)
+        slaveMask |= (1 << 5);  // RD_REQ    - 0x020
+        slaveMask |= (1 << 6);  // TX_ABRT   - 0x040
+        slaveMask |= (1 << 7);  // RX_DONE   - 0x080
+        slaveMask |= (1 << 9);  // STOP_DET  - 0x200
 
-    /* Set slave address */
-    ret = smbusSetSlaveAddr(dev);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: Slave address configuration failed: %d\n", ret);
-        return ret;
+        /* 计算结果：0x004 | 0x010 | 0x020 | 0x040 | 0x080 | 0x200 = 0x2F4 */
+
+        /* 写入寄存器 */
+        regBase->icIntrMask = slaveMask;
+
+        LOGI("Slave interrupt mask configured: 0x%08X (expected: 0x2F4)\n",
+             regBase->icIntrMask);
+
+        /* 验证写入是否成功 */
+        U32 readBack = regBase->icIntrMask;
+        if (readBack != slaveMask) {
+            LOGE("Interrupt mask write failed! Read back: 0x%08X\n", readBack);
+        }
+
+        /* Enable controller using original method */
+        smbusEnable(dev);
     }
-
-    /* Note: Slave buffer allocation is handled in smbusInit function */
-
-    /* Set TX/RX FIFO thresholds for interrupt generation */
-    regBase->icTxTl = 0;  /* TX threshold: generate interrupt when TX FIFO is empty */
-    regBase->icRxTl = 0;  /* RX threshold: generate interrupt when RX FIFO has 1+ bytes */
-
-    /* Clear interrupt mask initially */
-    regBase->icIntrMask = 0;
-
-    /* Enable controller */
-    SmbusIcEnableReg_u enable;
-    enable.value = 0;
-    enable.fields.enable = 1;
-    regBase->icEnable.value = enable.value;
 
     LOGD("SMBus: Slave probe completed successfully\n");
     return EXIT_SUCCESS;
@@ -2439,10 +2495,7 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
     }
 
     /* Step 3: Disable controller */
-    SmbusIcEnableReg_u enable;
-    enable.value = dev->regBase->icEnable.value;
-    enable.fields.enable = 0;
-    dev->regBase->icEnable.value = enable.value;
+    smbusDisable(dev);
 
     /* Step 4: Wait for controller to be fully disabled with timing based on speed */
     for (i = 0; i < max_t_poll_count; i++) {
@@ -2460,9 +2513,7 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
     if (i == max_t_poll_count) {
         LOGE("SMBus: Failed to disable controller within timeout\n");
         /* Restore enable state and return error */
-        enable.value = 0;
-        enable.fields.enable = 1;
-        dev->regBase->icEnable.value = enable.value;
+        smbusEnable(dev);
         return -ETIMEDOUT;
     }
 
@@ -2496,10 +2547,7 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
     }
 
     /* Step 8: Re-enable controller */
-    enable.value = 0;
-    enable.fields.enable = 1;
-    dev->regBase->icEnable.value = enable.value;
-
+    smbusEnable(dev);
     /* Step 9: Configure proper interrupt mask for the target mode */
     if (targetMode == DW_SMBUS_MODE_MASTER) {
         /* Master mode: Enable interrupts needed for master operations */
@@ -2509,12 +2557,24 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
         LOGD("SMBus: Set Master mode interrupt mask=0x%08X\n", dev->regBase->icIntrMask);
     } else {
         /* Slave mode: Enable only interrupts needed for slave operations */
-        /* CRITICAL FIX: Do NOT enable TX_EMPTY by default in Slave mode */
-        dev->regBase->icIntrMask = SMBUS_IC_INTR_RX_FULL_MASK |      /* RX FIFO full */
-                                  SMBUS_IC_INTR_RD_REQ_MASK |       /* Read request */
-                                  SMBUS_IC_INTR_STOP_DET_MASK |     /* Stop detection */
-                                  SMBUS_IC_INTR_ACTIVITY_MASK;      /* Activity detection */
-        LOGD("SMBus: Set Slave mode interrupt mask=0x%08X\n", dev->regBase->icIntrMask);
+        /* CRITICAL FIX: Use the correct interrupt mask with TX_EMPTY to handle timing issues */
+        U32 slaveMask = SMBUS_IC_INTR_RX_FULL_MASK |      /* RX FIFO full - 0x004 */
+                          SMBUS_IC_INTR_TX_EMPTY_MASK |     /* TX FIFO empty - 0x010 (handle timing) */
+                          SMBUS_IC_INTR_RD_REQ_MASK |       /* Read request - 0x020 */
+                          SMBUS_IC_INTR_TX_ABRT_MASK |      /* TX abort - 0x040 */
+                          SMBUS_IC_INTR_RX_DONE_MASK |      /* RX done - 0x080 */
+                          SMBUS_IC_INTR_STOP_DET_MASK;     /* Stop detection - 0x200 */
+
+        /* Calculate: 0x004 | 0x010 | 0x020 | 0x040 | 0x080 | 0x200 = 0x2F4 */
+        dev->regBase->icIntrMask = slaveMask;
+
+        LOGI("✓ Slave mode interrupt mask set: 0x%08X (expected: 0x2F4)\n", dev->regBase->icIntrMask);
+
+        /* Verify the write was successful */
+        U32 readBack = dev->regBase->icIntrMask;
+        if (readBack != slaveMask) {
+            LOGE("✗ Slave interrupt mask write failed! Expected: 0x%08X, Read: 0x%08X\n", slaveMask, readBack);
+        }
     }
 
     LOGI("SMBus: Successfully switched to %s mode\n",
@@ -3420,10 +3480,7 @@ S32 smbusI2cReset(SmbusDev_s *dev, DevList_e devId)
         dev->regBase->icCon.value = conTmp.value;
 
         /* Step 4: Re-enable controller */
-        enable.value = dev->regBase->icEnable.value;
-        enable.fields.enable = 1;
-        dev->regBase->icEnable.value = enable.value;
-
+        smbusEnable(dev);
         /* Step 5: Wait for stabilization */
         rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(1));
 
@@ -3579,9 +3636,8 @@ SmbusHalOps_s* smbusGetHalOps(void)
     static SmbusHalOps_s halOps = {
         .checkTxReady = smbusCheckTxready,
         .checkRxReady = smbusCheckRxready,
-        .waitTransmitComplete = waitTransmitComplete,
-        .waitBusNotBusy = smbusWaitBusNotBusy,
         .setSlaveAddr = smbusSetSlaveAddr,
+        .waitTransmitComplete = waitTransmitComplete,
         .enable = smbusEnable,
         .disable = smbusDisable,
         .devAddrAssignCore = smbusDevAddrAssignCore,

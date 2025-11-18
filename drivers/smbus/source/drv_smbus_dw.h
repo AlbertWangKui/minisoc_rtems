@@ -182,19 +182,22 @@ typedef enum SmbusTransferState {
 #define SMBUS_STATUS_READ_IN_PROGRESS_MASK  (0x08)        /**< Read in progress status mask */
 
 /* I2C Interrupt Mask Constants */
-#define SMBUS_IC_INTR_TX_ABRT_MASK        (1U << 6)     /**< TX abort interrupt mask */
-#define SMBUS_IC_INTR_RX_FULL_MASK        (1U << 2)     /**< RX full interrupt mask */
-#define SMBUS_IC_INTR_TX_EMPTY_MASK       (1U << 4)     /**< TX empty interrupt mask - FIXED! */
-#define SMBUS_IC_INTR_STOP_DET_MASK       (1U << 9)     /**< Stop detection interrupt mask */
-#define SMBUS_IC_INTR_RESTART_DET_MASK    (1U << 12)    /**< Restart detection interrupt mask */
-#define SMBUS_IC_INTR_RD_REQ_MASK         (1U << 3)     /**< Read request interrupt mask */
-#define SMBUS_IC_INTR_ACTIVITY_MASK       (1U << 8)     /**< Activity interrupt mask - FIXED! */
-#define SMBUS_IC_INTR_RX_UNDER_MASK       (1U << 0)     /**< RX under interrupt mask */
-#define SMBUS_IC_INTR_RX_OVER_MASK        (1U << 1)     /**< RX over interrupt mask */
-#define SMBUS_IC_INTR_TX_OVER_MASK        (1U << 2)     /**< TX over interrupt mask */
-#define SMBUS_IC_INTR_RX_DONE_MASK        (1U << 3)     /**< RX done interrupt mask */
-#define SMBUS_IC_INTR_START_DET_MASK      (1U << 10)    /**< Start detection interrupt mask */
-#define SMBUS_IC_INTR_GEN_CALL_MASK       (1U << 11)    /**< General call interrupt mask */
+#define SMBUS_IC_INTR_RX_UNDER_MASK       (1 << 0)      /**< RX under interrupt mask - 0x001 */
+#define SMBUS_IC_INTR_RX_OVER_MASK        (1 << 1)      /**< RX over interrupt mask - 0x002 */
+#define SMBUS_IC_INTR_RX_FULL_MASK        (1 << 2)      /**< RX full interrupt mask - 0x004 */
+#define SMBUS_IC_INTR_TX_OVER_MASK        (1 << 3)      /**< TX over interrupt mask - 0x008 */
+#define SMBUS_IC_INTR_TX_EMPTY_MASK       (1 << 4)      /**< TX empty interrupt mask - 0x010 */
+#define SMBUS_IC_INTR_RD_REQ_MASK         (1 << 5)      /**< Read request interrupt mask - 0x020 */
+#define SMBUS_IC_INTR_TX_ABRT_MASK        (1 << 6)      /**< TX abort interrupt mask - 0x040 */
+#define SMBUS_IC_INTR_RX_DONE_MASK        (1 << 7)      /**< RX done interrupt mask - 0x080 */
+#define SMBUS_IC_INTR_ACTIVITY_MASK       (1 << 8)      /**< Activity interrupt mask - 0x100 */
+#define SMBUS_IC_INTR_STOP_DET_MASK       (1 << 9)      /**< Stop detection interrupt mask - 0x200 */
+#define SMBUS_IC_INTR_START_DET_MASK      (1 << 10)     /**< Start detection interrupt mask - 0x400 */
+#define SMBUS_IC_INTR_GEN_CALL_MASK       (1 << 11)     /**< General call interrupt mask - 0x800 */
+#define SMBUS_IC_INTR_RESTART_DET_MASK    (1 << 12)     /**< Restart detection interrupt mask - 0x1000 */
+
+/* All interrupts mask for clearing all interrupts */
+#define SMBUS_IC_INTR_ALL                 (0xFFFFFFFF)   /**< All interrupts mask */
 
 /* I2C TX Abort Source Mask Constants */
 #define SMBUS_IC_TX_ABRT_SOURCE_ABRT_MASTER_DIS_MASK (1U << 1)  /**< Master disable abort source mask */
@@ -250,8 +253,6 @@ typedef enum SmbusTransferState {
 /* Lock timeout */
 #define SMBUS_LOCK_TIMEOUT_MS         (1000)    /**< Lock timeout in milliseconds */
 
-/* Callback queue constants */
-#define SMBUS_CALLBACK_QUEUE_SIZE     (16)       /**< Callback queue size for slave events */
 
 /* ARP abort mask */
 #define SMBUS_ARP_ABORT_MASK           (0x09)    /**< ARP abort source mask */
@@ -423,7 +424,6 @@ typedef struct SmbusDev {
     U32                      masterTxBufLen;     // 当前消息剩余待发送长度
     U32                      sdaHoldTime;        /**< SDA hold time configuration */
     U32                      clkRate;            /**< Clock rate for timing calculations */
-    U32                      rxStallCount;       /**< RX stall detection counter */
 
     /* SMBus timing configuration fields (ported from I2C) */
     U16                      ssHcnt;             /**< Standard mode SCL high count */
@@ -509,23 +509,6 @@ typedef struct SmbusCallbackInfo {
     SmbusEventData_u *userData;     /**< User data */
 } SmbusCallbackInfo_s;
 
-/**
- * @brief SMBus Callback Event Structure
- */
-typedef struct SmbusCallbackEvent {
-    DevList_e              devId;        /**< Device ID */
-    U32                    eventType;    /**< Event type */
-    SmbusEventData_u       eventData;    /**< Event data */
-} SmbusCallbackEvent_s;
-
-/**
- * @brief SMBus Callback Queue Structure
- */
-typedef struct SmbusCallbackQueue {
-    U32                    head;          /**< Queue head index */
-    U32                    tail;          /**< Queue tail index */
-    SmbusCallbackEvent_s   events[SMBUS_CALLBACK_QUEUE_SIZE]; /**< Event array */
-} SmbusCallbackQueue_s;
 
 /**
  * @brief SMBus Driver Data Structure
@@ -552,6 +535,7 @@ typedef struct SmbusDrvData {
     void                   *arpFailParam;   /**< ARP failure callback parameter */
     void                   *arpContext;     /**< ARP context */
     U32                    slaveValidRxLen; /**< Slave valid RX length */
+    U32                    slaveTxIndex;   /**< Slave TX buffer index */
     SmbusDev_s             pSmbusDev;      /**< SMBus device context */
     SmbusArpMaster_s       arpMaster;       /**< ARP master context */
     SmbusUdid_s            udid;
@@ -559,10 +543,6 @@ typedef struct SmbusDrvData {
     U16                    errorCount;
     U16                    rxBufferSize;
     SmbusCallbackInfo_s    callback;         /*common interface */
-
-    /* Callback queue for deferred processing (fix ISR blocking issue) */
-    SmbusCallbackQueue_s   callbackQueue;    /**< Callback queue */
-    bool                   callbackPending;  /**< Callback processing pending flag */
 } SmbusDrvData_s;
 
 /**
@@ -684,6 +664,7 @@ U8 smbusPecPktConstruct(U8 addr7bitIn, bool isWrite, U8 *pData, U32 count);
  * [CORE] Core protocol layer - interrupt management
  */
 U32 smbusReadClearIntrBits(volatile SmbusRegMap_s *regBase);
+U32 smbusReadClearIntrBitsMasked(SmbusDrvData_s *pDrvData, U32 mask);
 
 /**
  * @brief Master read data from RX FIFO
@@ -720,15 +701,6 @@ void smbusMasterTransferData(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *r
  */
 void smbusTriggerSlaveEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data, U32 len);
 
-/**
- * @brief Process pending callbacks from task context
- * @details Processes queued callbacks that were deferred from interrupt context
- * @param[in] pDrvData Pointer to driver data structure
- * @return void
- *
- * [CORE] Core protocol layer - callback processing (fix ISR blocking)
- */
-void smbusProcessPendingCallbacks(SmbusDrvData_s *pDrvData);
 
 /**
  * @brief Handle master specific SMBus interrupts
