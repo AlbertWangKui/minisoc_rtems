@@ -2,7 +2,7 @@
  * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
  * @file drv_sm3_api.h
- * @author baibch
+ * @author baibch@starsmicrosystem.com
  * @date 2025/09/30
  * @brief SM3 hash algorithm driver header
  */
@@ -13,10 +13,17 @@
 #include "common_defines.h"
 #include "bsp_device.h"
 
+#define SM3_BUSY_FLAGS       (1U)
 #define SM3_FINISH_FLAGS     (1U)
 #define SM3_ADDR_OVER_FLAGS  (1U)
 #define SM3_NUM_BITS_PER_GRP (512)
 #define SM3_LOCK_TIMEOUT_MS  (1000)
+#define SM3_DATA_STD_SIZE    (64)
+#define SM3_RESULT_DWORDS    (8)
+#define BYTE_BITS            (8)
+
+#define SM3_HW_CALC_TIMEOUT_MS  (20000)
+#define SM3_SW_CALC_TIMEOUT_MS  (10000)
 
 /* SM3 Mode Definitions */
 typedef enum {
@@ -54,7 +61,7 @@ S32 sm3Init(DevList_e devId);
  *          mode (hardware or software) depends on the current configuration.
  * @param [in] devId Device enumeration ID
  * @param [in] dataIn Pointer to input data buffer
- * @param [in] len Length of input data in 32-bit words
+ * @param [in] len Length of input data (unit: byte)
  * @param [out] hashBuf Pointer to output buffer for hash result (32 bytes)
  * @return  EXIT_SUCCESS : 0 on success
  *          -EINVAL : Invalid parameters
@@ -140,14 +147,14 @@ S32 sm3ChgivSet(DevList_e devId);
  * @details This function executes the SM3 hash calculation using hardware acceleration.
  * @param [in] devId Device enumeration ID
  * @param [in] dataIn Pointer to input data buffer
- * @param [in] len Length of input data in 32-bit words
+ * @param [in] len Length of input data (unit: byte)
  * @param [in] timeout Timeout value for operation (milliseconds)
  * @return  EXIT_SUCCESS : 0 on success
  *          -EINVAL : Invalid device ID or parameters
  *          -EIO : Device not initialized or hardware error
  *          -EBUSY : Device busy
  */
-S32 sm3HwModeCalc(DevList_e devId, U32 *dataIn, U32 len, U32 timeout);
+S32 sm3HwModeCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout);
 
 /**
  * @brief  Perform hash calculation in software mode with loop processing
@@ -155,14 +162,14 @@ S32 sm3HwModeCalc(DevList_e devId, U32 *dataIn, U32 len, U32 timeout);
  *          with loop processing for large data sets.
  * @param [in] devId Device enumeration ID
  * @param [in] dataIn Pointer to input data buffer
- * @param [in] len Length of input data in 32-bit words
+ * @param [in] len Length of input data (unit: byte)
  * @param [in] timeout Timeout value for operation (milliseconds)
  * @return  EXIT_SUCCESS : 0 on success
  *          -EINVAL : Invalid device ID or parameters
  *          -EIO : Device not initialized or processing error
  *          -EBUSY : Device busy
  */
-S32 sm3SoftModeLoopCalc(DevList_e devId, U32 *dataIn, U32 len, U32 timeout);
+S32 sm3SoftModeLoopCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout);
 
 /**
  * @brief  Deinitialize SM3 module: unregister device from system, release resources
@@ -174,4 +181,4 @@ S32 sm3SoftModeLoopCalc(DevList_e devId, U32 *dataIn, U32 len, U32 timeout);
  *          -EBUSY : Device not initialized or busy
  */
 S32 sm3DeInit(DevList_e devId);
-#endif
+#endif /* __DRV_SM3_API_H__ */

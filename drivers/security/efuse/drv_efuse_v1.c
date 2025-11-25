@@ -279,7 +279,7 @@ static S32 efuseDevCfgGet(DevList_e devId, SbrEfuseCfg_s *pEfuseCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("efuse: SBR dump - regAddr:0x%08x, reserved:0x%08x\r\n",
+    LOGE("efuse: SBR dump - regAddr:0x%08x, reserved:0x%08x\r\n",
          pEfuseCfg->regAddr, pEfuseCfg->reserved);
 #endif
 

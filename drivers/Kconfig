@@ -14,5 +14,6 @@ source "drivers/security/Kconfig"
 source "drivers/pvt/Kconfig"
 source "drivers/qspi_ctrl/Kconfig"
 source "drivers/ocm_ecc/Kconfig"
+source "drivers/tach/Kconfig"
 
 endmenu

@@ -248,7 +248,7 @@ exit:
     return ret;
 }
 
-static S32 sgpioDevCfgGet(DevList_e devId, SbrSgpioCfg_s *sbrCfg)
+static S32 sgpioGetDevCfg(DevList_e devId, SbrSgpioCfg_s *sbrCfg)
 {
     /* 从SBR读取SGPIO配置 */
     if (devSbrRead(devId, sbrCfg, 0, sizeof(SbrSgpioCfg_s)) != sizeof(SbrSgpioCfg_s)) {
@@ -264,7 +264,7 @@ static S32 sgpioDevCfgGet(DevList_e devId, SbrSgpioCfg_s *sbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("sgpio: SBR dump - regAddr:%p, mode:%u, maxClk:%u, cfgClk:%u, driveNum:%u, reserved:0x%08x\r\n",
+    LOGE("sgpio: SBR dump - regAddr:%p, mode:%u, maxClk:%u, cfgClk:%u, driveNum:%u, reserved:0x%08x\r\n",
          sbrCfg->regAddr, sbrCfg->mode, sbrCfg->maxClk, sbrCfg->cfgClk, sbrCfg->driveNum, sbrCfg->reserved);
 #endif
 
@@ -308,7 +308,7 @@ S32 sgpioInit(DevList_e devId)
         goto exit;
     }
 
-    if (sgpioDevCfgGet(devId, &sgpioDrvData->sbrCfg) != EXIT_SUCCESS) {
+    if (sgpioGetDevCfg(devId, &sgpioDrvData->sbrCfg) != EXIT_SUCCESS) {
         ret = -EIO;
         goto freeMem;
     }

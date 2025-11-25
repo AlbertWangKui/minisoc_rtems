@@ -2,15 +2,14 @@
  * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
  * @file drv_pwm.c
- * @author yangzhl3 (yangzhl3@starsmicrosystem.com)
- * @date 2025/03/17
- * @brief
+ * @author yangkl (yangkl@starsmicrosystem.com)
+ * @date 2025/10/22
+ * @brief  pwm driver for minisoc
  *
  * @par ChangeLog:
  *
  * Date         Author          Description
- * 2025/03/17   yangzhl3        移植自产品软件
- *
+ * 2025/10/22   yangkl         the first version
  *
  */
 
@@ -19,45 +18,46 @@
 #include "bsp_api.h"
 #include "osp_interrupt.h"
 #include "log_msg.h"
-#include "drv_pwm.h"
 #include "drv_pwm_api.h"
+#include "drv_pwm.h"
 #include "sbr_api.h"
 
-static S32 pwmDevCfgGet(DevList_e devId, SbrPwmCfg_s *pwmSbrCfg)
+static S32 getPwmDevConfig(DevList_e devId, SbrPwmCfg_s * pwmSbrCfg)
 {
     S32 ret = EXIT_SUCCESS;
 
     if (pwmSbrCfg == NULL) {
-        ret = -EXIT_FAILURE;
-        goto out;
+        ret = -EINVAL;
+        goto exit;
     }
 
     if (devSbrRead(devId, pwmSbrCfg, 0, sizeof(SbrPwmCfg_s)) != sizeof(SbrPwmCfg_s)) {
-        ret = -EXIT_FAILURE;
-        goto out;
+        ret = -EIO;
+        goto exit;
     }
 
-#ifdef CONFIG_DUMP_SBR
-    LOGI("pwm: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, chNum:%u\r\n",
+#if CONFIG_DUMP_SBR
+    LOGI("%s: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, chNum:%u\r\n", __func__,
          pwmSbrCfg->regAddr, pwmSbrCfg->irqNo, pwmSbrCfg->irqPrio, pwmSbrCfg->chNum);
 #endif
 
     if (pwmSbrCfg->irqNo == 0 || pwmSbrCfg->irqPrio == 0 || pwmSbrCfg->regAddr == NULL) {
-        ret = -EXIT_FAILURE;
-        goto out;
+        ret = -EINVAL;
+        goto exit;
     }
 
-out:
+exit:
     return ret;
 }
 
-static S32 pwmConvertFreqToPsc(DevList_e devId, U32 freq, U16 *psc)
+static S32 convertPwmFreqToPrescaler(DevList_e devId, U16 *psc)
 {
     S32 ret = EXIT_SUCCESS;
-    U32 clk;
+    U32 prescalerValue;
+    U32 clk = 0;
 
-    if (freq == 0) {
-        ret = -EXIT_FAILURE;
+    if (psc == NULL) {
+        ret = -EINVAL;
         goto exit;
     }
 
@@ -65,71 +65,728 @@ static S32 pwmConvertFreqToPsc(DevList_e devId, U32 freq, U16 *psc)
         ret = -EXIT_FAILURE;
         goto exit;
     }
-    clk = clk/100;
-    *psc = (U16)((clk / freq) - 1);
+
+    prescalerValue = clk / PWM_CNT_FREQ;
+    if (prescalerValue == 0 || prescalerValue > (PWM_MAX_PRESCALER + 1)) {
+        ret = -EINVAL;
+        LOGE("%s: prescalerValue %u is invalid, clk: %u\r\n", __func__, prescalerValue, clk);
+        goto exit;
+    }
+
+    *psc = (U16)(prescalerValue - 1);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 初始化PWM模块：注册设备到系统、获取设备信息
- * @param [in] devId,PWM设备枚举ID
- * @param [out] none
- * @return EXIT_SUCCESS or -EXIT_FAILURE
- */
-S32 pwmInit(DevList_e  devId)
+static S32 pwmDrvLockAndCheck(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
-    PwmDrvData_s *pwmDrvData = NULL;
 
-    if (isDrvInit(devId)) {
+    /* lock */
+    if (devLockByDriver(devId, PWM_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: %u lock failure!\r\n", __func__, devId);
         ret = -EBUSY;
         goto exit;
     }
 
     if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
-        return -EINVAL;
+        LOGE("%s: %u driver mismatch!\r\n", __func__, devId);
+        ret = -ENODEV;
+        goto exit;
     }
 
-    if(devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
+    if(isDrvInit(devId) == false) {
+        ret = -EINVAL;
+        LOGE("%s: %u is unintialized!\r\n", __func__, devId);
+        goto exit;
+    }
+
+exit:
+    return ret;
+}
+
+static S32 pwmInterruptEnable(PwmDrvData_s *pDrvData, PwmIntrType_e intrType, bool enable)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmReg_s *pReg = NULL;
+
+    /* Input parameter validation */
+    if (pDrvData == NULL) {
+        LOGE("%s: Invalid parameter, pDrvData is NULL\r\n", __func__);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        LOGE("%s: pReg is NULL\r\n", __func__);
+        ret = -EIO;
+        goto exit;
+    }
+
+    /* Configure interrupt enable bits based on type */
+    switch (intrType) {
+    case PWM_CHAN_1_INT:
+        pReg->pwmIntrCtrl.chan1IntrEn = (enable == true) ? (1) : (0);
+        break;
+    case PWM_CHAN_2_INT:
+        pReg->pwmIntrCtrl.chan2IntrEn = (enable == true) ? (1) : (0);
+        break;
+    case PWM_CHAN_3_INT:
+        pReg->pwmIntrCtrl.chan3IntrEn = (enable == true) ? (1) : (0);
+        break;
+    case PWM_CHAN_4_INT:
+        pReg->pwmIntrCtrl.chan4IntrEn = (enable == true) ? (1) : (0);
+        break;
+    case PWM_BRAKE_INT:
+        pReg->pwmIntrCtrl.brakeIntrEn = (enable == true) ? (1) : (0);
+        break;
+    case PWM_ALL_INT:
+        pReg->pwmIntrCtrl.chan1IntrEn = (enable == true) ? (1) : (0);
+        pReg->pwmIntrCtrl.chan2IntrEn = (enable == true) ? (1) : (0);
+        pReg->pwmIntrCtrl.chan3IntrEn = (enable == true) ? (1) : (0);
+        pReg->pwmIntrCtrl.chan4IntrEn = (enable == true) ? (1) : (0);
+        pReg->pwmIntrCtrl.brakeIntrEn = (enable == true) ? (1) : (0);
+        break;
+    default:
+        LOGE("%s: Invalid interrupt type %d\r\n", __func__, intrType);
+        ret = -EINVAL;
+        break;
+    }
+
+exit:
+    return ret;
+}
+
+static void pwmIrqHandler(PwmDrvData_s *pDrvData)
+{
+    U32 stat = 0;
+    U32 regVal = 0; 
+    PwmReg_s *pReg = NULL;
+
+    /* Input parameter validation */
+    if (pDrvData == NULL) {
+        LOGE("%s: Invalid parameter, pDrvData is NULL\r\n", __func__);
+        return;
+    }
+
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        LOGE("%s: Invalid register address\r\n", __func__);
+        return;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    
+    /* Read interrupt status */
+    regVal = pReg->pwmIntrStat.dword;
+    stat = regVal & PWM_INTR_STAT_ALL;
+
+    if (stat == 0) {
+        return;
+    }
+
+    /* Clear all interrupt status bits */
+    reg32Write(&pReg->pwmIntrStat, (~PWM_INTR_STAT_ALL) & regVal);  ///< pwm int write 0 clear
+    if (pDrvData->irqCb.cb != NULL) {
+        pDrvData->irqCb.cb(pDrvData->irqCb.arg, stat);
+    }
+}
+
+static S32 cfgPwmOutput(PwmReg_s * pReg, PwmOutParameter_s * cfg)
+{
+    S32 ret = EXIT_SUCCESS;
+    U32 cntEn = 0;
+
+    /* Input parameter validation */
+    if ((NULL == pReg) || (NULL == cfg)) {
+        LOGE("%s: Invalid parameter, pReg or cfg is NULL\r\n", __func__);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Validate channel ID */
+    if (cfg->chId >= (U32)PWM_CHANNEL_MAX) {
+        LOGE("%s: Invalid chId %u (max %u)\r\n", __func__, cfg->chId, PWM_CHANNEL_MAX - 1);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Validate duty cycle */
+    if (cfg->duty > PWM_DUTY_MAX) {
+        LOGE("%s: Invalid duty %u (max %u)\r\n", __func__, cfg->duty, PWM_DUTY_MAX);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Validate polarity */
+    if (cfg->polarity >= PWM_POLARITY_INVALID) {
+        LOGE("%s: Invalid polarity %u (valid values: %u or %u)\r\n", 
+            __func__, cfg->polarity, PWM_POLARITY_NORMAL, PWM_POLARITY_REVERSE);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Configure each channel output */
+    cntEn = pReg->pwmRegCtrl.countEn;
+    pReg->pwmRegCtrl.countEn = 0; ///< Disable PWM main counter
+    
+    switch (cfg->chId) {
+    case PWM_CHAN_0:
+        pReg->ch12InOutCtrl.pwmOutCompare.cc13Select = 0; ///< 0 for output
+        pReg->ch12InOutCtrl.pwmOutCompare.oc13Ref = PWM_OC_MODE1;
+        pReg->pwmCapCmpCtrl.cc1Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? (1) : (0);
+        break;
+    case PWM_CHAN_1:
+        pReg->ch12InOutCtrl.pwmOutCompare.cc24Select = 0; ///< 0 for output
+        pReg->ch12InOutCtrl.pwmOutCompare.oc24Ref = PWM_OC_MODE1;
+        pReg->pwmCapCmpCtrl.cc2Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? (1) : (0);
+        break;
+    case PWM_CHAN_2:
+        pReg->ch34InOutCtrl.pwmOutCompare.cc13Select = 0; ///< 0 for output
+        pReg->ch34InOutCtrl.pwmOutCompare.oc13Ref = PWM_OC_MODE1;
+        pReg->pwmCapCmpCtrl.cc3Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? (1) : (0);
+        break;
+    case PWM_CHAN_3:
+        pReg->ch34InOutCtrl.pwmOutCompare.cc24Select = 0; ///< 0 for output
+        pReg->ch34InOutCtrl.pwmOutCompare.oc24Ref = PWM_OC_MODE1;
+        pReg->pwmCapCmpCtrl.cc4Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? (1) : (0);
+        break;
+    default:
+        pReg->pwmRegCtrl.countEn = cntEn;
+        ret = -EINVAL;
+        goto exit;
+    }
+
+exit:
+    return ret;
+}
+
+static S32 pwmChannelEnable(PwmDrvData_s *pDrvData, U32 chId, bool enable)
+{
+    PwmReg_s *pReg = NULL;
+    S32 ret = EXIT_SUCCESS;
+
+    /* Input parameter validation */
+    if((pDrvData == NULL) || (chId >= PWM_CHANNEL_MAX)) {
+        LOGE("%s: Invalid parameter, pDrvData is NULL or chId %u is invalid\r\n", __func__, chId);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        LOGE("%s: invalid register, chId: %d\r\n", __func__, chId);
+        ret = -EIO;
+        goto exit;
+    }
+
+    /* Configure channel enable bits */
+    switch(chId) {
+        case PWM_CHAN_0:
+            pReg->pwmCapCmpCtrl.cc1Enable = (enable == true) ? (1) : (0);
+            break;
+        case PWM_CHAN_1:
+            pReg->pwmCapCmpCtrl.cc2Enable = (enable == true) ? (1) : (0);
+            break;
+        case PWM_CHAN_2:
+            pReg->pwmCapCmpCtrl.cc3Enable = (enable == true) ? (1) : (0);
+            break;
+        case PWM_CHAN_3:
+            pReg->pwmCapCmpCtrl.cc4Enable = (enable == true) ? (1) : (0);
+            break;
+        default:
+            LOGE("%s: Invalid channel ID %u\r\n", __func__, chId);
+            ret = -EIO;
+            break;
+    }
+
+exit:
+    return ret;
+}
+
+S32 pwmCallbackRegister(DevList_e devId,
+        PwmIntrType_e intrType, pwmIrqCallBack callback, void *arg)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+
+    /* Input parameter validation */
+    if (intrType < PWM_CHAN_1_INT || intrType > PWM_ALL_INT) {
+        LOGE("%s: Invalid interrupt type %d\r\n", __func__, intrType);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    if (callback == NULL) {
+        LOGE("%s: Invalid parameter, callback is NULL\r\n", __func__);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
+        goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
+    }
+
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if(pwmInterruptEnable(pDrvData, intrType, false) != EXIT_SUCCESS) {
+        LOGE("%s: failed to disable interrupt: %d\r\n", __func__, intrType);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Set callback function and argument */
+    pDrvData->irqCb.cb = callback;
+    pDrvData->irqCb.arg = arg;
+
+    /* Re-enable interrupt */
+    if(pwmInterruptEnable(pDrvData, intrType, true) != EXIT_SUCCESS) {
+        LOGE("%s: failed to enable interrupt: %d\r\n", __func__, intrType);
+        ret = -EIO;
+        goto unlock;
+    }
+
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
+    return ret;
+}
+
+S32 pwmCallbackUnRegister(DevList_e devId, PwmIntrType_e intrType)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
+        goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
+    }
+
+    /* Input parameter validation */
+    if (intrType < PWM_CHAN_1_INT || intrType > PWM_ALL_INT) {
+        LOGE("%s: Invalid interrupt type %d\r\n", __func__, intrType);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if(pwmInterruptEnable(pDrvData, intrType, false) != EXIT_SUCCESS) {
+        LOGE("%s: failed to disable interrupt: %d\r\n", __func__, intrType);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Clear callback function and argument */
+    pDrvData->irqCb.cb = NULL;
+    pDrvData->irqCb.arg = NULL;
+
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
+    return ret;
+}
+
+S32 pwmSetCfg(DevList_e devId, PwmOutParameter_s *cfg)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+    PwmReg_s *pReg = NULL;
+
+    /* Input parameter validation */
+    if (cfg == NULL) {
+        LOGE("%s: Invalid parameter, cfg is NULL\r\n", __func__);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
+        goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
+    }
+
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        LOGE("%s: invalid register, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Configure PWM output */
+    ret = cfgPwmOutput(pReg, cfg);
+
+unlock:
+    devUnlockByDriver(devId);
+exit:
+    return ret;
+}
+
+S32 pwmSetFreq(DevList_e devId, U32 Freq)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+    PwmReg_s *pReg = NULL;
+    U16 prescaler = 0;
+
+    /* Input parameter validation */
+    if (Freq == 0) {
+        LOGE("%s: Invalid frequency %u\r\n", __func__, Freq);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Validate frequency range - minimum 1Hz, maximum based on clock */
+    if (Freq > PWM_CNT_FREQ) {
+        LOGE("%s: Frequency %u exceeds maximum %u\r\n", __func__, Freq, PWM_CNT_FREQ);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    if (PWM_GET_PRELOAD_CNT(Freq) >= PWM_MAX_PRELOAD) {
+        LOGE("%s: Frequency is too low: %d\r\n", __func__, PWM_GET_PRELOAD_CNT(Freq));
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
+        goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
+    }
+
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        LOGE("%s: invalid register, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Convert frequency to prescaler */
+    ret = convertPwmFreqToPrescaler(devId, &prescaler);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: failed to convert freq to prescaler, ret: %d\r\n", __func__, ret);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Set prescaler and preload values */
+    pReg->pwmPreDivClk.divClk = prescaler;
+    pReg->pwmPreLoad.preCount = (U16)PWM_GET_PRELOAD_CNT(Freq);
+    pDrvData->preloadRegCnt = (U16)PWM_GET_PRELOAD_CNT(Freq);
+
+unlock:
+    devUnlockByDriver(devId);
+exit:
+    return ret;
+}
+
+S32 pwmSetDuty(DevList_e devId, U32 chId, U32 duty)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+    PwmReg_s *pReg = NULL;
+    U32 dutyCompareVal = 0;
+    U32 preloadCnt = 0;
+
+    /* Input parameter validation */
+    if (duty > PWM_DUTY_MAX) {
+        LOGE("%s: invalid duty: %d\r\n", __func__, duty);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    if (chId >= PWM_CHANNEL_MAX) {
+        LOGE("%s: invalid channel ID: %d\r\n", __func__, chId);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
+        goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
+    }
+
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Calculate duty compare value */
+    preloadCnt = pDrvData->preloadRegCnt;
+    if (preloadCnt == 0) {
+        LOGE("%s: preload count is 0, frequency may not be set\r\n", __func__);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    dutyCompareVal = (U16)(PWM_GET_DUTY_CMPARE_VAL(preloadCnt, duty));
+
+    if (dutyCompareVal > PWM_DUTY_COMPARE_MAX_VAL) {
+        LOGE("%s: invalid dutyCompareVal: %d\r\n", __func__, dutyCompareVal);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        LOGE("%s: invalid register, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Set duty compare value */
+    pReg->pwmCaptureData[chId].dataCount = dutyCompareVal;
+
+unlock:
+    devUnlockByDriver(devId);
+exit:
+    return ret;
+}
+
+S32 pwmStart(DevList_e devId, U32 chId)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+    PwmReg_s *pReg = NULL;
+
+    /* Input parameter validation */
+    if (chId >= PWM_CHANNEL_MAX) {
+        LOGE("%s: invalid channel ID: %d\r\n", __func__, chId);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
+        goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
+    }
+
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        LOGE("%s: invalid register, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Enable PWM main counter */
+    pReg->pwmRegCtrl.countEn = 1; ///< Enable PWM main counter
+
+    /* Enable channel for PWM output */
+    ret = pwmChannelEnable(pDrvData, chId, 1);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: failed to enable channel: %d, ret: %d\r\n", __func__, chId, ret);
+        ret = -EIO;
+        goto unlock;
+    }
+
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
+    return ret;
+}
+
+S32 pwmStop(DevList_e devId, U32 chId)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+    PwmReg_s *pReg = NULL;
+
+    /* Input parameter validation */
+    if (chId >= PWM_CHANNEL_MAX) {
+        LOGE("%s: invalid channel ID: %d\r\n", __func__, chId);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
+        goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
+    }
+
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    pReg = (PwmReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        LOGE("%s: invalid register, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Disable channel compare enable */
+    ret = pwmChannelEnable(pDrvData, chId, 0);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: failed to disable channel: %d, ret: %d\r\n", __func__, chId, ret);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Disable PWM main counter */
+    if (pReg->pwmCapCmpCtrl.cc1Enable == 0 && pReg->pwmCapCmpCtrl.cc2Enable == 0
+        && pReg->pwmCapCmpCtrl.cc3Enable == 0 && pReg->pwmCapCmpCtrl.cc4Enable == 0) {
+        pReg->pwmRegCtrl.countEn = 0;
+    }
+    
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
+    return ret;
+}
+
+S32 pwmInit(DevList_e devId)
+{
+    S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
+
+    /* Lock device */
+    if(devLockByDriver(devId, PWM_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: failed to lock driver: %d\r\n", __func__, devId);
         ret = -EBUSY;
         goto exit;
     }
 
+    /* Check if driver is already initialized */
+    if (isDrvInit(devId) == true) {
+        LOGE("%s: driver already initialized: %d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    /* Check driver match */
+    if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
+        LOGE("%s: driver not matched: %d\r\n", __func__, devId);
+        ret = -ENODEV;
+        goto unlock;
+    }
+
+    /* Enable peripheral clock */
     if (peripsClockEnable(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to enable clock: %d\r\n", __func__, devId);
         ret = -EIO;
         goto unlock;
     }
 
+    /* Reset peripheral */
     if (peripsReset(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to reset periphs: %d\r\n", __func__, devId);
         ret = -EIO;
         goto unlock;
     }
 
-    pwmDrvData = calloc(1, sizeof(PwmDrvData_s));
-    if (pwmDrvData == NULL) {
+    /* Allocate driver data */
+    pDrvData = calloc(1, sizeof(PwmDrvData_s));
+    if (pDrvData == NULL) {
         ret = -ENOMEM;
+        LOGE("%s: failed to allocate memory: %d\r\n", __func__, devId);
         goto unlock;
     }
 
-    if (pwmDevCfgGet(devId, &pwmDrvData->sbrCfg) != EXIT_SUCCESS) {
-        LOGE("%s: failed to get sbr\r\n", __func__);
+    /* Get device configuration */
+    if (getPwmDevConfig(devId, &pDrvData->sbrCfg) != EXIT_SUCCESS) {
+        LOGE("%s: failed to get sbr config: %d\r\n", __func__, devId);
         ret = -EIO;
-        goto freemem0;
+        goto freeMem;
     }
 
-    ///< 最后安装设备驱动
-    if (drvInstall(devId, (void*)pwmDrvData) != EXIT_SUCCESS) {
+    /* Install interrupt handler */
+    ret = ospInterruptHandlerInstall(pDrvData->sbrCfg.irqNo, "pwm", OSP_INTERRUPT_UNIQUE,
+        (OspInterruptHandler)pwmIrqHandler, (void*)pDrvData);
+    if (ret == OSP_RESOURCE_IN_USE) {
+        LOGW("%s: irq handler already installed\r\n", __func__);
+    } else if (ret == OSP_SUCCESSFUL) {
+        ospInterruptVectorEnable((pDrvData->sbrCfg.irqNo));
+    } else {
+        LOGE("%s: irq handler install failed\r\n", __func__);
         ret = -EIO;
-        goto freemem0;
+        goto freeMem;
+    }
+
+    /* Initialize preload count to 0 */
+    pDrvData->preloadRegCnt = 0;
+
+    /* Install device driver */
+    if (drvInstall(devId, pDrvData) != EXIT_SUCCESS) {
+        ret = -EIO;
+        goto removeIrq;
     }
 
     ret = EXIT_SUCCESS;
     goto unlock;
 
-freemem0:
-    free(pwmDrvData);
+removeIrq:
+    if (pDrvData->sbrCfg.irqNo) {
+        ospInterruptVectorDisable(pDrvData->sbrCfg.irqNo);
+        ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo, (OspInterruptHandler)pwmIrqHandler, pDrvData);
+    }
+
+freeMem:
+    if (pDrvData != NULL) {
+        free(pDrvData);
+        pDrvData = NULL;
+    }
 
 unlock:
     devUnlockByDriver(devId);
@@ -138,31 +795,47 @@ exit:
     return ret;
 }
 
-/**
- * @brief 去初始化设备：关闭PWM设备下所有通道，卸载驱动
- * @param [in] devId,PWM设备枚举ID
- * @param [out] none
- * @return EXIT_SUCCESS or -EXIT_FAILURE
- */
 S32 pwmDeInit(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
+    PwmDrvData_s *pDrvData = NULL;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
-        return -EINVAL;
-    }
-
-    if(devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
+    /* Lock device and perform validation */
+    ret = pwmDrvLockAndCheck(devId);
+    if (-EBUSY == ret) {
         goto exit;
+    } else if (EXIT_SUCCESS != ret) {
+        goto unlock;
     }
 
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if (pDrvData->sbrCfg.irqNo) {
+        ospInterruptVectorDisable(pDrvData->sbrCfg.irqNo);
+        ret = ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo,
+                                         (OspInterruptHandler)pwmIrqHandler,
+                                         pDrvData);
+        if (ret != OSP_SUCCESSFUL) {
+            LOGE("%s: failed to remove IRQ handler, ret=%d\r\n", __func__, ret);
+        }
+    }
+    
+    /* Reset peripheral */
     if (peripsReset(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to reset peripheral, devId: %d\r\n", __func__, devId);
         ret = -EIO;
-        goto unlock;
     }
 
-    drvUninstall(devId); ///< 卸载设备
+    /* Uninstall driver */
+    if (drvUninstall(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to uninstall driver, devId: %d\r\n", __func__, devId);
+        ret = -EIO;
+    }
 
 unlock:
     devUnlockByDriver(devId);
@@ -171,340 +844,3 @@ exit:
     return ret;
 }
 
-
-/**
- * @brief 配置PWM参数
- * @param [in] devId,PWM设备枚举ID
- * @param [in] cfg,PWM参数,包括通道ID，周期、占空比、分频系数、输出极性和计数器预装载值
- * @param [out] none
- * @return EXIT_SUCCESS or -EXIT_FAILURE
- */
-S32 pwmSetCfg(DevList_e devId, PwmOutParameter_s *cfg)
-{
-    S32 ret = EXIT_SUCCESS;
-    PwmDrvData_s *pwmDrvData;
-    PwmReg_u regVal;
-    U32 chid;
-
-    if (cfg == NULL) {
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
-        return -EINVAL;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId,(void**)&pwmDrvData) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if(pwmDrvData == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    chid = cfg->chid;
-    if (chid >= pwmDrvData->sbrCfg.chNum) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    ///< config channel to output
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_CAPTURE_MODE_REG(chid+1));
-    if ((chid == 0)||(chid == 2)) {
-        regVal.pwmOutCapture.cc13Select = 0; ///< 0为输出
-        regVal.pwmOutCapture.oc13Ref    = PWM_OC_MODE1;
-    }
-    else {
-        regVal.pwmOutCapture.cc24Select = 0; ///< 0为输出
-        regVal.pwmOutCapture.oc24Ref    = PWM_OC_MODE1;
-    }
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_CAPTURE_MODE_REG(chid+1), regVal.all);
-
-    ///< config prescaler
-    regVal.all                 = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_PRE_DIV_CLK);
-    regVal.pwmPreDivClk.divClk = cfg->prescaler;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_PRE_DIV_CLK, regVal.all);
-
-    ///< config polatity
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_CAPTURE_CTRL);
-    switch (chid) {
-        case 0:
-            regVal.pwmCaptureCtrl.cc1Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? 1 : 0;
-            break;
-        case 1:
-            regVal.pwmCaptureCtrl.cc2Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? 1 : 0;
-            break;
-        case 2:
-            regVal.pwmCaptureCtrl.cc3Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? 1 : 0;
-            break;
-        case 3:
-            regVal.pwmCaptureCtrl.cc4Polarity = (PWM_POLARITY_REVERSE == cfg->polarity) ? 1 : 0;
-            break;
-        default:
-            ret = -EXIT_FAILURE;
-            goto unlock;
-    }
-
-    ///< disable pwm
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL);
-    regVal.pwmRegCtrl.countEn = 0;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL, regVal.all);
-    regVal.all = cfg->preload;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_PRE_LOAD, regVal.all);
-    ///< enable pwm
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL);
-    regVal.pwmRegCtrl.countEn = 1;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL, regVal.all);
-
-    ///< duty
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_DATA_REG(chid+1));
-    regVal.pwmCaptureData.dataCount = cfg->duty;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_DATA_REG(chid+1), regVal.all);
-
-unlock:
-    devUnlockByDriver(devId);
-exit:
-    return ret;
-}
-
-/**
- * @brief 设置PWM波输出频率
- * @param [in] devId,PWM设备枚举ID
- * @param [in] chid,PWM 某个设备的通道ID
- * @param [in] freq,PWM波输出频率
- * @param [out] none
- * @return EXIT_SUCCESS or -EXIT_FAILURE
- */
-S32 pwmSetFreq(DevList_e devId, U8 chid,  U32 freq)
-{
-    S32 ret = EXIT_SUCCESS;
-    PwmDrvData_s *pwmDrvData;
-    PwmReg_u regVal;
-    U16 psc;
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
-        return -EINVAL;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId,(void**)&pwmDrvData) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if(pwmDrvData == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (chid >= pwmDrvData->sbrCfg.chNum) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    ///< config prescaler(according to freq)
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_PRE_DIV_CLK);
-    if (pwmConvertFreqToPsc(devId, freq, &psc) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    regVal.pwmPreDivClk.divClk = psc;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_PRE_DIV_CLK, regVal.all);
-
-    ret = EXIT_SUCCESS;
-
-unlock:
-    devUnlockByDriver(devId);
-exit:
-    return ret;
-}
-
-/**
- * @brief 设置占空比
- * @param [in] devId,PWM设备枚举ID
- * @param [in] chid,PWM 某个设备的通道ID
- * @param [in] duty,占空比（0~100），值除以100为占空比
- * @param [out] none
- * @return EXIT_SUCCESS or -EXIT_FAILURE
- */
-S32 pwmSetDuty(DevList_e devId, U8 chid,  U32 duty)
-{
-    S32 ret = EXIT_SUCCESS;
-    PwmDrvData_s *pwmDrvData;
-    PwmReg_u regVal;
-
-    if (duty > 100) {
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
-        return -EINVAL;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId,(void**)&pwmDrvData) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if(pwmDrvData == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (chid >= pwmDrvData->sbrCfg.chNum) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    ///< config duty
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_DATA_REG(chid+1));
-    regVal.pwmCaptureData.dataCount = duty;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_DATA_REG(chid+1), regVal.all);
-
-    ret = EXIT_SUCCESS;
-
-unlock:
-    devUnlockByDriver(devId);
-exit:
-    return ret;
-}
-
-/**
- * @brief 开启PWM
- * @param [in] devId,PWM设备枚举ID
- * @param [in] chid,PWM 某个设备的通道ID
- * @param [out] none
- * @return EXIT_SUCCESS or -EXIT_FAILURE
- */
-S32 pwmStart(DevList_e devId, U32 chid)
-{
-    S32 ret = EXIT_SUCCESS;
-    PwmDrvData_s *pwmDrvData;
-    PwmReg_u regVal;
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
-        return -EINVAL;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId,(void**)&pwmDrvData) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if(pwmDrvData == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (chid >= pwmDrvData->sbrCfg.chNum) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_CAPTURE_CTRL);
-    switch(chid) {
-        case 0:
-            regVal.pwmCaptureCtrl.cc1Enable = 1;
-            break;
-        case 1:
-            regVal.pwmCaptureCtrl.cc2Enable = 1;
-            break;
-        case 2:
-            regVal.pwmCaptureCtrl.cc3Enable = 1;
-            break;
-        case 3:
-            regVal.pwmCaptureCtrl.cc4Enable = 1;
-            break;
-        default:
-            ret = -EINVAL;
-            goto unlock;
-    }
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_CAPTURE_CTRL, regVal.all);
-
-    ///< enable pwm
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL);
-    regVal.pwmRegCtrl.countEn = 1;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL, regVal.all);
-
-    ret = EXIT_SUCCESS;
-
-unlock:
-    devUnlockByDriver(devId);
-
-exit:
-    return ret;
-}
-
-/**
- * @brief 关闭PWM
- * @param [in] devId,PWM设备枚举ID
- * @param [in] chid,PWM 某个设备的通道ID
- * @param [out] none
- * @return EXIT_SUCCESS or -EXIT_FAILURE
- */
-S32 pwmStop(DevList_e devId, U32 chid)
-{
-    S32 ret = EXIT_SUCCESS;
-    PwmDrvData_s *pwmDrvData;
-    PwmReg_u regVal;
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_PWM)) {
-        return -EINVAL;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId,(void**)&pwmDrvData) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if(pwmDrvData == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (chid >= pwmDrvData->sbrCfg.chNum) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    regVal.all = reg32Read((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL);
-    regVal.pwmRegCtrl.countEn = 0;
-    reg32Write((U32)pwmDrvData->sbrCfg.regAddr+PWM_CTRL, regVal.all);
-
-    ret = EXIT_SUCCESS;
-
-unlock:
-    devUnlockByDriver(devId);
-
-exit:
-    return ret;
-}

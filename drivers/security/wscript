@@ -21,3 +21,7 @@ def build(bld):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/security/sm3/drv_sm3.c'
         ]
+    if bld.is_defined('CONFIG_USING_SM2'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'drivers/security/sm2/drv_sm2.c'
+        ]

@@ -154,7 +154,7 @@ const struct spi_nor_manufacturer spi_cypress = {
     .nparts = ARRAY_SIZE(cypress_parts),
 };
 
-static const struct flash_info mclogic_parts[] = {
+static const struct flash_info mcLOGEc_parts[] = {
     {
         .id = {
             .bytes = {0xae, 0x60, 0x84, 0xb1},
@@ -165,9 +165,9 @@ static const struct flash_info mclogic_parts[] = {
         .io_wire = 0x1,
     },
 };
-const struct spi_nor_manufacturer spi_mclogic = {
-    .parts = mclogic_parts,
-    .nparts = ARRAY_SIZE(mclogic_parts),
+const struct spi_nor_manufacturer spi_mcLOGEc = {
+    .parts = mcLOGEc_parts,
+    .nparts = ARRAY_SIZE(mcLOGEc_parts),
 };
 
 ///< 默认设备型号

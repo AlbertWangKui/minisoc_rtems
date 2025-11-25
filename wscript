@@ -260,7 +260,7 @@ def configure(ctx):
         os.path.join(ctx.path.abspath(), 'drivers'),
     ]
     
-    # Setup CFLAGS - Match Makefile compilation logic
+    # Setup CFLAGS - Match Makefile compilation LOGEc
     # In Makefile: if PRJ_CFLAGS is provided, it completely replaces PLATFORM_CFLAGS
     # BUT we must always include BSP flags for RTEMS compilation to work
     
@@ -597,7 +597,7 @@ def build(bld):
     elf_target = target_name + '.elf'
     
     # Link with map file generation
-    # Match Makefile linkflags logic - if PRJ_LINKFLAGS provided, use them instead
+    # Match Makefile linkflags LOGEc - if PRJ_LINKFLAGS provided, use them instead
     if bld.env.PRJ_LINKFLAGS and len(bld.env.PRJ_LINKFLAGS) > 0:
         # Custom LINKFLAGS provided - use them as base (like Makefile: PLATFORM_LINKFLAGS := $(PRJ_LINKFLAGS))
         Logs.info('Using custom LINKFLAGS ')

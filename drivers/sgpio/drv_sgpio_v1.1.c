@@ -8,7 +8,7 @@
  * @note        代码未测试@2025-06-10
  */
 
-#include "drv_sgpio.h"
+#include "drv_sgpio_v1.1.h"
 #include "drv_sgpio_api.h"
 
 #include "udelay.h"

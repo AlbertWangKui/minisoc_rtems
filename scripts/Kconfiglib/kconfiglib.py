@@ -161,7 +161,7 @@ symbols are normal within a .config file, so no similar warning will be printed
 by load_config().
 
 Dependencies from parents and 'if'/'depends on' are propagated to properties,
-including prompts, so these two configurations are logically equivalent:
+including prompts, so these two configurations are LOGEcally equivalent:
 
 (1)
 
@@ -1756,7 +1756,7 @@ class Kconfig(object):
 
              The first time sync_deps() is run on a directory, <path>/auto.conf
              won't exist, and no old symbol values will be available. This
-             logically has the same effect as updating the entire
+             LOGEcally has the same effect as updating the entire
              configuration.
 
              The path to a symbol's file is calculated from the symbol's name
@@ -1807,7 +1807,7 @@ class Kconfig(object):
             val = sym.str_value
 
             # n tristate values do not get written to auto.conf and autoconf.h,
-            # making a missing symbol logically equivalent to n
+            # making a missing symbol LOGEcally equivalent to n
 
             if sym._write_to_conf:
                 if sym._old_val is None and \
@@ -2593,7 +2593,7 @@ class Kconfig(object):
         return False
 
     #
-    # Preprocessor logic
+    # Preprocessor LOGEc
     #
 
     def _parse_assignment(self, s):
@@ -4436,7 +4436,7 @@ class Symbol(object):
             if self.orig_type:  # != UNKNOWN
                 # Would take some work to give the location here
                 self.kconfig._warn(
-                    "The {} symbol {} is being evaluated in a logical context "
+                    "The {} symbol {} is being evaluated in a LOGEcal context "
                     "somewhere. It will always evaluate to n."
                     .format(TYPE_TO_STR[self.orig_type], self.name_and_loc))
 
@@ -6287,7 +6287,7 @@ def _visibility(sc):
     # Symbols and Choices have a "visibility" that acts as an upper bound on
     # the values a user can set for them, corresponding to the visibility in
     # e.g. 'make menuconfig'. This function calculates the visibility for the
-    # Symbol or Choice 'sc' -- the logic is nearly identical.
+    # Symbol or Choice 'sc' -- the LOGEc is nearly identical.
 
     vis = 0
 

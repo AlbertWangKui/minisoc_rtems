@@ -729,7 +729,7 @@ extern const struct spi_nor_manufacturer spi_nor_macronix;
 extern const struct spi_nor_manufacturer spi_nor_winbond;
 extern const struct spi_nor_manufacturer spi_nor_xmc;
 extern const struct spi_nor_manufacturer spi_cypress;
-extern const struct spi_nor_manufacturer spi_mclogic;
+extern const struct spi_nor_manufacturer spi_mcLOGEc;
 extern const struct spi_nor_manufacturer spi_default;
 
 static const struct spi_nor_manufacturer *manufacturers[] = {
@@ -738,7 +738,7 @@ static const struct spi_nor_manufacturer *manufacturers[] = {
     &spi_nor_winbond,
     &spi_nor_xmc,
     &spi_cypress,
-    &spi_mclogic,
+    &spi_mcLOGEc,
 };
 
 extern struct cqspi_controller g_cqspi_dev;

@@ -29,7 +29,7 @@
     LOGW(fmt, ##__VA_ARGS__)
 
 #define CLI_LOG_INFO(fmt, ...)                                        \
-    LOGI(fmt, ##__VA_ARGS__)
+    LOGE(fmt, ##__VA_ARGS__)
 
 #define CLI_LOG_DEBUG(fmt, ...)                                       \
     LOGD(fmt, ##__VA_ARGS__)

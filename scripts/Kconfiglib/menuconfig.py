@@ -814,7 +814,7 @@ def _needs_save():
 
 
 def _menuconfig(stdscr):
-    # Logic for the main display, with the list of symbols, etc.
+    # LOGEc for the main display, with the list of symbols, etc.
 
     global _stdscr
     global _conf_filename
@@ -2044,7 +2044,7 @@ def _jump_to_dialog():
 
     _safe_curs_set(2)
 
-    # Logic duplication with _select_{next,prev}_menu_entry(), except we do a
+    # LOGEc duplication with _select_{next,prev}_menu_entry(), except we do a
     # functional variant that returns the new (sel_node_i, scroll) values to
     # avoid 'nonlocal'. TODO: Can this be factored out in some nice way?
 

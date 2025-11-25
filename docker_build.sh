@@ -101,7 +101,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Build command based on arguments - WAF handles all parameter logic
+# Build command based on arguments - WAF handles all parameter LOGEc
 if [[ -z $COMMAND ]];then
     if [[ -n $PRJ_NAME && -n $PRJ_PLATFORM ]]; then
         # Both required parameters provided - build configure command with all optional parameters

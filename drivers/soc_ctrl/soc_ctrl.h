@@ -250,21 +250,21 @@ S32 socCtrlPeriReset(BspSocCtrlPeriModule_e module);
 static inline void testCrgWriteRegValPrint(U32 regAddr, U32 value)
 {
     if (_Thread_Get_executing()) {
-        LOGI("testCRG: [0x%08x] = 0x%08x\r\n", regAddr, value);
+        LOGE("testCRG: [0x%08x] = 0x%08x\r\n", regAddr, value);
     }
 }
 
 static inline void testCrgSetRegBitPrint(U32 regAddr, U32 bit)
 {
     if (_Thread_Get_executing()) {
-        LOGI("testCRG: [0x%08x] |= (1 << %d))\r\n", regAddr, bit);
+        LOGE("testCRG: [0x%08x] |= (1 << %d))\r\n", regAddr, bit);
     }
 }
 
 static inline void testCrgClearRegBitPrint(U32 regAddr, U32 bit)
 {
     if (_Thread_Get_executing()) {
-        LOGI("testCRG: [0x%08x] &= ~(1 << %d))\r\n", regAddr, bit);
+        LOGE("testCRG: [0x%08x] &= ~(1 << %d))\r\n", regAddr, bit);
     }
 }
 #endif

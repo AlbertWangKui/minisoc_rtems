@@ -1,7 +1,7 @@
 /**
- * Copyright (C), 2025, WuXi Stars Micro System TechnoLOGEes Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
- * @file drv_sgpio.h
+ * @file drv_sgpio_v1.1.h
  * @author yangzhl3 (yangzhl3@starsmicrosystem.com)
  * @date 2025/03/17
  * @brief
@@ -13,8 +13,8 @@
  *
  *
  */
-#ifndef __DRV_SGPIO_H__
-#define __DRV_SGPIO_H__
+#ifndef __DRV_SGPIO_V1P1_H__
+#define __DRV_SGPIO_V1P1_H__
 
 /**
  * Macro

@@ -17,7 +17,7 @@
 #include "osp_timer.h"
 
 static CliSessions_s sgCliSessions;
-static Bool sIsLoginOpen = true;
+static Bool sIsLOGEnOpen = true;
 
 /**
  * @brief   获取session信息
@@ -34,9 +34,9 @@ CliSessions_s *cliSessionsGet(void)
  * @param   void
  * @return  errno
  */
-Bool cliLoginStatGet(void)
+Bool cliLOGEnStatGet(void)
 {
-    return sIsLoginOpen;
+    return sIsLOGEnOpen;
 }
 
 /**
@@ -44,9 +44,9 @@ Bool cliLoginStatGet(void)
  * @param   void
  * @return  errno
  */
-void cliLoginStatSet(Bool isOpen)
+void cliLOGEnStatSet(Bool isOpen)
 {
-    sIsLoginOpen = isOpen;
+    sIsLOGEnOpen = isOpen;
 }
 
 /**
@@ -369,7 +369,7 @@ end:
  * @warning
  * @note         2022.05.09  xiezhj
  */
-S32 cliUartSessionLogin(CliSessionObj_s *pSession)
+S32 cliUartSessionLOGEn(CliSessionObj_s *pSession)
 {
     S32             rc        = -CLI_ERRNO_FAILED;
     U64             nowStamp  = 0;
@@ -377,16 +377,16 @@ S32 cliUartSessionLogin(CliSessionObj_s *pSession)
 
     (void)cliSysUpTimeGet(&nowStamp);
 
-    timeDiff = nowStamp - pSession->loginStamp;
-    if (timeDiff > CLI_UART_LOGIN_TIMEOUT) {         ///< 超过五分钟session无输入，则需要重新登录
-        rc= cliUserLogin(pSession->sessionId);
+    timeDiff = nowStamp - pSession->LOGEnStamp;
+    if (timeDiff > CLI_UART_LOGEN_TIMEOUT) {         ///< 超过五分钟session无输入，则需要重新登录
+        rc= cliUserLOGEn(pSession->sessionId);
         if (rc != CLI_ERRNO_OK) {
-            CLI_LOG_ERROR("User login error.");
+            CLI_LOG_ERROR("User LOGEn error.");
             goto lEnd;
         }
     }
 
-    (void)cliSysUpTimeGet(&pSession->loginStamp);
+    (void)cliSysUpTimeGet(&pSession->LOGEnStamp);
 
     rc = CLI_ERRNO_OK;
 lEnd:
@@ -437,11 +437,11 @@ void cliSessionThreadHandler(void *pThreadInput)
             continue;
         }
 
-        if (pSession->devIo.loginFunc != NULL) {
+        if (pSession->devIo.LOGEnFunc != NULL) {
             ///< 用户登录检查
-            rc = pSession->devIo.loginFunc(pSession);
+            rc = pSession->devIo.LOGEnFunc(pSession);
             if (rc != CLI_ERRNO_OK) {
-                CLI_LOG_ERROR("UART login fail, rc=%08x.", rc);
+                CLI_LOG_ERROR("UART LOGEn fail, rc=%08x.", rc);
                 continue;
             }
         }
@@ -575,8 +575,8 @@ S32 cliSessionReg(CliSessionDevIo_s *pSessionDevInfo)
     cliMemCpy(&(pSession->devIo), pSessionDevInfo, (S32)sizeof(*pSessionDevInfo));
 
     ///< 打开
-    (void)cliSysUpTimeGet(&pSession->loginStamp);
-    pSession->loginStamp -= CLI_UART_LOGIN_TIMEOUT;
+    (void)cliSysUpTimeGet(&pSession->LOGEnStamp);
+    pSession->LOGEnStamp -= CLI_UART_LOGEN_TIMEOUT;
 
     rc = cliSessionCreate(pSession);
     if (rc != CLI_ERRNO_OK) {
@@ -776,7 +776,7 @@ S32 cliUartSessionCreate(void)
     sessionDevInfo.getCharFunc = getchar;
     sessionDevInfo.putCharFunc = putchar;
     sessionDevInfo.putsFunc = cliUartPutString;
-    sessionDevInfo.loginFunc = cliUartSessionLogin;
+    sessionDevInfo.LOGEnFunc = cliUartSessionLOGEn;
     sessionDevInfo.type = CLI_SESSION_TYPE_UART;
 
     rc = cliSessionReg(&sessionDevInfo);

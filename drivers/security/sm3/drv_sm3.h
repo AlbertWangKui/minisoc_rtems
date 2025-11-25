@@ -2,7 +2,7 @@
  * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
  * @file drv_sm3.h
- * @author baibch
+ * @author baibch@starsmicrosystem.com
  * @date 2025/09/30
  * @brief SM3 hash algorithm driver header
  */
@@ -14,7 +14,7 @@
 #include "bsp_device.h"
 #include "bsp_sbr.h"
 
-typedef volatile union __Sm3CtrlRegg {
+typedef volatile union __Sm3CtrlReg {
     struct {
         U32 logicEn : 1;
         U32 pauseEn : 1;
@@ -50,7 +50,7 @@ typedef volatile union __Sm3AxiStartReg {
     U32 dword;
 } Sm3AxiStartReg;
 
-typedef volatile union __sm3StateClrReg {
+typedef volatile union __Sm3StateClrReg {
     struct {
         U32 stateClr : 1;
         U32 irqClr : 1;

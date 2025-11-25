@@ -1,10 +1,16 @@
 /**
- * copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
  * @file drv_wdt.c
- * @author zuomeng1@starsmicrosystem.com
- * @date 2025/06/05
- * @brief 看门狗驱动实现
+ * @author yangkl (yangkl@starsmicrosystem.com)
+ * @date 2025/10/22
+ * @brief  watchdog driver for minisoc
+ *
+ * @par ChangeLog:
+ *
+ * Date         Author          Description
+ * 2025/10/22   yangkl         the first version
+ *
  */
 
 #include <stdio.h>
@@ -23,223 +29,313 @@
 #include "drv_wdt_api.h"
 #include "drv_wdt.h"
 
-
-///< 分辨率为0.1ms
-#define WATCHDOG_MILLISECOND_TO_VAL (10)
-
-#define WATCHDOG_UNLOCK_VALUE       (0x1acce551) ///< 写入该值解锁
-#define WATCHDOG_LOCK_VALUE         (0x1)   ///< 写入非0x1acce551的值则锁寄存器;
-#define WATCHDOG_LONGEST_TIME_MS    (3600000) ///< 看门狗最长时间
-
-__attribute__((unused)) static void wdtISR(void *arg);
-static S32 wdtDevCfgGet(DevList_e devId, SbrWdtCfg_s *pWdtDevCfg);
-
-static inline S32 wdtCalcDiv(U32 *div)
+static S32 wdtDevCfgGet(DevList_e devId, SbrWdtCfg_s *pWdtSbrCfg)
 {
-    U32 clk;
     S32 ret = EXIT_SUCCESS;
 
-    if (div == NULL) {
-        return -EINVAL;
-    }
-
-    if (peripsClockFreqGet(DEVICE_WDT0,&clk) != EXIT_SUCCESS) {
+    if (pWdtSbrCfg == NULL) {
         ret = -EIO;
         goto exit;
     }
 
-    *div = (clk / (1000 * 10) - 1);
-
-exit:
-    return ret;
-}
-
-static S32 wdtDevCfgGet(DevList_e devId, SbrWdtCfg_s *pWdtDevCfg)
-{
-    S32 ret = EXIT_SUCCESS;
-    U32 readSize;
-
-    if (pWdtDevCfg == NULL) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    /* 从SBR读取WDT配置 */
-    readSize = devSbrRead(devId, pWdtDevCfg, 0, sizeof(SbrWdtCfg_s));
-    if (readSize != sizeof(SbrWdtCfg_s)) {
-        LOGE("wdt: failed to read WDT config from SBR, readSize=%u, expected=%u\r\n",
-             readSize, sizeof(SbrWdtCfg_s));
+    if (devSbrRead(devId, pWdtSbrCfg, 0, sizeof(SbrWdtCfg_s)) != sizeof(SbrWdtCfg_s)) {
+        LOGE("wdt: failed to read WDT config from SBR\r\n");
         ret = -EIO;
         goto exit;
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("wdt: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, reserved:0x%08x\r\n",
-         pWdtDevCfg->regAddr, pWdtDevCfg->irqNo, pWdtDevCfg->irqPrio, pWdtDevCfg->reserved);
+    LOGI("wdt: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, workMode:%u, feedTime:%u, div:%u\r\n",
+         pWdtSbrCfg->regAddr, pWdtSbrCfg->irqNo, pWdtSbrCfg->irqPrio, pWdtSbrCfg->workMode, 
+         pWdtSbrCfg->feedTime, pWdtSbrCfg->div);    
 #endif
 
-    /* 验证配置参数 */
-    if ((pWdtDevCfg->workMode >= WDT_MODE_NR) ||
-        (pWdtDevCfg->feedTime == 0) ||
-        (pWdtDevCfg->resetTime == 0) ||
-        (pWdtDevCfg->checkTime == 0)) {
-        LOGE("wdt: invalid config from SBR, workMode:%u, feedTime:%u, resetTime:%u, checkTime:%u\r\n",
-            pWdtDevCfg->workMode, pWdtDevCfg->feedTime,
-            pWdtDevCfg->resetTime, pWdtDevCfg->checkTime);
+    /* Validate configuration parameters */
+    if ((pWdtSbrCfg->workMode >= WDT_MODE_NR) ||
+        (pWdtSbrCfg->feedTime == 0) || (pWdtSbrCfg->div == 0)) {
+        LOGE("wdt: invalid config from SBR, workMode:%u, feedTime:%u, div:%u\r\n",
+            pWdtSbrCfg->workMode, pWdtSbrCfg->feedTime, pWdtSbrCfg->div);
         ret = -EIO;
         goto exit;
     }
 
-    if (pWdtDevCfg->feedTime > WATCHDOG_LONGEST_TIME_MS ||
-        pWdtDevCfg->resetTime > WATCHDOG_LONGEST_TIME_MS ||
-        pWdtDevCfg->checkTime > WATCHDOG_LONGEST_TIME_MS) {
-        LOGE("wdt: time config too long from SBR, feedTime:%u, resetTime:%u, checkTime:%u\r\n",
-            pWdtDevCfg->feedTime, pWdtDevCfg->resetTime, pWdtDevCfg->checkTime);
+    if (pWdtSbrCfg->feedTime > WATCHDOG_MAX_TIME_MS) {
+        LOGE("wdt: time config too long from SBR, feedTime:%u\r\n",
+            pWdtSbrCfg->feedTime);
         ret = -EIO;
         goto exit;
     }
-
-    return EXIT_SUCCESS;
 
 exit:
     return ret;
 }
 
-__attribute__((unused)) static void wdtISR(void *arg)
+static void wdtIrqHandler(void *pWdtDrvData)
 {
-    WdtDrvPrivateData_s *pWdtDrvData = (WdtDrvPrivateData_s*)arg;
-    WdtReg_s *wdtReg = pWdtDrvData->sbrCfg.regAddr;
+    WdtDrvData_s *pDrvData = (WdtDrvData_s*)pWdtDrvData;
+    WdtReg_s *pReg = NULL;
 
-    if(pWdtDrvData->sbrCfg.workMode == WDT_RESET && pWdtDrvData->triggered == true) {
+    if (pDrvData == NULL) {
         return;
     }
 
-    pWdtDrvData->notFeedCount++; ///< 增加连续未喂狗计数
-
-    switch(pWdtDrvData->sbrCfg.workMode) {
-        case WDT_RESET:
-            if (pWdtDrvData->notFeedCount >= pWdtDrvData->notFeedMax) {
-                pWdtDrvData->triggered = true; ///< 设置触发标记
-                if(pWdtDrvData->callback != NULL) {
-                    pWdtDrvData->callback(); ///< 调用中断回调函数
-                }
-                wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-                wdtReg->loadData = pWdtDrvData->rebootTimeMs * (WATCHDOG_MILLISECOND_TO_VAL); ///< 设置重启时间
-                wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-            } else {
-                wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-                wdtReg->intrClear = 1;         ///< 清除中断
-                wdtReg->itcr = 0;              ///< 写0清除软件中断和复位
-                wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-            }
-            break;
-
-        case WDT_INT:
-                wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-                wdtReg->intrClear = 1;         ///< 清除中断
-                wdtReg->itcr = 0;              ///< 写0清除软件中断和复位
-                wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-
-            if (pWdtDrvData->notFeedCount >= pWdtDrvData->notFeedMax) {
-                if (pWdtDrvData->callback != NULL) {
-                    pWdtDrvData->callback(); ///< 调用中断回调函数
-                }
-                pWdtDrvData->notFeedCount = 0; ///< 重置连续未喂狗计数
-            }
-            break;
-
-        default:
-            break;
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        return;
     }
+
+    if(pDrvData->workMode == WDT_MODE_RESET && pDrvData->triggered == true) {
+        return;
+    }
+
+    switch(pDrvData->workMode) {
+            case WDT_MODE_RESET:
+                if (pDrvData->callback != NULL) {
+                    pDrvData->callback();           ///< Call interrupt callback function
+                }
+                pDrvData->triggered = true;         ///< Set trigger flag
+                pReg->lock = WATCHDOG_UNLOCK_VALUE; ///< Unlock register
+                pReg->intrClear = 1;                ///< Clear interrupt
+                pReg->loadData = pDrvData->feedCnt; ///< Set restart time
+                pReg->lock = WATCHDOG_LOCK_VALUE;   ///< Lock register
+                break;
+            case WDT_MODE_INT:
+                pReg->lock = WATCHDOG_UNLOCK_VALUE; ///< Unlock register
+                pReg->intrClear = 1;                ///< Clear interrupt
+                pReg->loadData = pDrvData->feedCnt; ///< Set restart time
+                pReg->lock = WATCHDOG_LOCK_VALUE;   ///< Lock register
+                if (pDrvData->callback != NULL) {
+                    pDrvData->callback();           ///< Call interrupt callback function
+                }
+                break;
+            default:
+                break;
+        }
+
     return;
 }
 
 S32 wdtInit(DevList_e devId, pWdtCallback callback)
 {
     S32 ret = EXIT_SUCCESS;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
-    WdtReg_s *wdtReg = NULL;
-    U32 div = 1;
+    WdtDrvData_s *pDrvData = NULL;
+    WdtReg_s *pReg = NULL;
+    bool irqInstalled = false;
+    U64 feedCnt = 0;
+    U32 clk = 0;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
-        return -EINVAL;
-    }
-
-    ///< 检查设备是否存在，驱动及配置文件是否匹配
-    if (isDrvInit(devId) == true) {
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGW("%s: device lock failed, devId=%d\r\n", __func__, devId);
         ret = -EBUSY;
         goto exit;
     }
 
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    peripsClockEnable(devId);
-    ///< reset the hardware
-    if (peripsReset(devId) != EXIT_SUCCESS) {
-        ret = -EIO;
+    if (isDrvInit(devId) == true) {
+        LOGW("%s: device already initialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
         goto unlock;
     }
 
-    if (wdtCalcDiv(&div) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    ///< 申请驱动私有数据内存并获取设备配置
-    pWdtDrvData = (WdtDrvPrivateData_s*)calloc(1, sizeof(WdtDrvPrivateData_s));
-    if (pWdtDrvData == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (wdtDevCfgGet(devId, &pWdtDrvData->sbrCfg) != EXIT_SUCCESS) { ///< 获取设备配置
-        ret = -EIO;
-        goto freeMem;
-    }
-
-    ///< 中断模式需要回调函数
-    if(callback == NULL) {
-        LOGE("wdt: interrupt mode need isrCallback! \r\n");
+    if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
+        LOGW("%s: driver not match, devId=%d\r\n", __func__, devId);
         ret = -EINVAL;
-        goto freeMem;
+        goto unlock;
     }
 
-    pWdtDrvData->callback = callback; ///< 设置中断回调函数
-    ospInterruptHandlerInstall(pWdtDrvData->sbrCfg.irqNo, "watch dog",
-        OSP_INTERRUPT_UNIQUE, (void (*)(void*))wdtISR, pWdtDrvData);
+    if (peripsClockEnable(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to enable peripheral clock, devId=%d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
 
-    if (arm_gic_irq_set_priority(pWdtDrvData->sbrCfg.irqNo, pWdtDrvData->sbrCfg.irqPrio) != EXIT_SUCCESS) {
+    if (peripsReset(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to reset peripheral, devId=%d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if (peripsClockFreqGet(devId, &clk) != EXIT_SUCCESS) {
+        LOGE("%s: failed to get peripheral clock frequency, devId=%d\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if (clk == 0) {
+        LOGE("%s: Invalid clock frequency %u Hz, devId=%d\r\n", __func__, clk, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    pDrvData = (WdtDrvData_s *)calloc(1, sizeof(WdtDrvData_s));
+    if (pDrvData == NULL) {
+        LOGE("%s: failed to allocate driver data, devId=%d\r\n", __func__, devId);
+        ret = -ENOMEM;
+        goto unlock;
+    }
+
+    if (wdtDevCfgGet(devId, &pDrvData->sbrCfg) != EXIT_SUCCESS) {
+        LOGE("%s: failed to get device configuration, devId=%d\r\n", __func__, devId);
         ret = -EIO;
         goto freeMem;
     }
 
-    pWdtDrvData->triggered = false; ///< 初始化触发标记
-    pWdtDrvData->notFeedCount = 0; ///< 初始化连续未喂狗计数
-    pWdtDrvData->rebootTimeMs = pWdtDrvData->sbrCfg.resetTime; ///< 设置重启时间为配置的重启时间
-    pWdtDrvData->notFeedMax = (pWdtDrvData->sbrCfg.feedTime + pWdtDrvData->sbrCfg.checkTime - 1) / pWdtDrvData->sbrCfg.checkTime; ///< 计算连续未喂狗计数最大值
-
-    wdtReg = pWdtDrvData->sbrCfg.regAddr;
-    wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-    wdtReg->loadData = pWdtDrvData->sbrCfg.checkTime * (WATCHDOG_MILLISECOND_TO_VAL);
-    wdtReg->div = div; ///< 设置分频寄存器
-    wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-
-    ///< 安装设备驱动
-    if (drvInstall(devId, (void*)pWdtDrvData) != EXIT_SUCCESS) {
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
         ret = -EIO;
-        goto exit;
+        LOGE("wdt: %s: register address is NULL, devId=%d\r\n", __func__, devId);
+        goto freeMem;
     }
 
-    ///< start the watchdog
-    bsp_interrupt_vector_enable(pWdtDrvData->sbrCfg.irqNo);
-    ret = EXIT_SUCCESS;
-    goto unlock;
+    if(callback != NULL) {
+        pReg->intrEn = 0;        ///< Disable reset and interrupt enable
+        ret = ospInterruptHandlerInstall(pDrvData->sbrCfg.irqNo, "wdt",
+                                        OSP_INTERRUPT_UNIQUE,
+                                        (OspInterruptHandler)wdtIrqHandler,
+                                        pDrvData);
+        if (ret == OSP_RESOURCE_IN_USE) {
+            LOGW("%s: IRQ handler already installed\r\n", __func__);
+            irqInstalled = true;
+            ret = EXIT_SUCCESS; ///< Correctly handle OSP_RESOURCE_IN_USE error
+        } else if (ret == OSP_SUCCESSFUL) {
+            ospInterruptSetPriority(pDrvData->sbrCfg.irqNo, pDrvData->sbrCfg.irqPrio);
+            ospInterruptVectorEnable(pDrvData->sbrCfg.irqNo);
+            irqInstalled = true;
+            LOGI("%s: IRQ handler installed successfully\r\n", __func__);
+        } else {
+            LOGE("%s: failed to install IRQ handler, ret=%d\r\n", __func__, ret);
+            ret = -EIO;
+            goto freeMem;
+        }
+
+        pDrvData->callback = callback;
+    }
+
+    feedCnt = WATCHDOG_CALC_FEED_CNT(pDrvData->sbrCfg.feedTime, clk, pDrvData->sbrCfg.div);
+    if (feedCnt > WATCHDOG_LOADDATA_REG_MAX_VAL) {
+        LOGE("%s: calculated feed count %llu exceeds maximum %u\r\n", 
+             __func__, feedCnt, WATCHDOG_LOADDATA_REG_MAX_VAL);
+        ret = -EINVAL;
+        goto removeIrq;
+    }
+
+    /* Initialize driver private data */
+    pDrvData->feedCnt = (U32)feedCnt;
+    pDrvData->clkHz = clk; ///< Record clock frequency
+    pDrvData->workMode = pDrvData->sbrCfg.workMode; ///< Record current work mode
+    pDrvData->triggered = false; ///< Initialize trigger flag
+
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        ret = -EIO;
+        LOGE("wdt: %s: register address is NULL, devId=%d\r\n", __func__, devId);
+        goto removeIrq;
+    }
+
+    /* Configure WDT hardware */
+    pReg->lock = WATCHDOG_UNLOCK_VALUE; ///< Unlock register
+    pReg->loadData = pDrvData->feedCnt; ///< Set load data register
+    pReg->div = (pDrvData->sbrCfg.div - 1); ///< Set divider register
+    pReg->lock = WATCHDOG_LOCK_VALUE;   ///< Lock register
+
+    if (drvInstall(devId, (void *)pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: failed to install driver, devId=%d\r\n", __func__, devId);
+        ret = -EIO;
+        goto removeIrq;
+    }
+
+    devUnlockByDriver(devId);
+    return EXIT_SUCCESS;
+
+removeIrq:
+    if (irqInstalled) {
+        ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo,
+                                   (OspInterruptHandler)wdtIrqHandler,
+                                   pDrvData);
+        ospInterruptVectorDisable(pDrvData->sbrCfg.irqNo);
+    }
 
 freeMem:
-    free(pWdtDrvData);
+    free(pDrvData);
+    pDrvData = NULL;
+
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
+    return ret;
+}
+
+S32 wdtDeInit(DevList_e devId)
+{
+    S32 ret = EXIT_SUCCESS;
+    WdtDrvData_s *pDrvData = NULL;
+    WdtReg_s *pReg = NULL;
+
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: failed to acquire device lock, devId=%d!\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto exit;
+    }
+
+    if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
+        LOGE("%s: driver ID mismatch, devId=%d!\r\n", __func__, devId);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    if (isDrvInit(devId) == false) {
+        LOGW("%s: device already deinitialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    if (getDevDriver(devId, (void **)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: failed to get driver data, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if (pDrvData == NULL) {
+        ret = -EIO;
+        LOGE("wdt: %s: driver data is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
+    }
+
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        LOGE("%s: register address is NULL, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    if (pReg == NULL) {
+        ret = -EIO;
+        LOGE("wdt: %s: register address is NULL, devId=%d\r\n", __func__, devId);
+        goto unlock;
+    }
+
+    pReg->lock = WATCHDOG_UNLOCK_VALUE;
+    pReg->intrEn = 0;  ///< Disable WDT
+    pReg->lock = WATCHDOG_LOCK_VALUE;
+
+    if (pDrvData->callback != NULL) {
+        ospInterruptVectorDisable(pDrvData->sbrCfg.irqNo);
+        ret = ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo,
+                                        (OspInterruptHandler)wdtIrqHandler,
+                                        pDrvData);
+        if (ret != OSP_SUCCESSFUL) {
+            LOGE("%s: failed to remove IRQ handler, ret=%d\r\n", __func__, ret);
+        }
+    }
+
+    if (peripsReset(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to reset peripheral, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+    }
+
+    if (drvUninstall(devId) != EXIT_SUCCESS) {
+        LOGE("%s: failed to uninstall driver, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+    }
 
 unlock:
     devUnlockByDriver(devId);
@@ -251,267 +347,372 @@ exit:
 S32 wdtFeed(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
-    WdtReg_s *wdtReg = NULL;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
+    WdtReg_s *pReg = NULL;
+    WdtDrvData_s *pDrvData = NULL;
+
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        ret = -EBUSY;
+        LOGE("%s: failed to acquire device lock, devId=%d!\r\n", __func__, devId);
+        goto exit;
+    }
 
     if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
-        return -EINVAL;
+        ret = -EINVAL;
+        LOGE("%s: driver ID mismatch, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    ret = getDevDriver(devId,(void **)&pWdtDrvData);
+    if (isDrvInit(devId) == false) {
+        LOGW("%s: device not initialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    ret = getDevDriver(devId,(void **)&pDrvData);
     if (ret != EXIT_SUCCESS) {
+        LOGE("%s: failed to get driver data, devId=%d!\r\n", __func__, devId);
         ret = -EIO;
-        goto out;
+        goto unlock;
     }
 
-    if (pWdtDrvData == NULL) {
+    if (pDrvData == NULL) {
         ret = -EIO;
-        goto out;
+        LOGE("%s: driver data is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    wdtReg = pWdtDrvData->sbrCfg.regAddr;
-    wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-    wdtReg->loadData = 0; ///< 喂狗，清除计数
-    wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-out:
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        LOGE("%s: register address is NULL, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    pReg->lock = WATCHDOG_UNLOCK_VALUE;          ///< Unlock register
+    pReg->loadData = pDrvData->feedCnt;          ///< Feed watchdog, clear counter
+    pReg->lock = WATCHDOG_LOCK_VALUE;            ///< Lock register
+
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
     return ret;
 }
 
 S32 wdtStart(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
-    U32 wdtMode = 0;
-    WdtReg_s *wdtReg = NULL;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
+    U32 workMode = 0;
+    WdtReg_s *pReg = NULL;
+    WdtDrvData_s *pDrvData = NULL;
+
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: failed to acquire device lock, devId=%d!\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto exit;
+    }
 
     if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
-        return -EINVAL;
+        LOGE("%s: driver ID mismatch, devId=%d!\r\n", __func__, devId);
+        ret = -EINVAL;
+        goto unlock;
     }
 
-    ret = getDevDriver(devId,(void **)&pWdtDrvData);
+    if (isDrvInit(devId) == false) {
+        LOGW("%s: device not initialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    ret = getDevDriver(devId,(void **)&pDrvData);
     if (ret != EXIT_SUCCESS) {
         ret = -EIO;
-        goto out;
+        LOGE("%s: failed to get driver data, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    if (pWdtDrvData == NULL) {
+    if (pDrvData == NULL) {
         ret = -EIO;
-        goto out;
+        LOGE("%s: driver data is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    if (pWdtDrvData->sbrCfg.workMode == WDT_RESET) {
-        ///< 重启模式
-        SET_BIT(wdtMode, 1);   ///< set bit[1], 使能自动重启
-        SET_BIT(wdtMode, 0);   ///< set bit[0], 使能看门狗计数和中断
-    } else if(pWdtDrvData->sbrCfg.workMode == WDT_INT) {
-        ///< 中断模式
-        CLR_BIT(wdtMode, 1);   ///< clear bit[1], 关闭自动重启
-        SET_BIT(wdtMode, 0);   ///< set bit[0], 使能看门狗计数和中断
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        ret = -EIO;
+        LOGE("%s: register address is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
+    }
+
+    if (pDrvData->workMode == WDT_MODE_RESET) {
+        /* Reset mode */
+        SET_BIT(workMode, WATCHDOG_RST_ENABLE_BIT);   ///< set bit[1], enable RST output
+        SET_BIT(workMode, WATCHDOG_INT_ENABLE_BIT);   ///< set bit[0], enable interrupt output
+    } else if(pDrvData->workMode == WDT_MODE_INT) {
+        /* Interrupt mode */
+        CLR_BIT(workMode, WATCHDOG_RST_ENABLE_BIT);   ///< clear bit[1], disable RST output
+        SET_BIT(workMode, WATCHDOG_INT_ENABLE_BIT);   ///< set bit[0], enable interrupt output
     } else {
         ret = -EIO;
-        goto out;
+        LOGE("%s: invalid work mode, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    wdtReg = pWdtDrvData->sbrCfg.regAddr;
-    wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-    wdtReg->intrEn &= ~0x3; ///< 清除看门狗计数和中断使能
-    wdtReg->intrEn |= wdtMode; ///< 使能看门狗计数和中断
-    wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    pReg->lock = WATCHDOG_UNLOCK_VALUE; ///< Unlock register
+    pReg->intrEn &= ~WATCHDOG_INTR_ENABLE_MASK;  ///< Clear watchdog count and interrupt enable
+    pReg->intrEn |= workMode;            ///< Enable watchdog count and interrupt
+    pReg->lock = WATCHDOG_LOCK_VALUE;   ///< Lock register
 
-out:
+unlock:
+    devUnlockByDriver(devId);
+exit:
     return ret;
 }
 
 S32 wdtStop(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
-    WdtReg_s *wdtReg = NULL;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
+    WdtReg_s *pReg = NULL;
+    WdtDrvData_s *pDrvData = NULL;
+
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: failed to acquire device lock, devId=%d!\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto exit;
+    }
 
     if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
-        return -EINVAL;
+        LOGE("%s: driver ID mismatch, devId=%d!\r\n", __func__, devId);
+        ret = -EINVAL;
+        goto unlock;
     }
 
-    ret = getDevDriver(devId,(void **)&pWdtDrvData);
+    if (isDrvInit(devId) == false) {
+        LOGW("%s: device not initialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    ret = getDevDriver(devId,(void **)&pDrvData);
     if (ret != EXIT_SUCCESS) {
         ret = -EIO;
-        goto out;
+        LOGE("%s: failed to get driver data, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    if (pWdtDrvData == NULL) {
+    if (pDrvData == NULL) {
         ret = -EIO;
-        goto out;
+        LOGE("%s: driver data is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    wdtReg = pWdtDrvData->sbrCfg.regAddr;
-    wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-    wdtReg->intrEn = 0;            ///< 禁止复位和中断使能
-    wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-out:
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        ret = -EIO;
+        LOGE("%s: register address is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
+    }
+
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    pReg->lock = WATCHDOG_UNLOCK_VALUE; ///< Unlock register
+    pReg->intrEn = 0;                   ///< Disable reset and interrupt enable
+    pReg->lock = WATCHDOG_LOCK_VALUE;   ///< Lock register
+
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
     return ret;
 }
 
 S32 wdtIrqClr(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
-    WdtReg_s *wdtReg = NULL;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
+    WdtReg_s *pReg = NULL;
+    WdtDrvData_s *pDrvData = NULL;
+
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: failed to acquire device lock, devId=%d!\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto exit;
+    }
 
     if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
-        return -EINVAL;
-    }
-
-    ret = getDevDriver(devId,(void **)&pWdtDrvData);
-    if (ret != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto out;
-    }
-
-    if (pWdtDrvData == NULL) {
-        ret = -EIO;
-        goto out;
-    }
-
-    wdtReg = pWdtDrvData->sbrCfg.regAddr;
-    wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-    wdtReg->intrClear = 1;         ///< 清除中断
-    wdtReg->itcr = 0;              ///< 写0清除软件中断和复位
-    wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-out:
-    return ret;
-}
-
-S32 wdtDeInit(DevList_e devId)
-{
-    S32 ret = EXIT_SUCCESS;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
-        return -EINVAL;
-    }
-
-    ret = getDevDriver(devId,(void **)&pWdtDrvData);
-    if (ret != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto out;
-    }
-
-    if (pWdtDrvData == NULL) {
-        ret = -EIO;
-        goto out;
-    }
-
-    if (pWdtDrvData->callback != NULL) {
-        ospInterruptHandlerRemove(pWdtDrvData->sbrCfg.irqNo, (void (*)(void*))wdtISR, pWdtDrvData);
-        ospInterruptVectorUninit(pWdtDrvData->sbrCfg.irqNo);
-    }
-
-    peripsReset(devId); ///< 复位外设
-    drvUninstall(devId); ///< 卸载设备
-out:
-    return ret;
-}
-
-S32 wdtSetTimeout(DevList_e devId, U32 timeOutMs)
-{
-    S32 ret = EXIT_SUCCESS;
-    WdtReg_s *wdtReg = NULL;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
-
-    if (timeOutMs > WATCHDOG_LONGEST_TIME_MS) {
+        LOGE("%s: driver ID mismatch, devId=%d!\r\n", __func__, devId);
         ret = -EINVAL;
-        goto out;
+        goto unlock;
     }
 
-    ret = getDevDriver(devId,(void **)&pWdtDrvData);
+    if (isDrvInit(devId) == false) {
+        LOGW("%s: device not initialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    ret = getDevDriver(devId,(void **)&pDrvData);
     if (ret != EXIT_SUCCESS) {
-        ret = -EXIT_FAILURE;
-        goto out;
+        LOGE("%s: failed to get driver data, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
     }
 
-    if (pWdtDrvData == NULL) {
-        ret = -EXIT_FAILURE;
-        goto out;
+    if (pDrvData == NULL) {
+        ret = -EIO;
+        LOGE("%s: driver data is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
     }
 
-    wdtReg = pWdtDrvData->sbrCfg.regAddr;
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        ret = -EIO;
+        LOGE("%s: register address is NULL, devId=%d!\r\n", __func__, devId);
+        goto unlock;
+    }
 
-    wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-    wdtReg->loadData = timeOutMs * (WATCHDOG_MILLISECOND_TO_VAL);
-    wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    pReg->lock = WATCHDOG_UNLOCK_VALUE; ///< Unlock register
+    pReg->intrClear = 1;                ///< Clear interrupt
+    pReg->lock = WATCHDOG_LOCK_VALUE;   ///< Lock register
 
-    pWdtDrvData->sbrCfg.checkTime = timeOutMs;
-out:
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
     return ret;
 }
 
-S32 wdtSetMode(DevList_e devId, WdtMode_e mode)
+S32 wdtSetTimeout(DevList_e devId, U32 timeOutsMs)
 {
     S32 ret = EXIT_SUCCESS;
-    U32 wdtMode = 0;
-    U32 intrEn = 0;
-    WdtReg_s *wdtReg = NULL;
-    WdtDrvPrivateData_s *pWdtDrvData = NULL;
+    WdtReg_s *pReg = NULL;
+    WdtDrvData_s *pDrvData = NULL;
+    U64 feedCnt = 0;
 
-    if (mode != WDT_RESET && mode != WDT_INT) {
+    if ((timeOutsMs > WATCHDOG_MAX_TIME_MS) || (timeOutsMs == 0)) {
+        LOGE("%s: invalid timeout value %u, must be between 0 and %u ms, devId=%d!\r\n",
+             __func__, timeOutsMs, WATCHDOG_MAX_TIME_MS, devId);
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: failed to acquire device lock, devId=%d!\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto exit;
+    }
+    if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
+        LOGE("%s: driver ID mismatch, devId=%d!\r\n", __func__, devId);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    if (isDrvInit(devId) == false) {
+        LOGW("%s: device not initialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    ret = getDevDriver(devId,(void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: failed to get driver data, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if (pDrvData == NULL) {
+        LOGE("%s: driver data is NULL, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    if (pDrvData->sbrCfg.regAddr == NULL) {
+        LOGE("%s: register address is NULL, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
+    }
+
+    /* Check if divisor is zero */
+    if (pDrvData->sbrCfg.div == 0) {
+        LOGE("%s: division by zero, div=%u\r\n", __func__, pDrvData->sbrCfg.div);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* Check if clock frequency is valid */
+    if (pDrvData->clkHz == 0) {
+        LOGE("%s: Invalid clock frequency %u Hz\r\n", __func__, pDrvData->clkHz);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    feedCnt = WATCHDOG_CALC_FEED_CNT(timeOutsMs, pDrvData->clkHz, pDrvData->sbrCfg.div);
+    if (feedCnt > WATCHDOG_LOADDATA_REG_MAX_VAL) {
+        LOGE("%s: calculated feed count %llu exceeds maximum %u\r\n", 
+             __func__, feedCnt, WATCHDOG_LOADDATA_REG_MAX_VAL);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    pReg = (WdtReg_s *)pDrvData->sbrCfg.regAddr;
+    pReg->lock = WATCHDOG_UNLOCK_VALUE;  ///< Unlock register
+    pReg->loadData = (U32)feedCnt;
+    pReg->lock = WATCHDOG_LOCK_VALUE;    ///< Lock register
+
+    /* Update driver data after successful hardware update */
+    pDrvData->feedCnt = (U32)feedCnt;    
+
+unlock:
+    devUnlockByDriver(devId);
+
+exit:
+    return ret;
+}
+
+S32 wdtSetMode(DevList_e devId, WorkMode_e mode)
+{
+    S32 ret = EXIT_SUCCESS;
+    WdtDrvData_s *pDrvData = NULL;
+
+    if (mode != WDT_MODE_RESET && mode != WDT_MODE_INT) {
         LOGE("%s: invalid wdt mode %d!\r\n", __func__, mode);
         ret = -EINVAL;
-        goto out;
+        goto exit;
     }
 
-    ret = getDevDriver(devId, (void **)&pWdtDrvData);
+    if (devLockByDriver(devId, WATCHDOG_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
+        LOGE("%s: failed to acquire device lock, devId=%d!\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto exit;
+    }
+
+    if (!isDrvMatch(devId, DRV_ID_STARS_WDT)) {
+        LOGE("%s: driver not match, devId=%d!\r\n", __func__, devId);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    if (isDrvInit(devId) == false) {
+        LOGW("%s: device not initialized, devId=%d\r\n", __func__, devId);
+        ret = -EBUSY;
+        goto unlock;
+    }
+
+    ret = getDevDriver(devId, (void **)&pDrvData);
     if (ret != EXIT_SUCCESS) {
-        ret = -EXIT_FAILURE;
-        goto out;
+        LOGE("%s: failed to get driver data, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
     }
 
-    if (pWdtDrvData == NULL) {
-        ret = -EXIT_FAILURE;
-        goto out;
+    if (pDrvData == NULL) {
+        LOGE("%s: driver data is NULL, devId=%d!\r\n", __func__, devId);
+        ret = -EIO;
+        goto unlock;
     }
 
-    wdtReg = pWdtDrvData->sbrCfg.regAddr;
-    if (wdtReg == NULL) {
-        ret = -EXIT_FAILURE;
-        goto out;
-    }
-#if 0
-    if (mode == WDT_RESET && pWdtDrvData->callback == NULL) {
-        LOGE("wdt: reset mode need isrCallback! \r\n");
-        ret = -EXIT_FAILURE;
-        goto out;
-    }
-    else {
-        ospInterruptHandlerInstall(pWdtDrvData->sbrCfg.irqNo, "watch dog",
-                                   OSP_INTERRUPT_UNIQUE, (void (*)(void *))wdtISR, pWdtDrvData);
+    pDrvData->workMode = mode; ///< Only update software WDT work mode, register configuration is done in wdtStart();
 
-        if (0 != ospInterruptSetPriority(pWdtDrvData->sbrCfg.irqNo, pWdtDrvData->sbrCfg.irqPrio)) {
-            ret = -EXIT_FAILURE;
-            goto out;
-        }
-        ospInterruptVectorEnable(pWdtDrvData->sbrCfg.irqNo);
-    }
-#endif
-    if (mode == WDT_RESET) {
-        ///< 重启模式
-        SET_BIT(wdtMode, 1);   ///< set bit[1], 使能自动重启
-//      SET_BIT(wdtMode, 0);   ///< set bit[0], 使能看门狗计数和中断
-    }
-    else /* if (mode == WDT_INT) */ {
-        ///< 中断模式
-        CLR_BIT(wdtMode, 1);   ///< clear bit[1], 关闭自动重启
-//      SET_BIT(wdtMode, 0);   ///< set bit[0], 使能看门狗计数和中断
-    }
+unlock:
+    devUnlockByDriver(devId);
 
-    intrEn = wdtReg->intrEn;
-    CLR_BIT(intrEn, 1);
-    intrEn |= wdtMode;
-    wdtReg->lock = WATCHDOG_UNLOCK_VALUE; ///< 解锁寄存器
-    wdtReg->intrEn = intrEn; ///< 使能看门狗计数和中断
-    wdtReg->lock = WATCHDOG_LOCK_VALUE; ///< 锁寄存器
-
-    pWdtDrvData->sbrCfg.workMode = mode;
-
-out:
+exit:
     return ret;
 }

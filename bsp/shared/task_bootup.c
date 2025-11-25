@@ -74,17 +74,17 @@ static void spiDeviceProbe(void)
     struct spi_dev_info dev_info = { 0 };
     ret = spi_dev_probe(&chan_info, &dev_info);
     if(ret != 0) {
-        LOGI("SPI Device Probe channel(%d) failed(%d).\n", chan_info.channel_id, ret);
+        LOGE("SPI Device Probe channel(%d) failed(%d).\n", chan_info.channel_id, ret);
     }
     else {
-        LOGI("SPI Device Probe channel(%d) successfully.\n", chan_info.channel_id);
-        LOGI("Device ID:");
+        LOGE("SPI Device Probe channel(%d) successfully.\n", chan_info.channel_id);
+        LOGE("Device ID:");
         for(int i = 0; i < SPI_NOR_MAX_ID_LEN; i++) {
-            LOGI("%02x", dev_info.id[i]);
+            LOGE("%02x", dev_info.id[i]);
         }
-        LOGI(".\n");
-        LOGI("Device size:0x%08x.\n", dev_info.size);
-        LOGI("Device type:0x%08x.\n", dev_info.type);
+        LOGE(".\n");
+        LOGE("Device size:0x%08x.\n", dev_info.size);
+        LOGE("Device type:0x%08x.\n", dev_info.type);
     }
 }
 

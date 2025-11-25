@@ -37,12 +37,12 @@ static S32 pvtDevCfgGet(DevList_e devId, SbrPvtChCfg_s *pvtSbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("pvt: SBR dump - regAddr:%p, irqAddr:%p, tmonThresholdIrqAddr:%p, irqNo:%u, irqPrio:%u\r\n",
+    LOGE("pvt: SBR dump - regAddr:%p, irqAddr:%p, tmonThresholdIrqAddr:%p, irqNo:%u, irqPrio:%u\r\n",
          pvtSbrCfg->regAddr, pvtSbrCfg->irqAddr, pvtSbrCfg->tmonThresholdIrqAddr,
          pvtSbrCfg->irqNo, pvtSbrCfg->irqPrio);
-    LOGI("pvt: SBR dump - tmon:%u, dts:%u, dtsTempPoints:%u, dtsVolPoints:%u, dtsCfgLatency:%u\r\n",
+    LOGE("pvt: SBR dump - tmon:%u, dts:%u, dtsTempPoints:%u, dtsVolPoints:%u, dtsCfgLatency:%u\r\n",
          pvtSbrCfg->tmon, pvtSbrCfg->dts, pvtSbrCfg->dtsTempPoints, pvtSbrCfg->dtsVolPoints, pvtSbrCfg->dtsCfgLatency);
-    LOGI("pvt: SBR dump - tmonTempTh:%u, dtsTempTh:%u\r\n",
+    LOGE("pvt: SBR dump - tmonTempTh:%u, dtsTempTh:%u\r\n",
          pvtSbrCfg->tmonTempTh, pvtSbrCfg->dtsTempTh);
 #endif
 
@@ -819,7 +819,7 @@ S32 dtsTempCaliParamImport(U32 channel,
         goto exit;
     }
     if (!pPvtDrvData->dtsInfo.channelExist) {
-        LOGI("[pvt][%d] no dts in channel[%d]\r\n", __LINE__, channel);
+        LOGE("[pvt][%d] no dts in channel[%d]\r\n", __LINE__, channel);
         ret = -EXIT_FAILURE;
         goto exit;
     }
@@ -1042,7 +1042,7 @@ S32 pvtInit(void)
         goto exit;
     }
     if (gPvtInitdone == true) {
-        LOGI("pvt has init already\r\n");
+        LOGE("pvt has init already\r\n");
         goto exit;
     }
 
@@ -1089,7 +1089,7 @@ S32 pvtDeInit(void)
     }
 
     if (gPvtInitdone == false) {
-        LOGI("pvt has deinitialization already\r\n");
+        LOGE("pvt has deinitialization already\r\n");
         goto exit;
     }
 

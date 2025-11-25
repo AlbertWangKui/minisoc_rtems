@@ -46,4 +46,9 @@ config USING_SM3
     help
       Select this to use sm3(hash calc) driver
 
+config USING_SM2
+    bool "USING SM2"
+    default y
+    help
+      Select this to use sm2 driver
 endmenu

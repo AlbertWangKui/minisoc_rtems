@@ -20,6 +20,8 @@ typedef enum DevType {
     DEV_TYPE_SGPIO,
     DEV_TYPE_OCM_ECC,
     DEV_TYPE_SM3,
+    DEV_TYPE_TACH,
+    DEV_TYPE_SM2,
 } DevType_e;
 
 typedef enum DrvId {
@@ -42,6 +44,8 @@ typedef enum DrvId {
     DRV_ID_STARS_WDT,
     DRV_ID_STARS_OCM_ECC,
     DRV_ID_STARS_SM3,
+    DRV_ID_STARS_TACH,
+    DRV_ID_STARS_SM2,
 } DrvId_e;
 
 #define DRV_ID(type, id) ((U16)(type << 8 | id))
@@ -63,7 +67,7 @@ typedef enum DrvId {
 #define DRV_ID_STARS_TIMER      DRV_ID(DEV_TYPE_TIMER, DRV_ID_STARS_TIMER)
 #define DRV_ID_STARS_UART       DRV_ID(DEV_TYPE_UART, DRV_ID_STARS_UART)
 #define DRV_ID_STARS_WDT        DRV_ID(DEV_TYPE_WDT, DRV_ID_STARS_WDT)
-#define DRV_ID_STARS_OCM_ECC    DRV_ID(DEV_TYPE_OCM_ECC, DRV_ID_STARS_OCM_ECC)
-//#define DRV_ID_DW_SMBUS         DRV_ID(DEV_TYPE_SMBUS, DRV_ID_DW_SMBUS_ENM)
+#define DRV_ID_STARS_OCM_ECC        DRV_ID(DEV_TYPE_OCM_ECC, DRV_ID_STARS_OCM_ECC)
+#define DRV_ID_STARS_TACH       DRV_ID(DEV_TYPE_TACH, DRV_ID_STARS_TACH)
 
 #endif

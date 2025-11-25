@@ -10,8 +10,8 @@
 #ifndef __BSP_GPIO_HP_H__
 #define __BSP_GPIO_HP_H__
 
-#define GPIO_0_HP_REG  *(volatile U32*)0xBE101F20
-#define GPIO_1_HP_REG  *(volatile U32*)0xBE101F24
+#define GPIO_0_HP_REG  *(volatile U32*)0xBE100F20
+#define GPIO_1_HP_REG  *(volatile U32*)0xBE100F24
 #define GPIO_0_HP_INT_REG *(volatile U32*)0xB8041008
 #define GPIO_1_HP_INT_REG *(volatile U32*)0xB8041408
 #define GPIO_GRP_MAX_PIN_NUM 32

@@ -64,7 +64,7 @@ S32 cliUserCfgInit(void);
  * @param   sessionId [in]
  * @return  errno
  */
-S32 cliUserLogin(U32 sessionId);
+S32 cliUserLOGEn(U32 sessionId);
 
 /**
  * @brief   获取user信息

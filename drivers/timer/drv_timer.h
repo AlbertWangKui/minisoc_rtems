@@ -19,6 +19,14 @@
 #include "sbr_api.h"
 #include "osp_interrupt.h"
 
+#define TIMER_LOCK_TIMEOUT_MS      1000       ///<  设备锁超时时间(ms)
+#define TIMER_MS_TO_SEC_DIVISOR    1000ULL    ///< 毫秒转秒除数
+#define TIMER_ENABLE               1
+#define TIMER_DISABLE              0
+#define TIMER_IRQ_ENABLE           1
+#define TIMER_IRQ_DISABLE          0
+#define TIMER_IRQ_CLEAR            1
+
 typedef union TimerDivisor {
     struct {
         U32 divisor : 16; /* bit0~15 */
@@ -71,7 +79,7 @@ typedef volatile struct TimerReg {
     volatile TimerIrqSta irqSta; /* 0x14 */
     volatile TimerIrqEn irqEn; /* 0x18 */
     volatile TimerEn timerEnable; /* 0x1c */
-    volatile TimerCntDir cntDir; /* 0x1c */
+    volatile TimerCntDir cntDir; /* 0x20 */
 } TimerReg;
 
 typedef struct TimerDrvData {

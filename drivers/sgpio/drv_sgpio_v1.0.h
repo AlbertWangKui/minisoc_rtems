@@ -4,7 +4,8 @@
  * @file drv_sgpio_v1.0.h
  * @author liuzhsh1 (liuzhsh1@starsmicrosystem.com)
  * @date 2025/09/22
- * @brief
+ * @brief SGPIO (Serial GPIO) 驱动头文件，适用于 v1.0 硬件
+ *        定义 SGPIO 控制器的寄存器结构、常量和数据类型
  *
  * @par ChangeLog:
  *
@@ -14,18 +15,39 @@
  *
  */
 
-#ifndef __DRV_SGPIO_H__
-#define __DRV_SGPIO_H__
+#ifndef __DRV_SGPIO_V1P0_H__
+#define __DRV_SGPIO_V1P0_H__
 
 #include "common_defines.h"
 #include "bsp_sbr.h"
 #include "sbr_api.h"
 
+/*
+ * +----------------+---------+---------+
+ * | Address        | Size    | Module  |
+ * +----------------+---------+---------+
+ * | 0xB806_0000    | 4KB*4   | SGPIO0  |
+ * | 0xB806_4000    | 4KB*4   | SGPIO1  |
+ * | 0xB806_8000    | 4KB*4   | SGPIO2  |
+ * | 0xB806_C000    | 4KB*4   | SGPIO3  |
+ * +----------------+---------+---------+
+ *
+ * +----------------+------------------+
+ * | Address Range  | Description      |
+ * +----------------+------------------+
+ * | 0x0000–0x1FFF  | I2C              |
+ * | 0x2000–0x2FFF  | 8485             |
+ * | 0x3400–0x37FF  | 1005             |
+ * | 0x3800–0x3FFF  | read-only        |
+ * +----------------+------------------+
+ */
+
 #define SGPIO_MAX_NUM (4) /* 最大支持4个SGPIO控制器 */
 
 #define SGPIO_BASE_ADDR  0xb8060000
 #define SGPIO_DEVICE_OFFSET 0x4000
-#define SGPIO_REG_OFFSET 0x2000
+#define SGPIO_8485_REG_OFFSET 0x2000
+#define SGPIO_1005_REG_OFFSET 0x3400
 
 #define SGPIO_TOP_CRG_REG_BASE    (0xb8000000UL)
 /* SGPIO to PHY Mapping Registers */
@@ -35,6 +57,9 @@
 #define SGPIO_DRIVER_COUNT_MIN    (4)
 #define SGPIO_DRIVER_COUNT_MAX    (64)
 
+#define SGPIO_PINMUX_BASE 0xB8040000UL
+#define SGPIO_TOP_CRG_REG_OFFSET 0xC680UL
+
 /**
  * 配置最高频率为100KHZ, 最小频率为32HZ, 频率范围为[32HZ,100KHZ]
  */
@@ -43,6 +68,30 @@
 
 #define SGPIO_IRQ_NUM (385) /* SGPIO irq number SGPIO0 385, SGPIO1 386, SGPIO2 387, SGPIO3 388 */
 #define SGPIO_IRQ_PRI (127) /* SGPIO irq priority */
+
+#define SGPIO_START_INT 0x01
+#define SGPIO_STOP_INT 0x02
+#define SGPIO_DRV_ERR_INT 0x04
+
+#define SGPIO_START_INT_CLR 4
+#define SGPIO_STOP_INT_CLR 5
+#define SGPIO_DRV_ERR_INT_CLR 6
+
+/* SGPIO cfg1Timing register bit field definitions */
+#define SGPIO_CFG1_STRETCH_VALUE_MAX 0x0F
+#define SGPIO_CFG1_PATTERN_VALUE_MAX  0x0F
+#define SGPIO_CFG1_STRETCH_ACTIVITY_OFF_SHIFT   28
+#define SGPIO_CFG1_STRETCH_ACTIVITY_OFF_MASK    (0xF << SGPIO_CFG1_STRETCH_ACTIVITY_OFF_SHIFT)
+#define SGPIO_CFG1_STRETCH_ACTIVITY_ON_SHIFT    24
+#define SGPIO_CFG1_STRETCH_ACTIVITY_ON_MASK     (0xF << SGPIO_CFG1_STRETCH_ACTIVITY_ON_SHIFT)
+#define SGPIO_CFG1_FORCE_ACTIVITY_OFF_SHIFT     20
+#define SGPIO_CFG1_FORCE_ACTIVITY_OFF_MASK      (0xF << SGPIO_CFG1_FORCE_ACTIVITY_OFF_SHIFT)
+#define SGPIO_CFG1_FORCE_ACTIVITY_ON_SHIFT      16
+#define SGPIO_CFG1_FORCE_ACTIVITY_ON_MASK       (0xF << SGPIO_CFG1_FORCE_ACTIVITY_ON_SHIFT)
+#define SGPIO_CFG1_PATTERN_B_BLINK_FREQ_SHIFT   12
+#define SGPIO_CFG1_PATTERN_B_BLINK_FREQ_MASK    (0xF << SGPIO_CFG1_PATTERN_B_BLINK_FREQ_SHIFT)
+#define SGPIO_CFG1_PATTERN_A_BLINK_FREQ_SHIFT   8
+#define SGPIO_CFG1_PATTERN_A_BLINK_FREQ_MASK    (0xF << SGPIO_CFG1_PATTERN_A_BLINK_FREQ_SHIFT)
 
 /**
  * 源时钟6.25MHZ
@@ -233,4 +282,4 @@ typedef struct __attribute__((packed)) sgpioDrvData {
     SbrSgpioCfg_s sbrCfg;
 } SgpioDrvData_s;
 
-#endif /* __DRV_SGPIO_H__ */
+#endif /* __DRV_SGPIO_V1P0_H__ */

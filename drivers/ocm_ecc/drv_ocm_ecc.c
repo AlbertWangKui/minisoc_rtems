@@ -103,7 +103,7 @@ static S32 ocmEccDevCfgGet(DevList_e devId, SbrOcmEccCfg_s *pEccDevCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("ocm ecc: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, reserved:0x%08x\r\n",
+    LOGE("ocm ecc: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, reserved:0x%08x\r\n",
          pEccDevCfg->eccAddr, pEccDevCfg->irqNo, pEccDevCfg->irqPrio, pEccDevCfg->reserved);
 #endif
 

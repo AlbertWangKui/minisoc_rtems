@@ -395,13 +395,24 @@ typedef struct SmbusSwitchParam {
 /* ======================================================================== */
 /*                           API 函数声明                                    */
 /* ======================================================================== */
-
+typedef struct SmbusUserConfigParam {
+    void *base;                    /**< Base configuration pointer */
+    U32 busSpeedHz;              /**< Bus speed in Hz (100000, 400000, 1000000) */
+    U32 udidWord0;               /**< UDID word 0 */
+    U32 irqNo;                   /**< IRQ number */
+    U32 irqPrio;                 /**< IRQ priority */
+    S32 masterMode;              /**< Master mode configuration (0=disable, 1=enable) */
+    S32 addrMode;                /**< Address mode (0=7-bit, 1=10-bit) */
+    U8 slaveAddrLow;             /**< Slave address (lower 7 bits for 7-bit mode) */
+    S32 interruptMode;           /**< Interrupt mode (0=polling, 1=interrupt) */
+    Bool isArpEnable;            /**< ARP enable flag */
+} SmbusUserConfigParam_s;
 /**
  * @brief  SMBus 总线初始化
  * @param  devId    SMBus设备ID
  * @return 0 成功, 负值 失败
  */
-S32 smbusInit(DevList_e devId);
+S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config);
 
 /**
  * @brief SMBus 总线去初始化

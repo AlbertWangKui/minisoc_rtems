@@ -10,7 +10,7 @@
  *
  * Date         Author          Description
  * 2025/06/05   yangzhl3        the first version
- *
+ * 2025/11/15   liuzhsh1        add sgpio version 1.0 for Tianhe
  *
  */
 
@@ -235,120 +235,174 @@ typedef enum {
 } SgpioLedState_e;
 
 /**
- * @brief sgpio init
- * @param [in] device id
- * @return  EXIT_SUCCESS : 0
- *          -EXIT_FAILURE : -1
- *          -EBUSY : -16
- * @warning 阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ * @brief SGPIO设备初始化函数
+ *
+ * 初始化指定设备的SGPIO控制器，包括设备锁定验证、驱动匹配检查、
+ * 内存分配、设备配置获取、硬件复位、驱动安装、pinmux配置和硬件初始化等步骤。
+ *
+ * @param devId 设备ID，指定要初始化的SGPIO设备
+ *
+ * @return 成功返回EXIT_SUCCESS(0)，失败返回负数错误码：
+ *         -EBUSY   设备忙或已初始化
+ *         -EINVAL  设备不匹配或无效
+ *         -ENOMEM  内存分配失败
+ *         -EIO     设备配置获取失败、复位失败或驱动安装失败
  */
 S32 sgpioInit(DevList_e devId);
 
-/**
- * @brief sgpio deinit
- * @param [in] device id
- * @return  EXIT_SUCCESS : 0
- *          -EXIT_FAILURE : -1
- *          -EBUSY : -16
- * @warning 阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+/*
+ * sgpioDeInit - SGPIO设备反初始化函数
+ *
+ * 此函数用于反初始化指定的SGPIO设备，包括禁用设备、注销中断服务程序、
+ * 卸载驱动、复位外设和关闭时钟等操作。
+ *
+ * @param devId: 设备ID，指定要反初始化的SGPIO设备
+ *
+ * @return: 执行结果
+ *          EXIT_SUCCESS - 反初始化成功
+ *          -EBUSY      - 设备忙，锁定失败
+ *          -EINVAL     - 设备ID不匹配SGPIO驱动
+ *          -ENODEV     - 设备未初始化
+ *          -EIO        - 设备驱动获取失败或驱动卸载失败
  */
 S32 sgpioDeInit(DevList_e devId);
 
 /**
- * @brief Get sgpio drive count
- * @param [in] device id
- * @param [out] count, drive count
- * @return  EXIT_SUCCESS : 0
- *          -EXIT_FAILURE : -1
- *          -EBUSY : -16
- * @warning 阻塞；可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ * @brief 获取SGPIO驱动计数
+ *
+ * @param devId 设备ID
+ * @param count 用于存储驱动计数的指针
+ *
+ * @return 执行状态码
+ *   - EXIT_SUCCESS 成功
+ *   - -EBUSY 设备忙，获取锁失败
+ *   - -ENODEV 设备未初始化
+ *   - -EINVAL 无效参数或设备不匹配
+ *   - -EIO 获取设备驱动数据失败
  */
 S32 sgpioGetDriveCount(DevList_e devId, U32 *count);
 
 /**
- * @brief Set sgpio drive count
- * @param [in] device id
- * @param [in] count, drive count
- * @return  EXIT_SUCCESS : 0
- *          -EXIT_FAILURE : -1
- *          -EBUSY : -16
- * @warning 阻塞；可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ * @brief 设置SGPIO驱动器的驱动器数量
+ *
+ * 该函数用于配置指定SGPIO设备的驱动器数量，包括设置SGPIO配置寄存器
+ * 和厂商特定寄存器中的驱动器数量字段。
+ *
+ * @param devId 设备ID，指定要配置的SGPIO设备
+ * @param count 要设置的驱动器数量，必须在有效范围内
+ *              (SGPIO_DRIVER_COUNT_MIN 到 sbrCfg.driveNum)
+ *
+ * @return 执行状态码：
+ *         - EXIT_SUCCESS: 操作成功完成
+ *         - -EBUSY: 设备忙，无法获取锁
+ *         - -EIO: 设备未初始化或不匹配，或获取设备驱动失败
+ *         - -EINVAL: 驱动器数量参数超出有效范围
  */
 S32 sgpioSetDriveCount(DevList_e devId, U32 count);
 
 /**
- * @brief  Set sgpio driver led state directly
- * @param [in] devId sgpio controller id
- * @param [in] phyNum PHY编号
- * @param [in] ledType LED类型 (Error/Locate/Activity)
- * @param [in] ledState LED状态
- * @return  EXIT_SUCCESS : 0
- *          -EXIT_FAILURE : -1
- *          -EBUSY : -16
- *          -EINVAL : -22
- * @warning 阻塞；可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ * @brief 设置SGPIO LED状态
+ *
+ * @param devId 设备ID
+ * @param phyNum 物理编号
+ * @param ledType LED类型(SGPIO_LED_ERROR/ACTIVITY/LOCATE)
+ * @param ledState LED状态(SGPIO_LED_STATE_OFF/ON/BLINK)
+ *
+ * @return 成功返回EXIT_SUCCESS，失败返回错误码:
+ *         -EBUSY: 设备忙
+ *         -ENODEV: 设备未初始化
+ *         -EINVAL: 参数无效
+ *         -EIO: 获取驱动数据失败
  */
 S32 sgpioSetLedState(DevList_e devId, U8 phyNum, SgpioLedType_e ledType, SgpioLedState_e ledState);
 
 /**
- * @brief  Get sgpio driver led state directly
- * @param [in] devId sgpio controller id
- * @param [in] phyNum PHY编号
- * @param [in] ledType LED类型 (Error/Locate/Activity)
- * @param [out] pLedState LED状态指针
- * @return  EXIT_SUCCESS : 0
- *          -EXIT_FAILURE : -1
- *          -EBUSY : -16
- *          -EINVAL : -22
- * @warning 阻塞；可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ * @brief 获取SGPIO LED的状态
+ *
+ * @param devId 设备ID，标识要操作的SGPIO设备
+ * @param phyNum 物理编号，指定要查询的驱动器编号
+ * @param ledType LED类型，指定要查询的LED类型（错误/定位/活动）
+ * @param pLedState 输出参数，用于返回LED状态
+ *
+ * @return 执行结果：
+ *         - EXIT_SUCCESS: 成功
+ *         - -EBUSY: 设备忙，获取锁失败
+ *         - -ENODEV: 设备未初始化
+ *         - -EINVAL: 参数无效或设备不匹配
+ *         - -EIO: 获取设备驱动数据失败
  */
 S32 sgpioGetLedState(DevList_e devId, U8 phyNum, SgpioLedType_e ledType, SgpioLedState_e *pLedState);
 
 /**
  * @brief  Set sgpio general purpose driver led state directly
- * @details This function operates on txgp registers for General Purpose mode.
- *          Each PHY is controlled by 3 bits for error, locate, and activity.
- *          It handles cases where a PHY's 3 bits span across two registers.
- * @param [in] devId sgpio controller id
- * @param [in] phyNum PHY编号
- * @param [in] ledType LED类型 (SGPIO_LED_ERROR/SGPIO_LED_LOCATE/SGPIO_LED_ACTIVITY)
- * @param [in] ledOn  true: turn on, false: turn off
- * @return  EXIT_SUCCESS : 0
- *          -EBUSY : -16
- *          -EINVAL : -22
+ *
+ * 该函数用于控制SGPIO设备的LED指示灯状态，支持活动灯、定位灯和错误灯三种类型。
+ * 每个物理端口对应3个LED位(活动、定位、错误)，通过寄存器位操作控制LED的开关。
+ *
+ * @param devId    设备ID，指定要操作的SGPIO设备
+ * @param phyNum   物理端口号，范围0到驱动器数量-1
+ * @param ledType  LED类型，支持SGPIO_LED_ACTIVITY(活动)、SGPIO_LED_LOCATE(定位)、SGPIO_LED_ERROR(错误)
+ * @param ledOn    LED开关状态，true表示开启，false表示关闭
+ *
+ * @return 执行结果，EXIT_SUCCESS表示成功，负数表示错误码：
+ *         -EBUSY  设备忙，无法获取锁
+ *         -ENODEV 设备未初始化
+ *         -EINVAL 参数无效或设备不匹配
+ *         -EIO    获取设备驱动数据失败
  */
 S32 sgpioSetGpLedState(DevList_e devId, U8 phyNum, SgpioLedType_e ledType, bool ledOn);
 
 /**
- * @brief 获取GP模式下指定PHY的LED状态
- * @param [in] devId sgpio控制器ID
- * @param [in] phyNum PHY编号
- * @param [in] ledType LED类型 (SGPIO_LED_ERROR/SGPIO_LED_LOCATE/SGPIO_LED_ACTIVITY)
- * @param [out] pLedOn 指向bool变量，返回true表示点亮，false表示熄灭
- * @return EXIT_SUCCESS: 0
- *         -EBUSY: -16
- *         -EINVAL: -22
+ * 获取GP模式下指定PHY的LED状态
+ *
+ * @param devId    设备ID，指定要操作的SGPIO设备
+ * @param phyNum   物理端口号，范围0到SGPIO_DRIVER_COUNT_MAX-1
+ * @param ledType  LED类型，指定要查询的LED种类（错误/定位/活动）
+ * @param pLedOn   输出参数，返回LED状态（true表示点亮，false表示熄灭）
+ *
+ * @return 执行结果代码：
+ *         - EXIT_SUCCESS: 操作成功
+ *         - -EBUSY: 设备忙，获取锁失败
+ *         - -ENODEV: 设备未初始化或不存在
+ *         - -EINVAL: 参数无效或设备不匹配
+ *         - -EIO: 获取设备驱动数据失败
  */
 S32 sgpioGetGpLedState(DevList_e devId, U8 phyNum, SgpioLedType_e ledType, bool *pLedOn);
 
 /**
-* @brief 设置PCIe活动映射到SGPIO控制器
-* 此函数用于将PCIe活动映射到指定的SGPIO控制器上的某个driver。
-* @param devId SGPIO控制器ID，枚举类型DevList_e
-* @param phyNum PCIe PHY编号
-* @param sgpioActivitySel 要映射的SGPIO driver编号
-* @return 函数执行结果，成功返回EXIT_SUCCESS，失败返回错误码
-*         - EINVAL：无效的参数
-*         - EIO：获取SGPIO驱动数量失败
-*/
+ * @brief 设置SGPIO活动映射关系
+ *
+ * 该函数用于配置SGPIO控制器中指定驱动器与PHY编号的映射关系。
+ * 通过读写SGPIO_TOP_CRG_MAP_REG相关寄存器来实现映射配置。
+ *
+ * @param devId SGPIO设备ID，取值范围：DEVICE_SGPIO0 到 (DEVICE_SGPIO0 + SGPIO_MAX_NUM - 1)
+ * @param phyNum PCIe PHY编号，取值范围：0-255
+ * @param sgpioActivitySel SGPIO驱动器选择，取值范围：0到(设备驱动器数量-1, 最大63)
+ *
+ * @return 执行状态码
+ *   - EXIT_SUCCESS: 操作成功
+ *   - -EBUSY: 设备忙，获取锁失败
+ *   - -ENODEV: 设备未初始化
+ *   - -EINVAL: 参数无效
+ *   - -EIO: 获取驱动器数量失败
+ */
 S32 sgpioSetPcieActivityMapping(DevList_e devId, U32 phyNum, U8 sgpioActivitySel);
 
 /**
-* @brief 导出SGPIO控制器的PCIe活动映射表
-* 该函数将导出SGPIO控制器的PCIe活动映射表，显示每个驱动器（Driver）对应的PHY编号。
-* @param devId 设备ID，表示要操作的SGPIO控制器。
-* @return 返回值类型为S32，成功时返回EXIT_SUCCESS，失败时返回相应的错误码。
-*/
+ * @brief 打印SGPIO控制器中PCIe活动映射表（驱动器到PHY的映射）
+ * 
+ * @param devId 设备ID，必须是有效的SGPIO设备ID
+ * 
+ * @return 执行状态：
+ *         - EXIT_SUCCESS: 成功
+ *         - -EBUSY: 设备忙，获取锁失败
+ *         - -ENODEV: 设备未初始化
+ *         - -EINVAL: 无效的设备ID
+ *         - -EIO: 获取驱动器数量失败
+ * 
+ * @note 函数会打印出SGPIO控制器中所有驱动器到PHY的映射关系表，
+ *       格式为"Driver\tPHY"，最多显示64个驱动器。
+ */
 S32 sgpioDumpPcieActivityMapping(DevList_e devId);
 
 #else

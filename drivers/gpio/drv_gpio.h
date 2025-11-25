@@ -21,6 +21,7 @@
 #include "bsp_sbr.h"
 #include "sbr_api.h"
 
+#define GPIO_MAX_BIT_INDEX_REG 31
 #define GPIO_PIN_COUNT  32
 #define GPIO_LOCK_TIMEOUT_MS 1000
 

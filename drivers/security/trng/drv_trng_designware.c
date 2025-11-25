@@ -74,7 +74,7 @@ static S32 trngDevCfgGet(DevList_e devId, SbrTrngCfg_s *trngSbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("trng: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, reserved:0x%08x\r\n",
+    LOGE("trng: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, reserved:0x%08x\r\n",
          trngSbrCfg->regAddr, trngSbrCfg->irqNo, trngSbrCfg->irqPrio, trngSbrCfg->reserved);
 #endif
 

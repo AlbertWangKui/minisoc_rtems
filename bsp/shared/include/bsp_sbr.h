@@ -86,9 +86,9 @@ typedef struct SbrWdtCfg {
     U16 irqNo;
     U8 irqPrio;
     U8 workMode;
-    U16 feedTime;
-    U16 resetTime;
-    U16 checkTime;
+    U16 feedTime;    ///< ms
+    U16 maxFeedTime; ///< ms
+    U16 div;
     U32 reserved;
 } __attribute__((packed)) SbrWdtCfg_s;
 
@@ -127,6 +127,14 @@ typedef struct SbrPwmCfg {
     U8 chNum;          /* 通道数量 */
 } __attribute__((packed)) SbrPwmCfg_s;
 
+/* TACH配置结构体 */
+typedef struct SbrTachCfg {
+    void *regAddr;
+    U32 irqNo;
+    U32 irqPrio;
+    U8 polarity;  ///< postive edge: 0, negative edge: 1
+} __attribute__((packed)) SbrTachCfg_s;
+
 typedef struct SbrTimerCfg {
     void *regAddr;
     U32 irqNo;
@@ -150,6 +158,13 @@ typedef struct SbrOcmEccCfg {
     U8 irqPrio;
     U32 reserved;
 } __attribute__((packed)) SbrOcmEccCfg_s;
+
+typedef struct {
+    void *regAddr;
+    U32 irqNo;
+    U32 irqPrio;
+    U32 reserved;
+} __attribute__((packed)) SbrSm2Cfg_s;
 
 /* sbrData_s and sbrData_u are used to store the configuration data for the devices
  * and must be defined in the sbr.h file
@@ -177,7 +192,10 @@ typedef struct {
     SbrSgpioCfg_s sgpioCfg;       /* SGPIO0配置 */
     SbrTrngCfg_s sbrTrngCfg;   /* TRNG0配置 */
     SbrSm3Cfg_s sbrSm3Cfg;     /* SM3配置 */
-    SbrWdtCfg_s SbrWdtCfg;     /* WDT0配置 */
+    SbrWdtCfg_s SbrWdt0Cfg;     /* WDT0配置 */
+    SbrWdtCfg_s SbrWdt1Cfg;     /* WDT1配置 */
+    SbrWdtCfg_s SbrWdt2Cfg;     /* WDT2配置 */
+    SbrWdtCfg_s SbrWdt3Cfg;     /* WDT3配置 */
     SbrEfuseCfg_s SbrEfuseCfg; /* EFUSE0配置 */
     pvtCfg_s pvtCfg;           /* PVT0配置 */
     SbrPvtChCfg_s sbrPvtCh0Cfg;     /* PVT通道0配置 */
@@ -187,6 +205,10 @@ typedef struct {
     SbrPvtChCfg_s sbrPvtCh4Cfg;     /* PVT通道4配置 */
     SbrPvtChCfg_s sbrPvtCh5Cfg;     /* PVT通道5配置 */
     SbrPwmCfg_s sbrPwmCfg;           /* PWM0配置 */
+    SbrTachCfg_s sbrTach0Cfg;           /* TACH0配置 */
+    SbrTachCfg_s sbrTach1Cfg;           /* TACH0配置 */
+    SbrTachCfg_s sbrTach2Cfg;           /* TACH0配置 */
+    SbrTachCfg_s sbrTach3Cfg;           /* TACH0配置 */
     SbrBrdCfg_s brdCfg;       /* 通用配置 */
 } __attribute__((packed)) sbrData_s;
 
@@ -223,7 +245,12 @@ typedef union {
     SbrPvtChCfg_s sbrPvtCh4Cfg;     /* PVT通道4配置 */
     SbrPvtChCfg_s sbrPvtCh5Cfg;     /* PVT通道5配置 */
     SbrPwmCfg_s sbrPwmCfg;           /* PWM0配置 */
+    SbrTachCfg_s sbrTach0Cfg;           /* TACH0配置 */
+    SbrTachCfg_s sbrTach1Cfg;           /* TACH0配置 */
+    SbrTachCfg_s sbrTach2Cfg;           /* TACH0配置 */
+    SbrTachCfg_s sbrTach3Cfg;           /* TACH0配置 */
     SbrTimerCfg_s sbrTimerCfg;       /* TIMER0配置 */
+    SbrSm2Cfg_s sbrSm2Cfg;           /* SM2配置 */
     SbrBrdCfg_s brdCfg;       /* 通用配置 */
 } __attribute__((packed)) sbrData_u;
 

@@ -41,10 +41,10 @@ static S32 i2cDevCfgGet(DevList_e devId, SbrI2cSmbusCfg_s *i2cSbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("i2c: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, masterMode:%u, interruptMode:%u, speed:%u, addrMode:%u\r\n",
+    LOGE("i2c: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, masterMode:%u, interruptMode:%u, speed:%u, addrMode:%u\r\n",
          i2cSbrCfg->regAddr, i2cSbrCfg->irqNo, i2cSbrCfg->irqPrio, i2cSbrCfg->masterMode,
          i2cSbrCfg->interruptMode, i2cSbrCfg->speed, i2cSbrCfg->addrMode);
-    LOGI("i2c: SBR dump - slaveAddrHigh:%u, slaveAddrLow:%u, enSmbus:%u, reserved:%u\r\n",
+    LOGE("i2c: SBR dump - slaveAddrHigh:%u, slaveAddrLow:%u, enSmbus:%u, reserved:%u\r\n",
          i2cSbrCfg->slaveAddrHigh, i2cSbrCfg->slaveAddrLow, i2cSbrCfg->enSmbus, i2cSbrCfg->reserved);
 #endif
 
@@ -633,7 +633,7 @@ S32 i2cControl(DevList_e i2cDevId, U32 ctrlCmd, void *param)
         case I2C_CMD_RESET:
             /* i2cReset(i2cDevId); */
             /* 不实现这个命令，不然会导致递归调用devLockByDriver(),虽然这个函数可以递归调用 */
-            LOGI("i2cReset(i2cDevId) not implemented, please use i2cFree() instead.\n");
+            LOGE("i2cReset(i2cDevId) not implemented, please use i2cFree() instead.\n");
             break;
         case I2C_CMD_FLUSH_TX:
         case I2C_CMD_FLUSH_RX:

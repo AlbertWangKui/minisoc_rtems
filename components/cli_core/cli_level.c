@@ -105,7 +105,7 @@ lEnd:
 void cliPrepareGetUsername(InterationInfo_s *pInterationInfo,
         U32 sessionId, S8 *recvBuf)
 {
-    cliMemCpy(pInterationInfo->lineTitle, CLI_LOGIN_USERNAME, (S32)strlen(CLI_LOGIN_USERNAME));
+    cliMemCpy(pInterationInfo->lineTitle, CLI_LOGEN_USERNAME, (S32)strlen(CLI_LOGEN_USERNAME));
     pInterationInfo->recvLenExpect = SESSION_USERNAME_MAX_REAL_LEN;
     pInterationInfo->sessionId = sessionId;
     pInterationInfo->recvLenReal = 0;
@@ -123,7 +123,7 @@ void cliPrepareGetUsername(InterationInfo_s *pInterationInfo,
 static void cliPrepareGetPassWord(InterationInfo_s *pInterationInfo,
         U32 sessionId, S8 *recvBuf)
 {
-    cliMemCpy(pInterationInfo->lineTitle, CLI_LOGIN_PASSWORD, (S32)strlen(CLI_LOGIN_PASSWORD));
+    cliMemCpy(pInterationInfo->lineTitle, CLI_LOGEN_PASSWORD, (S32)strlen(CLI_LOGEN_PASSWORD));
     pInterationInfo->recvLenExpect = SESSION_PASSWORD_MAX_REAL_LEN;
     pInterationInfo->sessionId = sessionId;
     pInterationInfo->recvLenReal = 0;
@@ -136,7 +136,7 @@ static void cliPrepareGetPassWord(InterationInfo_s *pInterationInfo,
  * @param   sessionId [in]
  * @return  errno
  */
-S32 cliUserLogin(U32 sessionId)
+S32 cliUserLOGEn(U32 sessionId)
 {
 
     S32 rc = -CLI_ERRNO_FAILED;

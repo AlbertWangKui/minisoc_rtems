@@ -39,8 +39,8 @@ typedef enum CommCliChar {
 #define CLI_TITLE "======================================================================"
 
 #define CLI_LINE_HEADER "PS3> \0"
-#define CLI_LOGIN_USERNAME "PS3> Please input your username:\0"
-#define CLI_LOGIN_PASSWORD "PS3> Please input your password:\0"
+#define CLI_LOGEN_USERNAME "PS3> Please input your username:\0"
+#define CLI_LOGEN_PASSWORD "PS3> Please input your password:\0"
 
 #define SESSION_OUTPUT_MSG_QUE_LEN      (sizeof(ULong))
 #define SESSION_OUTPUT_MSG_QUE_CNT      (1)
@@ -59,14 +59,14 @@ enum {
  * @param   void
  * @return  errno
  */
-Bool cliLoginStatGet( void );
+Bool cliLOGEnStatGet( void );
 
 /**
  * @brief   设置是否开启登录功
  * @param   void
  * @return  errno
  */
-void cliLoginStatSet( Bool isOpen );
+void cliLOGEnStatSet( Bool isOpen );
 
 /**
  * @brief   通过Id获取session结构体指针

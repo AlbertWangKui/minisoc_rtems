@@ -14,8 +14,8 @@
  *
  */
 
-#ifndef __DRV_SGPIO_H__
-#define __DRV_SGPIO_H__
+#ifndef __DRV_SGPIO_V2P0_H__
+#define __DRV_SGPIO_V2P0_H__
 
 #include "common_defines.h"
 #include "bsp_sbr.h"
@@ -315,4 +315,4 @@ typedef struct sgpioDrvData {
     SbrSgpioCfg_s sbrCfg;
 } SgpioDrvData_s;
 
-#endif /* __DRV_SGPIO_H__ */
+#endif /* __DRV_SGPIO_V2P0_H__ */
