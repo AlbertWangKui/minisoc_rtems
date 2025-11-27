@@ -418,7 +418,12 @@ typedef struct SmbusRegMap {
     U32                          icRxflr;               /**< 0x78: RX FIFO level */
     U32                          icSdaHold;             /**< 0x7C: SDA hold time */
     SmbusIcTxAbrtSourceReg_u     icTxAbrtSource;        /**< 0x80: TX abort source */
-    U32                          reserved2[5];          /**< 0x84-0x94: Reserved */
+    U32                          icSlvDataNackOnly;     /**< 0x84: Generate Slave Data NACK */
+    U32                          icDmaCr;               /**< 0x88: DMA Control Register */
+    U32                          icDmaTdlr;             /**< 0x8C: DMA Transmit Data Level */
+    U32                          icDmaRdlr;             /**< 0x90: DMA Receive Data Level */
+    U32                          icSdaSetup;            /**< 0x94: I2C SDA Setup Register */
+
     U32                          icAckGeneralCall;      /**< 0x98: ACK general call */
     U32                          icEnableStatus;        /**< 0x9C: Enable status */
     U32                          icFsSpklen;            /**< 0xA0: Fast speed spike length */
@@ -426,7 +431,11 @@ typedef struct SmbusRegMap {
     U32                          icClrRestartDet;       /**< 0xA8: Clear RESTART detection */
     U32                          icSclStuckTimeout;     /**< 0xAC: SCL stuck at low timeout */
     U32                          icSdaStuckTimeout;     /**< 0xB0: SDA stuck at low timeout */
-    U32                          reserved3[5];          /**< 0xB4-0xC4: Reserved */
+    U32                          icClrSclStuckDet;      /**< 0xB4: Clear SCL Stuck at Low Detect */
+    U32                          icDeviceId;            /**< 0xB8: I2C Device ID */
+    U32                          icSmbusClkLowSext;     /**< 0xBC: SMBus Slave Clock Extend Timeout */
+    U32                          icSmbusClkLowMext;     /**< 0xC0: SMBus Master Clock Extend Timeout */
+    U32                          icSmbusThighMaxIdleCount; /**< 0xC4: SMBus Master THigh MAX Bus-idle count */
     SmbusIntrStatReg_u           icSmbusIntrStat;       /**< 0xC8: SMBus interrupt status */
     U32                          icSmbusIntrMask;       /**< 0xCC: SMBus interrupt mask */
     SmbusIntrStatReg_u           icSmbusRawIntrStat;    /**< 0xD0: SMBus raw interrupt status */
@@ -436,12 +445,17 @@ typedef struct SmbusRegMap {
     SmbusUdidWordReg_u           icSmbusUdidWord1;      /**< 0xE0: UDID word 1 */
     SmbusUdidWordReg_u           icSmbusUdidWord2;      /**< 0xE4: UDID word 2 */
     SmbusUdidWordReg_u           icSmbusUdidWord3;      /**< 0xE8: UDID word 3 */
-    U32                          reserved4[2];          /**< 0xEC-0xF0: Reserved */
+    U32                          reserved4;             /**< 0xEC: Reserved (Still undefined in docs provided) */
+    U32                          icRegTimeoutRst;       /**< 0xF0: Register timeout counter reset value */
     U32                          icCompParam1;          /**< 0xF4: Component parameter 1 */
     U32                          icCompVersion;         /**< 0xF8: Component version */
     U32                          icCompType;            /**< 0xFC: Component type */
     SmbusIcSarReg_u              icSar2;                /**< 0x100: Slave address 2 */
-    U32                          reserved5[8];          /**< 0x104-0x120: Reserved */
+    SmbusIcSarReg_u              icSar3;                /**< 0x104: Slave address 3 */
+    SmbusIcSarReg_u              icSar4;                /**< 0x108: Slave address 4 */
+    U32                          reserved5[4];          /**< 0x10C-0x118: Reserved */
+    U32                          icClrWrReq;            /**< 0x11C: Clear WR_REQ interrupt */
+    U32                          icClrSlvAddrTag;       /**< 0x120: Clear SLV_ADDR_TAG interrupt */
     SmbusUdidWordReg_u           icSmbus2UdidWord0;     /**< 0x124: SAR2 UDID word 0 */
     SmbusUdidWordReg_u           icSmbus2UdidWord1;     /**< 0x128: SAR2 UDID word 1 */
     SmbusUdidWordReg_u           icSmbus2UdidWord2;     /**< 0x12C: SAR2 UDID word 2 */

@@ -695,7 +695,7 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
     icCon.value = regBase->icCon.value;
 
     /* Set master mode */
-    icCon.fields.masterMode = 1;
+    //icCon.fields.masterMode = 1;
 
     /* Configure addressing mode based on device address mode */
     if (dev->addrMode == 1) {
@@ -708,11 +708,8 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
 
     /* CRITICAL FIX: Enable Restart for I2C Block Read protocol */
     /* Block Read requires Restart condition for combined write-read transaction */
-    icCon.fields.icRestartEn = 1;
+    icCon.fields.icRestartEn = dev->enabled;
     LOGD("SMBus: Restart enabled for Block Read protocol\n");
-
-    ///< Don't override speed setting - preserve existing configuration
-    ///< icCon.fields.speed = 1; /* Removed - keep existing speed */
 
     ///< Don't force slave disable - preserve existing configuration
     ///< icCon.fields.icSlaveDisable = 1; /* Removed - keep existing setting */
@@ -720,7 +717,7 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
     dev->regBase->icCon.value = icCon.value;
 
     /* Set target address - support both 7-bit and 10-bit addressing */
-    icTar.value = 0;
+    icTar.value = dev->slaveAddr;
 
     if (dev->addrMode == 1) {
         /* 10-bit addressing mode */
@@ -736,11 +733,7 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
 
     regBase->icTar.value = icTar.value;
 
-    /* Disable interrupts during initialization (similar to I2C) */
-    regBase->icIntrMask.value = 0;
-
-    /* Enable the adapter */
-    smbusEnable(dev);
+    LOGD("SMBus: Target address set to 0x%02X in IC_TAR register\n", icTar.fields.icTar);
 
     /* Configure interrupts using dedicated interrupt configuration function */
     S32 ret = smbusConfigTransferInterrupts(dev, regBase);
@@ -749,6 +742,8 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
         return ret;
     }
 
+    /* Enable the adapter */
+    smbusEnable(dev);
     /* Log current interrupt mask status */
     U32 currentMask = regBase->icIntrMask.value;
     LOGD("SMBus: Transfer initialized, addr=0x%02X, mode=%u, intr_mask=0x%08X\n",
@@ -956,13 +951,6 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
     if (smbusIsControllerActive(dev)) {
         LOGE("SMBus: Controller still active after transfer completion\n");
     }
-
-    ///< Disable controller to prevent spurious interrupts
-    ///< SmbusIcEnableReg_u enable;
-
-    ///< enable.value = dev->regBase->icEnable.value;
-    ///< enable.fields.enable = 0;
-    ///< dev->regBase->icEnable.value = enable.value;
 
     ///< Handle transfer completion
     if (dev->msgErr) {
@@ -1556,7 +1544,7 @@ void smbusTriggerSlaveEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data,
             break;
 
         case SMBUS_EVENT_SLAVE_WRITE_REQ:
-            eventData.slaveWriteReq.data = (U8*)data;
+            memcpy(eventData.slaveWriteReq.data, (U8 *)data, len);
             eventData.slaveWriteReq.len = len;
             break;
 
@@ -2045,7 +2033,6 @@ S32 smbusProbeMaster(SmbusDev_s *dev)
  * @note Allocates slave buffer memory
  * @note Enables controller after configuration
  * @warning This function should only be called in Slave mode
- * [HAL] Hardware abstraction layer - slave initialization
  */
 S32 smbusProbeSlave(SmbusDev_s *dev)
 {
@@ -2085,11 +2072,16 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
             LOGD("Using pre-configured slaveCfg = 0x%08X\n", dev->slaveCfg);
         }
 
-        /* 禁用设备 */
+        /* 1. 必须首先禁用设备，才能修改 CON 和 SAR */
         regBase->icEnable.value = 0;
         LOGD("Device disabled (IC_ENABLE = 0x%08X)\n", regBase->icEnable.value);
 
-        /* 使用预配置的 slaveCfg 参数替代硬编码魔数 */
+        /* 轮询等待设备确实被禁用 (这是 Synopsys 推荐的做法，防止此时还有活动传输) */
+        int timeout = 1000;
+        while ((regBase->icEnableStatus & 0x1) && --timeout > 0);
+        if (timeout == 0) LOGW("Warning: Timeout waiting for IC disable\n");
+
+        /* 2. 在禁用状态下配置所有寄存器 */
         regBase->icCon.value = dev->slaveCfg;
         LOGD("IC_CON configured using pre-configured slaveCfg = 0x%08X\n", regBase->icCon.value);
 
@@ -2107,18 +2099,18 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
         regBase->icRxTl = 0;  /* RX threshold: generate interrupt when RX FIFO has 1+ bytes */
         LOGD("FIFO thresholds set: TX_TL=%d, RX_TL=%d\n", regBase->icTxTl, regBase->icRxTl);
 
-        /* 使能设备 - 包含 SMBus 扩展功能 */
-        U32 icEnable = 0;
-        icEnable |= (1 << 0);   /* ENABLE bit - 使能设备 */
-        icEnable |= (1 << 19);  /* SMBus Slave TX Enable - SMBus从机发送使能 */
-
-        regBase->icEnable.value = icEnable;
-        LOGD("Slave IC_ENABLE = 0x%08X\n", regBase->icEnable.value);
-
-        /* 配置从机模式中断掩码 */
+        /* 配置从机模式中断掩码 - 在使能设备之前配置 */
         regBase->icIntrMask.value = SMBUS_SLAVE_INTR_MASK;
         LOGD("✓ Slave interrupt mask configured: 0x%08X (RX_FULL|TX_EMPTY|RD_REQ|TX_ABRT|RX_DONE|STOP_DET)\n",
              regBase->icIntrMask.value);
+
+        /* 3. 最后：统一使能设备 */
+        U32 icEnable = 0;
+        icEnable |= SMBUS_IC_ENABLE_MASK;   /* Enable */
+        icEnable |= SMBUS_IC_SAR_ENABLE_MASK;  /* SMBus Slave TX Enable */
+
+        regBase->icEnable.value = icEnable;
+        LOGD("SMBus: Slave probe completed, Device Enabled=0x%x\n", regBase->icEnable.value);
 
         /* 验证配置是否成功 */
         udelay(100);  /* 短暂延时确保硬件稳定 */
@@ -2133,34 +2125,30 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
     } else {
         /* Fallback to original LOGEc for non-slave modes */
         ic_con = regBase->icCon.value;
-        ic_con &= ~(1U << 0);  /* Master mode disable */
-        ic_con &= ~(1U << 6);  /* Slave enable */
-        ic_con |= (1U << 5);   /* Restart enable for combined transactions */
-        ic_con |= (2U << 1);   /* Fast mode by default */
+        ic_con &= ~SMBUS_IC_ENABLE_MASK;  /* Master mode disable */
+        ic_con &= ~((1U << SMBUS_IC_CON_SLAVE_DISABLE_BIT));  /* Slave enable */
+        ic_con |= (1U << SMBUS_IC_CON_RESTART_EN_BIT);   /* Restart enable for combined transactions */
+        ic_con |= SMBUS_SPEED_FAST_CFG;   /* Fast mode by default */
 
         /* Set address mode */
         if (dev->addrMode == 1) {
-            ic_con |= (1U << 3);  /* 10-bit slave addressing */
+            ic_con |= (1U << SMBUS_IC_CON_10BIT_SLAVE_ADDR_BIT);  /* 10-bit slave addressing */
         }
 
         /* Configure SMBus features for slave mode */
-        ic_con |= (1U << 14);  /* ARP enabled in slave mode */
-        ic_con |= (1U << 15);  /* SMBus slave quick command enable */
+        ic_con |= (1U << SMBUS_IC_CON_ARP_ENABLE_BIT);  /* ARP enabled in slave mode */
+        ic_con |= (1U << SMBUS_IC_CON_QUICK_CMD_BIT);  /* SMBus slave quick command enable */
 
         regBase->icCon.value = ic_con;
 
         /* Set TX/RX FIFO thresholds for interrupt generation */
         regBase->icTxTl = 0;  /* TX threshold: generate interrupt when TX FIFO is empty */
         regBase->icRxTl = 0;  /* RX threshold: generate interrupt when RX FIFO has 1+ bytes */
-    }
-    
-    /* Set slave address using original method */
-    ret = smbusSetSlaveAddr(dev);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: Slave address configuration failed: %d\n", ret);
-        return ret;
-    }
-
+    } 
+/*
+ * 删除这里原本的 smbusSetSlaveAddr(dev);
+ * 因为上面已经设置过 IC_SAR 了，避免重复操作和时序风险。
+ */
     LOGD("SMBus: Slave probe completed successfully\n");
     return EXIT_SUCCESS;
 }
@@ -3593,9 +3581,6 @@ S32 smbusI2cTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num)
     }
 
 exit:
-    /* 5. Unlock Driver */
-    /* Note: Unlocking should be handled by caller to maintain lock balance */
-    /* devUnlockByDriver(dev->id); */
     return ret;
 }
 

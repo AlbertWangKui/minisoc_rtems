@@ -184,10 +184,108 @@ S32 smbusI2CRawRead(DevList_e devId, U8 slaveAddr, U8 *buf, U32 len)
         goto exit;
     }
 
-    /* ===== 3. Perform RAW I2C Read ===== */
+    /* ===== 3. Dump Register Status Before I2C Read ===== */
+    volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->pSmbusDev.regBase;
+    if (regBase != NULL) {
+        LOGE("[DEBUG PRE-READ] SMBus I2C Raw Read Register Dump - Device %d:\n", devId);
+
+        /* Dump IC_CON register */
+        SmbusIcConReg_u icCon;
+        icCon.value = regBase->icCon.value;
+        LOGE("[DEBUG PRE-READ] IC_CON (0x%08X): masterMode=%u, speed=%u, ic10bitaddrSlave=%u, ic10bitaddrMaster=%u, icRestartEn=%u, icSlaveDisable=%u\n",
+             icCon.value, icCon.fields.masterMode, icCon.fields.speed, icCon.fields.ic10bitaddrSlave,
+             icCon.fields.ic10bitaddrMaster, icCon.fields.icRestartEn, icCon.fields.icSlaveDisable);
+
+        /* Dump IC_SAR register (relevant for slave mode) */
+        SmbusIcSarReg_u icSar;
+        icSar.value = regBase->icSar.value;
+        LOGE("[DEBUG PRE-READ] IC_SAR (0x%08X): slaveAddress=0x%03X\n", icSar.value, icSar.fields.icSar);
+
+        /* Dump IC_INTR_MASK register */
+        SmbusIcIntrMask_u icIntrMask;
+        icIntrMask.value = regBase->icIntrMask.value;
+        LOGE("[DEBUG PRE-READ] IC_INTR_MASK (0x%08X): rxUnder=%u, rxOver=%u, rxFull=%u, txOver=%u, txEmpty=%u, rdReq=%u, txAbrt=%u, rxDone=%u\n",
+             icIntrMask.value, icIntrMask.fields.rxUnder, icIntrMask.fields.rxOver, icIntrMask.fields.rxFull,
+             icIntrMask.fields.txOver, icIntrMask.fields.txEmpty, icIntrMask.fields.rdReq,
+             icIntrMask.fields.txAbrt, icIntrMask.fields.rxDone);
+        LOGE("[DEBUG PRE-READ] IC_INTR_MASK continued: activity=%u, stopDet=%u, startDet=%u, genCall=%u, restartDet=%u\n",
+             icIntrMask.fields.activity, icIntrMask.fields.stopDet, icIntrMask.fields.startDet,
+             icIntrMask.fields.genCall, icIntrMask.fields.restartDet);
+
+        /* Dump IC_STATUS register for additional context */
+        SmbusIcStatusReg_u icStatus;
+        icStatus.value = regBase->icStatus.value;
+        LOGE("[DEBUG PRE-READ] IC_STATUS (0x%08X): activity=%u, tfnf=%u, tfe=%u, rfne=%u, rff=%u\n",
+             icStatus.value, icStatus.fields.activity, icStatus.fields.tfnf, icStatus.fields.tfe,
+             icStatus.fields.rfne, icStatus.fields.rff);
+
+        /* Dump IC_ENABLE register */
+        SmbusIcEnableReg_u icEnable;
+        icEnable.value = regBase->icEnable.value;
+        LOGE("[DEBUG PRE-READ] IC_ENABLE (0x%08X): enable=%u, abort=%u, icSarEn=%u\n",
+             icEnable.value, icEnable.fields.enable, icEnable.fields.abort, icEnable.fields.icSarEn);
+
+        LOGE("[DEBUG PRE-READ] End of Register Dump - Device %d\n", devId);
+    }
+
+    /* ===== 4. Perform RAW I2C Read ===== */
     LOGD("SMBus RAW I2C: Reading %d bytes from slave 0x%02X\n", len, slaveAddr);
 
     ret = pDrvData->pSmbusDev.halOps->i2cRead(&pDrvData->pSmbusDev, slaveAddr, buf, len);
+
+    /* ===== 5. Dump Register Status After I2C Read ===== */
+    if (regBase != NULL) {
+        LOGE("[DEBUG POST-READ] SMBus I2C Raw Read Register Dump - Device %d (ret=%d):\n", devId, ret);
+
+        /* Dump IC_CON register */
+        SmbusIcConReg_u icCon;
+        icCon.value = regBase->icCon.value;
+        LOGE("[DEBUG POST-READ] IC_CON (0x%08X): masterMode=%u, speed=%u, ic10bitaddrSlave=%u, ic10bitaddrMaster=%u, icRestartEn=%u, icSlaveDisable=%u\n",
+             icCon.value, icCon.fields.masterMode, icCon.fields.speed, icCon.fields.ic10bitaddrSlave,
+             icCon.fields.ic10bitaddrMaster, icCon.fields.icRestartEn, icCon.fields.icSlaveDisable);
+
+        /* Dump IC_SAR register */
+        SmbusIcSarReg_u icSar;
+        icSar.value = regBase->icSar.value;
+        LOGE("[DEBUG POST-READ] IC_SAR (0x%08X): slaveAddress=0x%03X\n", icSar.value, icSar.fields.icSar);
+
+        /* Dump IC_INTR_MASK register */
+        SmbusIcIntrMask_u icIntrMask;
+        icIntrMask.value = regBase->icIntrMask.value;
+        LOGE("[DEBUG POST-READ] IC_INTR_MASK (0x%08X): rxUnder=%u, rxOver=%u, rxFull=%u, txOver=%u, txEmpty=%u, rdReq=%u, txAbrt=%u, rxDone=%u\n",
+             icIntrMask.value, icIntrMask.fields.rxUnder, icIntrMask.fields.rxOver, icIntrMask.fields.rxFull,
+             icIntrMask.fields.txOver, icIntrMask.fields.txEmpty, icIntrMask.fields.rdReq,
+             icIntrMask.fields.txAbrt, icIntrMask.fields.rxDone);
+        LOGE("[DEBUG POST-READ] IC_INTR_MASK continued: activity=%u, stopDet=%u, startDet=%u, genCall=%u, restartDet=%u\n",
+             icIntrMask.fields.activity, icIntrMask.fields.stopDet, icIntrMask.fields.startDet,
+             icIntrMask.fields.genCall, icIntrMask.fields.restartDet);
+
+        /* Dump IC_RAW_INTR_STAT register - shows actual pending interrupts */
+        SmbusIcRawIntrStatReg_u icRawIntrStat;
+        icRawIntrStat.value = regBase->icRawIntrStat.value;
+        LOGE("[DEBUG POST-READ] IC_RAW_INTR_STAT (0x%08X): rxUnder=%u, rxOver=%u, rxFull=%u, txOver=%u, txEmpty=%u, rdReq=%u, txAbrt=%u, rxDone=%u\n",
+             icRawIntrStat.value, icRawIntrStat.fields.rxUnder, icRawIntrStat.fields.rxOver, icRawIntrStat.fields.rxFull,
+             icRawIntrStat.fields.txOver, icRawIntrStat.fields.txEmpty, icRawIntrStat.fields.rdReq,
+             icRawIntrStat.fields.txAbrt, icRawIntrStat.fields.rxDone);
+        LOGE("[DEBUG POST-READ] IC_RAW_INTR_STAT continued: activity=%u, stopDet=%u, startDet=%u, genCall=%u, restartDet=%u\n",
+             icRawIntrStat.fields.activity, icRawIntrStat.fields.stopDet, icRawIntrStat.fields.startDet,
+             icRawIntrStat.fields.genCall, icRawIntrStat.fields.restartDet);
+
+        /* Dump IC_STATUS register */
+        SmbusIcStatusReg_u icStatus;
+        icStatus.value = regBase->icStatus.value;
+        LOGE("[DEBUG POST-READ] IC_STATUS (0x%08X): activity=%u, tfnf=%u, tfe=%u, rfne=%u, rff=%u\n",
+             icStatus.value, icStatus.fields.activity, icStatus.fields.tfnf, icStatus.fields.tfe,
+             icStatus.fields.rfne, icStatus.fields.rff);
+
+        /* Dump IC_ENABLE register */
+        SmbusIcEnableReg_u icEnable;
+        icEnable.value = regBase->icEnable.value;
+        LOGE("[DEBUG POST-READ] IC_ENABLE (0x%08X): enable=%u, abort=%u, icSarEn=%u\n",
+             icEnable.value, icEnable.fields.enable, icEnable.fields.abort, icEnable.fields.icSarEn);
+
+        LOGE("[DEBUG POST-READ] End of Register Dump - Device %d\n", devId);
+    }
 
     if (ret != EXIT_SUCCESS) {
         LOGE("SMBus RAW I2C: I2C read failed: %d\n", ret);

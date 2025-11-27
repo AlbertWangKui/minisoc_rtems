@@ -32,7 +32,6 @@
 static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData);
 static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData);
 static void smbusClearInterrupts(volatile SmbusRegMap_s *regBase, U32 mask);
-static S32 smbusAllocateSlaveBuffers(SmbusDrvData_s *pDrvData);
 static S32 smbusAllocateMasterBuffers(SmbusDrvData_s *pDrvData);
 static S32 smbusInitializeArpMaster(SmbusDrvData_s *pDrvData);
 static void smbusFreeDriverData(SmbusDrvData_s *pDrvData);
@@ -40,52 +39,6 @@ static void smbusFreeDriverData(SmbusDrvData_s *pDrvData);
 /* ======================================================================== */
 /*                    Core Utility Functions                                 */
 /* ======================================================================== */
-
-/**
- * @brief Allocate slave buffers for SMBus operation
- * @details Allocates RX and TX buffers for slave mode operation.
- *          These buffers are used for data transfer in slave mode.
- * @param[in] pDrvData Pointer to driver data structure
- * @return EXIT_SUCCESS on success, negative error code on failure
- *
- * @note Only allocates buffers when in slave mode
- * @note Uses SMBUS_SLAVE_BUF_LEN for buffer size
- * @note Memory is freed in smbusFreeDriverData
- * [CORE] Core protocol layer - memory management
- */
-static S32 smbusAllocateSlaveBuffers(SmbusDrvData_s *pDrvData)
-{
-    S32 ret = 0;
-
-    SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL, "pDrvData is NULL");
-
-    /* Only allocate slave buffers in slave mode */
-    if (pDrvData->sbrCfg.masterMode == 0) {
-        /* Allocate slave RX buffer */
-        pDrvData->pSmbusDev.slaveRxBuf = (U8 *)malloc(SMBUS_SLAVE_BUF_LEN);
-        if (pDrvData->pSmbusDev.slaveRxBuf == NULL) {
-            LOGE("%s: Failed to allocate slave RX buffer\n", __func__);
-            return -ENOMEM;
-        }
-        pDrvData->pSmbusDev.slaveValidRxLen = 0;
-
-        /* Allocate slave TX buffer */
-        pDrvData->pSmbusDev.slaveTxBuf = (U8 *)malloc(SMBUS_SLAVE_BUF_LEN);
-        if (pDrvData->pSmbusDev.slaveTxBuf == NULL) {
-            LOGE("%s: Failed to allocate slave TX buffer\n", __func__);
-            free(pDrvData->pSmbusDev.slaveRxBuf);
-            pDrvData->pSmbusDev.slaveRxBuf = NULL;
-            return -ENOMEM;
-        }
-        pDrvData->pSmbusDev.slaveValidTxLen = 0;
-        pDrvData->slaveTxIndex = 0;
-
-        LOGD("%s: Slave buffers allocated successfully\n", __func__);
-    }
-
-exit:
-    return ret;
-}
 
 /**
  * @brief Allocate master buffers for SMBus operation
@@ -106,7 +59,7 @@ static S32 smbusAllocateMasterBuffers(SmbusDrvData_s *pDrvData)
     SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL, "pDrvData is NULL");
 
     /* Only initialize master buffers in master mode */
-    if (pDrvData->sbrCfg.masterMode == 1) {
+    if (pDrvData->sbrCfg.masterMode == SMBUS_MODE_MASTER) {
         /* Initialize master TX buffer array */
         memset(pDrvData->pSmbusDev.masterTxBuf, 0, sizeof(pDrvData->pSmbusDev.masterTxBuf));
         pDrvData->pSmbusDev.masterTxBufLen = 0;
@@ -135,35 +88,43 @@ exit:
  */
 static S32 smbusInitSlaveResources(SmbusDrvData_s *pDrvData)
 {
-    S32 ret = 0;
-
+    S32 ret = EXIT_SUCCESS;
     SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL, "pDrvData is NULL");
 
-    /* Only allocate if not already allocated */
-    if (pDrvData->pSmbusDev.slaveRxBuf == NULL) {
-        LOGD("%s: Allocating slave RX buffer\n", __func__);
-        pDrvData->pSmbusDev.slaveRxBuf = (U8 *)malloc(SMBUS_SLAVE_BUF_LEN);
+    LOGD("%s: Checking mode: masterMode=%d, SMBUS_MODE_SLAVE=%d\n",
+         __func__, pDrvData->sbrCfg.masterMode, SMBUS_MODE_SLAVE);
+
+    if (pDrvData->sbrCfg.masterMode == SMBUS_MODE_SLAVE) {
+        LOGD("%s: Device is in SLAVE mode - allocating buffers\n", __func__);
+        /* Only allocate if not already allocated */
         if (pDrvData->pSmbusDev.slaveRxBuf == NULL) {
-            LOGE("%s: Failed to allocate slave RX buffer\n", __func__);
-            return -ENOMEM;
+            LOGD("%s: Allocating slave RX buffer\n", __func__);
+            pDrvData->pSmbusDev.slaveRxBuf = (U8 *)malloc(SMBUS_SLAVE_BUF_LEN);
+            if (pDrvData->pSmbusDev.slaveRxBuf == NULL) {
+                LOGE("%s: Failed to allocate slave RX buffer\n", __func__);
+                ret = -ENOMEM;
+                goto exit;
+            }
+            pDrvData->pSmbusDev.slaveValidRxLen = 0;
         }
-        pDrvData->pSmbusDev.slaveValidRxLen = 0;
-    }
 
-    if (pDrvData->pSmbusDev.slaveTxBuf == NULL) {
-        LOGD("%s: Allocating slave TX buffer\n", __func__);
-        pDrvData->pSmbusDev.slaveTxBuf = (U8 *)malloc(SMBUS_SLAVE_BUF_LEN);
         if (pDrvData->pSmbusDev.slaveTxBuf == NULL) {
-            LOGE("%s: Failed to allocate slave TX buffer\n", __func__);
-            free(pDrvData->pSmbusDev.slaveRxBuf);
-            pDrvData->pSmbusDev.slaveRxBuf = NULL;
-            return -ENOMEM;
+            LOGD("%s: Allocating slave TX buffer\n", __func__);
+            pDrvData->pSmbusDev.slaveTxBuf = (U8 *)malloc(SMBUS_SLAVE_BUF_LEN);
+            if (pDrvData->pSmbusDev.slaveTxBuf == NULL) {
+                LOGE("%s: Failed to allocate slave TX buffer\n", __func__);
+                free(pDrvData->pSmbusDev.slaveRxBuf);
+                pDrvData->pSmbusDev.slaveRxBuf = NULL;
+                ret = -ENOMEM;
+                goto exit;
+            }
+            pDrvData->pSmbusDev.slaveValidTxLen = 0;
+            pDrvData->slaveTxIndex = 0;
         }
-        pDrvData->pSmbusDev.slaveValidTxLen = 0;
-        pDrvData->slaveTxIndex = 0;
-    }
-
-    LOGE("%s: Slave resources initialized successfully\n", __func__);
+        LOGE("%s: Slave resources initialized successfully\n", __func__);
+    }else {
+        LOGD("%s: Device not in slave mode, skipping slave buffer allocation\n", __func__);
+    }   
 exit:
     return ret;
 }
@@ -327,9 +288,6 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
         return -ENOMEM;
     }
 
-    /* Initialize basic fields - calloc already zeroed all other fields */
-    pDrvData->devId = devId;
-
     /* Initialize master buffer variables */
     memset(pDrvData->pSmbusDev.masterTxBuf, 0, sizeof(pDrvData->pSmbusDev.masterTxBuf));
     pDrvData->pSmbusDev.masterTxBufLen = 0;
@@ -339,8 +297,11 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
     pDrvData->callback.cb = NULL;           /* Initialize callback pointer to NULL */
     pDrvData->callback.userData = NULL;     /* Initialize user data to NULL */
 
-    /* Initialize SMBus device structure with Calmera naming */
-    pDrvData->pSmbusDev.busId = devId;
+    pDrvData->pSmbusDev.busId = devId - DEVICE_SMBUS0;  /* Set busId based on device ID */
+    LOGD("%s: Allocated driver data for devId %d (busId %d)\n",
+         __func__, devId, pDrvData->pSmbusDev.busId);
+    /* Initialize basic fields - calloc already zeroed all other fields */
+    pDrvData->devId = devId;
 
     /* Zero-initialize all numeric fields */
     memset(&pDrvData->pSmbusDev.status, 0,
@@ -351,7 +312,6 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
     pDrvData->pSmbusDev.transferTimeout = SMBUS_DEFAULT_TIMEOUT_MS;  /* Default timeout */
     
     memset(pDrvData->pSmbusDev.msgs, 0, sizeof(SmbusMsg_s) *32);
-    /* Note: masterRxBuf and masterRxBufLen have been removed - use pDrvData->rxBuffer instead */
 
     *ppDrvData = pDrvData;
     return EXIT_SUCCESS;
@@ -383,6 +343,7 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
         .channelNum = pDrvData->devId,
         .workMode = (pDrvData->sbrCfg.interruptMode == 1) ? 0 : 1,
         .isSmbus = 1,
+        .enabled = 1,
         .transferTimeout = SMBUS_TRANSFER_TIMEOUT_MS,
         .halOps = smbusGetHalOps()  /* Register HAL operations during initialization */
     };
@@ -401,7 +362,7 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
                                  : defaultClkRate;
 
     /* Configure SMBus controller based on mode using I2C-compatible probe functions */
-    if (pDrvData->sbrCfg.masterMode == 1) {
+    if (pDrvData->sbrCfg.masterMode == SMBUS_MODE_MASTER) {
         /* OPTIMIZATION: Allocate master RX buffer only if using legacy interrupt mode */
         if (pDrvData->sbrCfg.interruptMode == 0) {  /* Legacy interrupt mode */
             pDrvData->rxBufferSize = SMBUS_MAX_BUFFER_SIZE;
@@ -415,7 +376,6 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
         } else {
             /* Async mode doesn't need global rxBuffer - data goes directly to message buffers */
             pDrvData->rxBuffer = NULL;
-            memset(&pDrvData->rxBufferSize, 0, sizeof(pDrvData->rxBufferSize) + sizeof(pDrvData->rxLength));
             LOGD("%s: Async mode - no global RX buffer needed\n", __func__);
         }
 
@@ -432,7 +392,6 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
         pDrvData->pSmbusDev.mode = DW_SMBUS_MODE_MASTER;
         LOGD("%s: Master hardware initialization completed\n", __func__);
     } else {
-
         /* Configure slave settings using HAL operations */
         if (pDrvData->pSmbusDev.halOps != NULL && pDrvData->pSmbusDev.halOps->configureSlave != NULL) {
             pDrvData->pSmbusDev.halOps->configureSlave(&pDrvData->pSmbusDev);
@@ -460,14 +419,16 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
     }
 
     /* FINAL SAFETY FIX: Force correct Slave interrupt mask if in Slave mode */
-    if (pDrvData->sbrCfg.masterMode == 0) {
+    if (pDrvData->sbrCfg.masterMode == SMBUS_MODE_SLAVE) {
         volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
 
-        /* CRITICAL: Override any previous incorrect interrupt mask settings with unified macro */
-        /* Use unified interrupt mask for slave mode (includes TX_EMPTY for timing handling) */
-        regBase->icIntrMask.value = SMBUS_SLAVE_INTR_MASK;
+        /* 改进：使用优化的初始化中断掩码，初始禁用TX_EMPTY以避免伪中断*/
+        /* TX_EMPTY将在WR_REQ处理过程中根据需要动态启用 */
+        regBase->icIntrMask.value = SMBUS_SLAVE_INIT_INTR_MASK;
 
-        LOGE("FINAL OVERRIDE: Slave interrupt mask FORCED to 0x%08X (expected: 0x2F4)\n", regBase->icIntrMask.value);
+        LOGE("FINAL OVERRIDE: Slave interrupt mask FORCED to 0x%08X (TX_EMPTY initially disabled)\n",
+             regBase->icIntrMask.value);
+        LOGD("Slave mode initialized with TX_EMPTY disabled - will be enabled on demand\n");
     }
 
 exit:
@@ -1377,7 +1338,6 @@ static void smbusArpContextInit(SmbusArpContext_s *context)
  * @warning This function is not thread-safe
  * @warning Caller must ensure all pointers are valid
  *
- * [CORE] Core protocol layer - ARP device management
  */
 __attribute((unused)) static int ArpDevInstallAuto(SmbusArpMaster_s *master, const SmbusUdid_s *udid,
                                                         U8 *assignedAddress)
@@ -1527,7 +1487,8 @@ static S32 smbusInitializeArpMaster(SmbusDrvData_s *pDrvData)
 
     /* Initialize ARP Master context using macro */
     pDrvData->arpMaster = (SmbusArpMaster_s)SMBUS_ARP_MASTER_INIT;
-    pDrvData->arpMaster.busId = pDrvData->devId;
+    pDrvData->arpMaster.busId = pDrvData->devId - DEVICE_SMBUS0;
+    LOGD("%s: ARP Master busId set to %d\n", __func__, pDrvData->arpMaster.busId);
 
     /* Initialize ARP failure handler context */
     SmbusArpContext_s *context = calloc(1, sizeof(SmbusArpContext_s));
@@ -1563,7 +1524,6 @@ static void smbusFreeDriverData(SmbusDrvData_s *pDrvData)
     if (pDrvData->rxBuffer != NULL) {
         free(pDrvData->rxBuffer);
         pDrvData->rxBuffer = NULL;
-        memset(&pDrvData->rxLength, 0, sizeof(pDrvData->rxLength) + sizeof(pDrvData->rxBufferSize));
         LOGD("%s: Master RX buffer freed\n", __func__);
     }
 
@@ -1627,13 +1587,65 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
         /* 设置状态：正在进行写操作 */
         pDrvData->pSmbusDev.status |= SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
         pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
+#if 0
+        /* 关键修复：立即尝试读取FIFO数据以清除WR_REQ中断 */
+        U32 rxValid = regBase->icRxflr;
+        if (rxValid > 0) {
+            LOGD("SMBus Slave: WR_REQ - Reading %u bytes from FIFO to clear interrupt\n", rxValid);
 
-        /* 触发写请求事件 */
-        smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_WRITE_REQ, NULL, 0);
+            /* 读取FIFO数据以清除WR_REQ中断 */
+            U32 readCount = 0;
+            while (readCount < rxValid && readCount < SMBUS_SLAVE_BUF_LEN) {
+                U32 tmp = regBase->icDataCmd.value;
+                U8 val = (U8)tmp;
 
-        /* WR_REQ 中断会在读取 icIntrStat 时自动清除，无需额外清除操作 */
+                if (pDrvData->pSmbusDev.slaveValidRxLen < SMBUS_SLAVE_BUF_LEN && pDrvData->pSmbusDev.slaveRxBuf) {
+                    /* 关键修复：添加DSB内存屏障确保数据存储完整性 */
+                    __asm__ volatile("dsb sy" : : : "memory");
 
-        /* 不要返回！继续处理其他中断 */
+                    pDrvData->pSmbusDev.slaveRxBuf[pDrvData->pSmbusDev.slaveValidRxLen++] = val;
+
+                    /* 再次添加DSB确保计数器更新完成 */
+                    __asm__ volatile("dsb sy" : : : "memory");
+                } else {
+                    LOGE("SMBus Slave: WR_REQ - FAILED to store byte! len=%u, buf=%p\n",
+                         pDrvData->pSmbusDev.slaveValidRxLen, pDrvData->pSmbusDev.slaveRxBuf);
+                    /* 重置计数器以防数据损坏 */
+                    pDrvData->pSmbusDev.slaveValidRxLen = 0;
+                }
+                readCount++;
+                LOGD("SMBus Slave: WR_REQ - Read byte[%u] = 0x%02X\n", readCount, val);
+            }
+
+            LOGI("SMBus Slave: WR_REQ - Successfully read %u bytes, slaveValidRxLen = %u\n",
+             readCount, pDrvData->pSmbusDev.slaveValidRxLen);
+        } else {
+            LOGD("SMBus Slave: WR_REQ - No data in FIFO, clearing interrupt by acknowledging\n");
+            /* 如果没有数据，至少要 acknowledge 中断 */
+        }
+       #endif 
+        /* 关键修复：WR_REQ表示Master写入Slave，不应该启用TX_EMPTY！ */
+        /* TX_EMPTY只在RD_REQ(Master读取Slave)时才需要 */
+        regBase->icIntrMask.value &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
+        LOGD("SMBus Slave: WR_REQ - TX_EMPTY disabled (Master is writing, not reading) (mask=0x%08X)\n",
+             regBase->icIntrMask.value);
+
+        (void)regBase->icClrWrReq;  ///< 清除 WR_REQ 中断
+    }
+
+    /* 1.5 处理 SLV_ADDRx_TAG中断 - 地址标签中断 */
+    if (intrStat & (SMBUS_IC_INTR_SLV_ADDR1_TAG_MASK | SMBUS_IC_INTR_SLV_ADDR2_TAG_MASK |
+                   SMBUS_IC_INTR_SLV_ADDR3_TAG_MASK | SMBUS_IC_INTR_SLV_ADDR4_TAG_MASK)) {
+        U32 addrTags = 0;
+        if (intrStat & SMBUS_IC_INTR_SLV_ADDR1_TAG_MASK) addrTags |= 1;
+        if (intrStat & SMBUS_IC_INTR_SLV_ADDR2_TAG_MASK) addrTags |= 2;
+        if (intrStat & SMBUS_IC_INTR_SLV_ADDR3_TAG_MASK) addrTags |= 4;
+        if (intrStat & SMBUS_IC_INTR_SLV_ADDR4_TAG_MASK) addrTags |= 8;
+
+        LOGI("SMBus Slave: SLV_ADDR_TAG - Address tag detected (tags=0x%02X)\n", addrTags);
+
+        /* 根据IP规范，地址标签中断通常不需要特殊处理，主要是用于调试 */
+        (void)regBase->icClrSlvAddrTag;  ///< 清除 SLV_ADDR_TAG 中断
     }
 
     /* 2. 处理 RX_FULL（接收数据）- 第二优先级 */
@@ -1650,17 +1662,19 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             if (tmp & SMBUS_IC_DATA_CMD_FIRST_DATA_BYTE_MASK) {
                 smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_WRITE_REQ,
                                       &pDrvData->pSmbusDev.slaveRxBuf,
-                                      pDrvData->slaveValidRxLen);
+                                      pDrvData->pSmbusDev.slaveValidRxLen);
             }
 
             val = (U8)tmp;
-            if (pDrvData->slaveValidRxLen < SMBUS_SLAVE_BUF_LEN) {
-                pDrvData->pSmbusDev.slaveRxBuf[pDrvData->slaveValidRxLen++] = val;
+            if (pDrvData->pSmbusDev.slaveValidRxLen < SMBUS_SLAVE_BUF_LEN) {                   
+                pDrvData->pSmbusDev.slaveRxBuf[pDrvData->pSmbusDev.slaveValidRxLen++] = val;
+                __asm__ volatile("dsb sy" : : : "memory");
             }
             readCount++;
         }
 
-        LOGD("SMBus Slave: Read %u bytes from FIFO\n", readCount);
+        ///< LOGD("SMBus Slave: Read %u bytes from FIFO,tmp:%d, rx_valid:%d\n", readCount, 
+             ///< regBase->icDataCmd.value, rxValid);
     }
 
     /* 3. 处理 RD_REQ（Master 读取 Slave 时）- 第三优先级 */
@@ -1675,12 +1689,16 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             txData = pDrvData->pSmbusDev.slaveTxBuf[txIndex % pDrvData->pSmbusDev.slaveValidTxLen];
             txIndex++;
         }
-
         /* 立即写入 */
         regBase->icDataCmd.value = (U32)txData;
 
         /* 清除 RD_REQ */
         (void)regBase->icClrRdReq;
+
+        /* 关键修复：RD_REQ表示Master读取Slave，需要启用TX_EMPTY继续发送数据 */
+        regBase->icIntrMask.value |= SMBUS_IC_INTR_TX_EMPTY_MASK;
+        LOGD("SMBus Slave: RD_REQ - TX_EMPTY enabled for continued Master read (mask=0x%08X)\n",
+             regBase->icIntrMask.value);
 
         LOGD("SMBus Slave: Sent 0x%02X\n", txData);
 
@@ -1689,14 +1707,17 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
 
     /* 4. 处理 TX_EMPTY（仅在 Master 读取 Slave 时，第五优先级） */
     if (intrStat & SMBUS_IC_INTR_TX_EMPTY_MASK) {
-
-        /* 关键：检查是否是真正的读请求 */
+        /* 改进：增强TX_EMPTY处理逻辑，添加更严格的状态检查 */
         U32 status = regBase->icStatus.value;
         U32 slaveActivity = (status >> 6) & 1;  // SLV_ACTIVITY bit
+        U32 rxFifoLevel = regBase->icRxflr;     // RX FIFO level
+        U32 txFifoLevel = regBase->icTxflr;     // TX FIFO level
 
-        if (slaveActivity) {
+        /* 改进：只有在Master真正读取且无RX数据时才处理TX_EMPTY */
+        if (slaveActivity && rxFifoLevel == 0) {
             /* Slave 正在被读取，填充 TX FIFO */
-            LOGD("SMBus Slave: TX_EMPTY - refilling for Master read\n");
+            LOGD("SMBus Slave: TX_EMPTY - refilling for Master read (rxLevel=%d, txLevel=%d)\n",
+                 rxFifoLevel, txFifoLevel);
 
             U8 txData = 0xFF;
             if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
@@ -1710,10 +1731,12 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             LOGD("SMBus Slave: Refilled 0x%02X\n", txData);
         } else {
             /* Master 正在写入 Slave，TX_EMPTY 是伪中断 */
-            LOGW("SMBus Slave: Spurious TX_EMPTY during Master write - ignoring\n");
+            LOGW("SMBus Slave: Spurious TX_EMPTY during Master write - ignoring (activity=%d, rxLevel=%d)\n",
+                 slaveActivity, rxFifoLevel);
 
-            /* 在接收模式下禁用 TX_EMPTY */
+            /* 改进：更彻底的伪中断处理 */
             regBase->icIntrMask.value &= ~SMBUS_IC_INTR_TX_EMPTY_MASK;
+            LOGD("SMBus Slave: TX_EMPTY interrupt disabled and status cleared\n");
         }
     }
 
@@ -1724,9 +1747,21 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
         /* 清除写状态并触发写完成事件 */
         if (pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK) {
             pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
-            smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_DONE,
+
+            LOGD("SMBus Slave: STOP_DET - Transaction completed, %u bytes available\n",
+                 pDrvData->pSmbusDev.slaveValidRxLen);
+
+            /* 调试：显示缓冲区内容 */
+            if (pDrvData->pSmbusDev.slaveValidRxLen > 0 && pDrvData->pSmbusDev.slaveRxBuf) {
+                LOGD("SMBus Slave: Buffer data: [0x%02X, 0x%02X, 0x%02X, ...]\n",
+                     pDrvData->pSmbusDev.slaveRxBuf[0],
+                     pDrvData->pSmbusDev.slaveRxBuf[1] % (pDrvData->pSmbusDev.slaveValidRxLen > 1 ? pDrvData->pSmbusDev.slaveRxBuf[1] : 0),
+                     pDrvData->pSmbusDev.slaveRxBuf[2] % (pDrvData->pSmbusDev.slaveValidRxLen > 2 ? pDrvData->pSmbusDev.slaveRxBuf[2] : 0));
+            }
+
+            smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_WRITE_REQ,
                                   &pDrvData->pSmbusDev.slaveRxBuf,
-                                  pDrvData->slaveValidRxLen);
+                                  pDrvData->pSmbusDev.slaveValidRxLen);
         }
 
         /* 清除读状态 */
@@ -1734,8 +1769,9 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
             pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
         }
 
-        /* 重新启用 TX_EMPTY（如果之前被禁用了） */
+        /* 改进：重新启用 TX_EMPTY以准备下一次读操作 */
         regBase->icIntrMask.value |= SMBUS_IC_INTR_TX_EMPTY_MASK;
+        LOGD("SMBus Slave: STOP_DET - TX_EMPTY re-enabled (mask=0x%08X)\n", regBase->icIntrMask.value);
 
         /* 清除 STOP_DET 中断 */
         (void)regBase->icClrStopDet;
@@ -1750,9 +1786,6 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
         if (pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK) {
             pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
         }
-
-        /* 同步RX缓冲区长度 */
-        pDrvData->pSmbusDev.slaveValidRxLen = pDrvData->slaveValidRxLen;
 
         /* 触发完成事件，传递实际接收到的数据 */
         smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLAVE_DONE,
@@ -1776,7 +1809,9 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
 
     /* 7. 清除中断 */
     if (intrStat != 0) {
-        regBase->icIntrStat.value = intrStat;
+        //regBase->icIntrStat.value = intrStat;
+        /* 改进：立即清除相关状态寄存器以防止连续伪中断 */
+        (void)regBase->icIntrStat.value;  /* 读取中断状态寄存器以清除状态 */
     }
 }
 
@@ -1879,7 +1914,7 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
         goto exit;
     }
     if(config == NULL){
-       ret = -EINVAL;
+       ret = -EXDEV;
        goto exit;
     }
     /* Step 1: Allocate driver data structure */
@@ -1912,29 +1947,17 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
     pDrvData->sbrCfg.enSmbus = 1;
     LOGD("%s: Using test configuration:%d\n", __func__, pDrvData->sbrCfg.masterMode);
 #endif
-
-    /* Step 3: Initialize hardware using HAL probe functions */
-    ret = smbusInitializeHardware(pDrvData);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Hardware initialization failed, ret=%d\n", __func__, ret);
-        goto freeMem;
-    }
-
-    /* Step 4: Clear all pending interrupts before installing interrupt handler */
+    /* Step 2: Clear all pending interrupts before installing interrupt handler */
     smbusClearInterrupts((volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr, 0xFFFFFFFF);
     LOGD("%s: All interrupts cleared before handler installation\n", __func__);
 
-    /* Step 4.1: Disable interrupt masks to prevent interrupt storm during initialization */
-    volatile SmbusRegMap_s *regs = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
-    regs->icIntrMask.value = 0;  ///< Disable all interrupt masks
-    regs->icSmbusIntrMask = 0;  ///< Disable SMBus-specific interrupt masks 
-    LOGD("%s: All interrupt masks disabled during initialization\n", __func__);
-
-    /* Step 5: Install interrupt handler (not modularized as requested) */
+    /* Step 3: Install interrupt handler (not modularized as requested) */
     LOGD("%s: Installing interrupt handler for IRQ %d, priority %d\n",
+
          __func__, pDrvData->sbrCfg.irqNo, pDrvData->sbrCfg.irqPrio);
 
     ret = ospInterruptHandlerInstall(pDrvData->sbrCfg.irqNo, "smbus", OSP_INTERRUPT_UNIQUE,
+
                                      (OspInterruptHandler)smbusIsr, pDrvData);
     if (ret == OSP_RESOURCE_IN_USE) {
         LOGW("%s: IRQ handler already installed\n", __func__);
@@ -1942,7 +1965,6 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
         LOGD("SMBus interrupt priority: %d\n", pDrvData->sbrCfg.irqPrio);
         ospInterruptVectorEnable(pDrvData->sbrCfg.irqNo);
         LOGD("%s: Interrupt handler installed successfully, vector enabled\n", __func__);
-
         LOGD("%s: Interrupt vector %d status: %s\n", __func__,
              pDrvData->sbrCfg.irqNo, 1 ? "ENABLED" : "DISABLED");
     } else {
@@ -1951,22 +1973,29 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
         goto freeMem;
     }
 
-    /* Step 6: Enable peripheral clock if needed */
+    /* Step 4: Enable peripheral clock if needed */
     ret = peripsClockEnable(devId);
     if (ret != EXIT_SUCCESS && ret != -EINVAL) {
         LOGE("%s: clock enable failed, ret=%d\n", __func__, ret);
         ret = -EIO;
         goto disable_vector;
     }
-
-    /* Step 7: Perform peripheral reset */
+    /* Step 5: Perform peripheral reset FIRST - before any hardware configuration */
+    /* This is critical because peripsReset clears all registers to default values */
     if (peripsReset(devId) != EXIT_SUCCESS) {
         LOGW("%s: reset failed\n", __func__);
         /* Continue even if reset fails */
     }
 
+    /* Step 6: Initialize hardware using HAL probe functions AFTER reset */
+    ret = smbusInitializeHardware(pDrvData);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: Hardware initialization failed, ret=%d\n", __func__, ret);
+        goto freeMem;
+    }
+
     /* Step 7: Allocate slave buffers for slave mode */
-    ret = smbusAllocateSlaveBuffers(pDrvData);
+    ret = smbusInitSlaveResources(pDrvData);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: Slave buffer allocation failed, ret=%d\n", __func__, ret);
         goto disable_vector;
@@ -1987,7 +2016,7 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
             goto disable_vector;
         }
     }
-    /* Step 9: Install driver data with system */
+    /* Step 10: Install driver data with system */
     ret = drvInstall(devId, pDrvData);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: drvInstall failed, ret=%d\n", __func__, ret);
@@ -1997,6 +2026,53 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
     LOGE("SMBus device %d initialized successfully in %s mode, semaphoreId=%d\n",
          devId, (pDrvData->sbrCfg.masterMode == 1) ? "master" : "slave",
          pDrvData->pSmbusDev.semaphoreId);
+
+    /* DEBUG: Dump key registers before exit to help debug RX_FULL issues */
+    volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
+    if (regBase != NULL) {
+        LOGE("[DEBUG] SMBus Init Register Dump - Device %d:\n", devId);
+
+        /* Dump IC_CON register */
+        SmbusIcConReg_u icCon;
+        icCon.value = regBase->icCon.value;
+        LOGE("[DEBUG] IC_CON (0x%08X): masterMode=%u, speed=%u, ic10bitaddrSlave=%u, ic10bitaddrMaster=%u, icRestartEn=%u, icSlaveDisable=%u\n",
+             icCon.value, icCon.fields.masterMode, icCon.fields.speed, icCon.fields.ic10bitaddrSlave,
+             icCon.fields.ic10bitaddrMaster, icCon.fields.icRestartEn, icCon.fields.icSlaveDisable);
+
+        /* Dump IC_SAR register (only relevant in slave mode) */
+        SmbusIcSarReg_u icSar;
+        icSar.value = regBase->icSar.value;
+        LOGE("[DEBUG] IC_SAR (0x%08X): slaveAddress=0x%03X\n", icSar.value, icSar.fields.icSar);
+
+        /* Dump IC_INTR_MASK register */
+        SmbusIcIntrMask_u icIntrMask;
+        icIntrMask.value = regBase->icIntrMask.value;
+        LOGE("[DEBUG] IC_INTR_MASK (0x%08X): rxUnder=%u, rxOver=%u, rxFull=%u, txOver=%u, txEmpty=%u, rdReq=%u, txAbrt=%u, rxDone=%u\n",
+             icIntrMask.value, icIntrMask.fields.rxUnder, icIntrMask.fields.rxOver, icIntrMask.fields.rxFull,
+             icIntrMask.fields.txOver, icIntrMask.fields.txEmpty, icIntrMask.fields.rdReq,
+             icIntrMask.fields.txAbrt, icIntrMask.fields.rxDone);
+        LOGE("[DEBUG] IC_INTR_MASK continued: activity=%u, stopDet=%u, startDet=%u, genCall=%u, restartDet=%u\n",
+             icIntrMask.fields.activity, icIntrMask.fields.stopDet, icIntrMask.fields.startDet,
+             icIntrMask.fields.genCall, icIntrMask.fields.restartDet);
+
+        /* Dump IC_STATUS register for additional context */
+        SmbusIcStatusReg_u icStatus;
+        icStatus.value = regBase->icStatus.value;
+        LOGE("[DEBUG] IC_STATUS (0x%08X): activity=%u, tfnf=%u, tfe=%u, rfne=%u, rff=%u\n",
+             icStatus.value, icStatus.fields.activity, icStatus.fields.tfnf, icStatus.fields.tfe,
+             icStatus.fields.rfne, icStatus.fields.rff);
+
+        /* Dump IC_ENABLE register */
+        SmbusIcEnableReg_u icEnable;
+        icEnable.value = regBase->icEnable.value;
+        LOGE("[DEBUG] IC_ENABLE (0x%08X): enable=%u, abort=%u, icSarEn=%u\n",
+             icEnable.value, icEnable.fields.enable, icEnable.fields.abort, icEnable.fields.icSarEn);
+
+        LOGE("[DEBUG] End of Register Dump - Device %d\n", devId);
+    } else {
+        LOGE("[DEBUG] ERROR: regBase is NULL for device %d\n", devId);
+    }
+
     goto unlock;
 
 disable_vector:
@@ -2028,6 +2104,7 @@ S32 smbusDeInit(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
     SmbusDrvData_s *pDrvData = NULL;
+    SmbusDev_s *dev = NULL;
 
     ///< Check driver lock and validate
     ret = smbusDrvLockAndCheck(devId);
@@ -2045,6 +2122,7 @@ S32 smbusDeInit(DevList_e devId)
         ret = -EINVAL;
         goto unlock;
     }
+    dev = &pDrvData->pSmbusDev;
     /* Destroy semaphore if created */
     smbusDeleteSemaphore(&pDrvData->pSmbusDev, "Deinit");
 
@@ -2062,9 +2140,8 @@ S32 smbusDeInit(DevList_e devId)
     /* Disable SMBus controller */
     if (pDrvData->pSmbusDev.regBase != NULL) {
         /* Get HAL operations */
-        SmbusHalOps_s *halOps = smbusGetHalOps();
-        if (halOps != NULL && halOps->disable != NULL) {
-            halOps->disable(&pDrvData->pSmbusDev);
+        if (dev->halOps != NULL && dev->halOps->disable != NULL) {
+            dev->halOps->disable(dev);
         }
     }
 
@@ -2159,58 +2236,54 @@ S32 smbusMasterSlaveModeSwitch(DevList_e devId, SmbusSwitchParam_s *param)
 
     /* Update device configuration from switch parameters */
     /* Store timeout in transferTimeout field for temporary storage */
-    dev->transferTimeout = param->timeout;
+    dev->transferTimeout = param->timeout;  
 
-    /* Copy mode-specific configuration */
+    /* Copy mode-specific configuration and manage resources */
     if (param->targetMode == DW_SMBUS_MODE_SLAVE) {
+        /* Copy slave configuration */
         dev->slaveAddr = param->config.slaveConfig.slaveAddr;
         LOGD("%s(): Slave config - addr=0x%02X, arp=%d\n", __func__,
              dev->slaveAddr, param->config.slaveConfig.enableArp);
         /* Note: enableArp could be stored in flags field if needed */
-    } else if (param->targetMode == DW_SMBUS_MODE_MASTER) {
-        dev->addrMode = param->config.masterConfig.addrMode;
-        dev->clkRate = param->config.masterConfig.speed;
-        /* Timing parameters will be configured in smbusConfigureMaster() */
-        LOGD("%s(): Master config - addrMode=%d, speed=%u, clkRate=%u\n", __func__,
-             dev->addrMode, param->config.masterConfig.speed, dev->clkRate);
-    }
+        /* Update driver configuration to reflect slave mode */
+        pDrvData->sbrCfg.masterMode = SMBUS_MODE_SLAVE;  /* Set to slave mode */
 
-    /* Get HAL operations for mode switching */
-    SmbusHalOps_s *halOps = smbusGetHalOps();
-    if (halOps == NULL || halOps->modeSwitchCore == NULL) {
-        LOGE("%s(): HAL operations not available\n", __func__);
-        ret = -ENOTSUP;
-        goto exit;
-    }
-
-    /* Call HAL layer mode switch core function */
-    ret = halOps->modeSwitchCore(dev, param->targetMode);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("%s(): HAL mode switch failed, ret=%d\n", __func__, ret);
-        goto exit;
-    }
-
-    LOGD("%s(): Mode switching executed successfully\n", __func__);
-
-    /* ===== 5. CRITICAL FIX: Manage slave resources based on target mode ===== */
-    if (param->targetMode == DW_SMBUS_MODE_SLAVE) {
-        /* Switching TO slave mode - initialize slave resources */
+        /* Initialize slave resources */
         ret = smbusInitSlaveResources(pDrvData);
         if (ret != EXIT_SUCCESS) {
             LOGE("%s(): Failed to initialize slave resources, ret=%d\n", __func__, ret);
             goto exit;
         }
 
-        /* Update driver configuration to reflect slave mode */
-        pDrvData->sbrCfg.masterMode = 0;  /* Set to slave mode */
-
     } else if (param->targetMode == DW_SMBUS_MODE_MASTER) {
-        /* Switching TO master mode - free slave resources */
+        /* Copy master configuration */
+        dev->addrMode = param->config.masterConfig.addrMode;
+        dev->clkRate = param->config.masterConfig.speed;
+        /* Timing parameters will be configured in smbusConfigureMaster() */
+        LOGD("%s(): Master config - addrMode=%d, speed=%u, clkRate=%u\n", __func__,
+             dev->addrMode, param->config.masterConfig.speed, dev->clkRate);
+
+        /* Free slave resources when switching to master mode */
         smbusFreeSlaveResources(pDrvData);
 
         /* Update driver configuration to reflect master mode */
         pDrvData->sbrCfg.masterMode = 1;  /* Set to master mode */
     }
+
+    /* Get HAL operations for mode switching */
+    if (dev->halOps == NULL || dev->halOps->modeSwitchCore == NULL) {
+        LOGE("%s(): HAL operations not available\n", __func__);
+        ret = -ENOTSUP;
+        goto exit;
+    }
+    /* Call HAL layer mode switch core function */
+    ret = dev->halOps->modeSwitchCore(dev, param->targetMode);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s(): HAL mode switch failed, ret=%d\n", __func__, ret);
+        goto exit;
+    }
+
+    LOGD("%s(): Mode switching executed successfully\n", __func__);
 
     /* ===== 6. Clear and reset interrupt state after mode switch ===== */
     if (dev->regBase != NULL) {
