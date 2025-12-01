@@ -1583,8 +1583,8 @@ void smbusHandleMasterSpecificInterrupts(SmbusDrvData_s *pDrvData,
     SmbusEventData_u eventData;
 
     /* Handle SMBus timeout interrupts */
-    if (smbusIntrStat & (SMBUS_MST_CLK_EXT_TIMEOUT_BIT | SMBUS_MST_CLK_LOW_TIMEOUT_BIT)) {
-        SmbusTimeoutType_e timeoutType = (smbusIntrStat & SMBUS_MST_CLK_EXT_TIMEOUT_BIT) ?
+    if (smbusIntrStat & (SMBUS_MST_CLOCK_EXTND_TIMEOUT_BIT | SMBUS_QUICK_CMD_DET_BIT)) {
+        SmbusTimeoutType_e timeoutType = (smbusIntrStat & SMBUS_MST_CLOCK_EXTND_TIMEOUT_BIT) ?
                                        SMBUS_TIMEOUT_TYPE_CLOCK_EXTEND : SMBUS_TIMEOUT_TYPE_CLOCK_LOW;
 
         /* Handle timeout recovery */

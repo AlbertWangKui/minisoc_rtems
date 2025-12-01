@@ -191,11 +191,13 @@ typedef enum SmbusTransferState {
 #define SMBUS_ALERT_INTR_BIT           (1U << 10)    /**< Alert interrupt bit */
 #define SMBUS_SUSPEND_INTR_BIT         (1U << 10)    /**< Suspend interrupt bit */
 
-/* Timeout Interrupt Bits */
-#define SMBUS_MST_CLK_EXT_TIMEOUT_BIT  (1U << 0)    /**< Master clock extend timeout */
-#define SMBUS_MST_CLK_LOW_TIMEOUT_BIT  (1U << 1)    /**< Master clock low timeout */
-#define SMBUS_SLV_CLK_EXT_TIMEOUT_BIT  (1U << 2)    /**< Slave clock extend timeout */
-#define SMBUS_SLV_CLK_LOW_TIMEOUT_BIT  (1U << 3)    /**< Slave clock low timeout */
+/* Timeout Interrupt Bits - Using correct names from IP specification */
+#define SMBUS_SLV_CLOCK_EXTND_TIMEOUT_BIT  (1U << 0)    /**< Slave Clock Extend Timeout - bit [0] */
+#define SMBUS_MST_CLOCK_EXTND_TIMEOUT_BIT  (1U << 1)    /**< Master Clock Extend Timeout - bit [1] */
+#define SMBUS_QUICK_CMD_DET_BIT            (1U << 2)    /**< Quick Command Detected - bit [2] */
+#define SMBUS_HOST_NOTIFY_MST_DET_BIT      (1U << 3)    /**< Host Notify Master Detected - bit [3] */
+#define SMBUS_ARP_PREPARE_CMD_DET_BIT      (1U << 4)    /**< ARP Prepare Command Detected - bit [4] */
+#define SMBUS_ARP_RST_CMD_DET_BIT          (1U << 5)    /**< ARP Reset Command Detected - bit [5] */
 
 /* Device Flag Constants */
 #define SMBUS_DEVICE_FLAG_ACTIVE       (0x01)        /**< Device active flag */
