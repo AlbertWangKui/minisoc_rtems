@@ -1,5 +1,5 @@
 /**
- * Copyright (C), 2025, WuXi Stars Micro System TechnoLOGEes Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
  * @file drv_smbus_dw_slaver.c
  * @author wangkui (wangkui@starsmicrosystem.com)
@@ -9,7 +9,11 @@
  * @par ChangeLog:
  * Date         Author          Description
  * 2025/10/20   wangkui         Initial version
- *
+ * 2025/11/20   wangkui         porting marco style
+ * 2025/11/23   wangkui         HAL operations optimization - eliminated redundant smbusGetHalOps() calls
+ *                              Replaced direct HAL access with dev->halOps pointer for better performance
+ *                              Reduced function call overhead by registering HAL ops during initialization
+ * 2025/12/01   wangkui         refactor and simplify the code as for core function
  * @note This file implements the SMBus Slave API layer, providing
  *       high-level Slave mode operations for SMBus communication.
  *       It works on top of the SMBus core layer and handles
@@ -35,684 +39,173 @@
 #include "drv_smbus_dw_i2c.h"
 #include "drv_smbus_api.h"
 
-/* ======================================================================== */
-/*                    Slave Configuration Functions                           */
-/* ======================================================================== */
-
 /**
- * @brief Configure SMBus controller in slave mode
- * @details Configures the DesignWare SMBus controller for slave operation.
- *          This function disables the controller, sets the appropriate
- *          configuration bits for slave mode, and configures the slave address.
- * @param[in] dev Pointer to the SMBus device structure
- * @return void
- *
- * @note Disables controller before reconfiguration
- * @note Sets fast mode (2) as default speed
- * @note Enables RESTART conditions for combined transactions
- * @note Configures slave address after mode configuration
- * @warning The function does not re-enable the controller after configuration
- * [SLAVE_API] Slave API layer - slave configuration
+ * @brief Wait for the current SMBus transaction to complete on the bus.
+ *        This function should be called after all data has been written to the TX FIFO
+ *        or after all expected data has been read from the RX FIFO.
+ * @param pDrvData Pointer to the driver's private data structure.
+ * @return 0 on success, -ETIMEDOUT on failure.
+ * [HAL] Hardware abstraction layer - direct register access
  */
-static void smbusConfigureSlave(SmbusDev_s *dev)
+static inline S32 smbusIsBusBusy(volatile SmbusRegMap_s *regBase)
 {
-    SmbusIcConReg_u con;
+    SmbusIcStatusReg_u status;
+    U32 timeout = SMBUS_TRANSACTION_TIMEOUT_US; ///< Timeout may need to be longer for full transaction
 
-    if (dev == NULL || dev->regBase == NULL) {
-        return;
-    }
-
-    /* Get HAL operations */
-    SmbusHalOps_s *halOps = smbusGetHalOps();
-    if (halOps == NULL || halOps->disable == NULL) {
-        return;
-    }
-
-    /* Disable before configuration */
-    halOps->disable(dev);
-
-    /* Read current configuration */
-    con.value = dev->regBase->icCon.value;
-
-    /* Configure as slave */
-    con.fields.masterMode = 0;
-    con.fields.icSlaveDisable = 0;
-    con.fields.icRestartEn = 1;
-    con.fields.speed = 2;  /* Fast mode */
-
-    /* Set address mode */
-    if (dev->addrMode == 1) {
-        con.fields.ic10bitaddrSlave = 1;
-    } else {
-        con.fields.ic10bitaddrSlave = 0;
-    }
-
-    /* Write configuration */
-    dev->regBase->icCon.value = con.value;
-
-    /* Configure optimal interrupt mask for Slave mode */
-    U32 intrMask = 0;
-    intrMask |= SMBUS_IC_INTR_RD_REQ_MASK;    // bit[5] - Master 读请求
-    intrMask |= SMBUS_IC_INTR_RX_FULL_MASK;   // bit[2] - RX FIFO 满
-    intrMask |= SMBUS_IC_INTR_RX_DONE_MASK;   // bit[7] - 接收完成
-    intrMask |= SMBUS_IC_INTR_STOP_DET_MASK;  // bit[9] - STOP 条件
-    intrMask |= SMBUS_IC_INTR_TX_ABRT_MASK;   // bit[6] - 传输终止
-
-    dev->regBase->icIntrMask = intrMask;
-    LOGD("SMBus Slave: Configured interrupt mask=0x%08X (RD_REQ+RX_FULL+RX_DONE+STOP_DET+TX_ABRT)\n", intrMask);
-
-    /* Set slave address */
-    if (halOps->setSlaveAddr != NULL) {
-        halOps->setSlaveAddr(dev);
-    }
-}
-
-/**
- * @brief ARP event notification function
- * @details Notifies registered callbacks about ARP events such as address changes,
- *          device discovery, or protocol state changes. This function iterates
- *          through all registered callbacks and invokes them with the event data.
- * @param[in] notifyCb Pointer to ARP notification callback structure
- * @param[in] event Type of ARP event that occurred
- * @param[in] dev Pointer to device information structure
- * @return void
- *
- * @note Iterates through all registered callbacks
- * @note Validates parameters before callback invocation
- * @note Logs callback invocation for debugging
- * @warning Callback functions should not block or perform lengthy operations
- * @warning This function should be called with appropriate synchronization
- */
-static void smbusArpNotifyEvent(SmbusArpNotifyCb_s *notifyCb, SmbusArpEvent_e event, const SmbusArpDev_s *dev)
-{
-    U32 i;
-
-    ///< Parameter validation
-    if (notifyCb == NULL || dev == NULL) {
-        LOGE("%s(): Invalid parameters\n", __func__);
-        return;
-    }
-
-    ///< Log event notification
-    LOGD("%s(): Notifying ARP event %d for device addr 0x%02X\n",
-         __func__, event, dev->newAddr);
-
-    ///< Iterate through all registered callbacks
-    for (i = 0; i < notifyCb->callbackCount; i++) {
-        if (notifyCb->callbacks[i] != NULL) {
-            LOGD("%s(): Invoking callback %u for event %d\n",
-                 __func__, i, event);
-
-            ///< Invoke callback with event and device data
-            notifyCb->callbacks[i](event, dev, notifyCb->userData[i]);
+    while (timeout--) {
+        status.value = regBase->icStatus.value;
+        ///< We wait for the 'activity' bit to be cleared, indicating the
+        ///< master is no longer active on the bus (i.e., STOP condition has been sent).
+        if (!status.fields.activity) {
+            return EXIT_SUCCESS; 
         }
+        rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(10));
     }
-
-    ///< Log completion
-    LOGD("%s(): ARP event notification completed for %u callbacks\n",
-         __func__, notifyCb->callbackCount);
-}
-
-/* ======================================================================== */
-/*                        ARP Slave API Functions                           */
-/* ======================================================================== */
-
-/**
- * @brief Initialize SMBus ARP Slave LOGEc according to SMBus ARP protocol.
- *
- * This function implements the ARP slave initialization sequence shown in Figure 6‑13
- * ("ARP Slave Sequence"). It is responsible for configuring the DesignWare I2C/SMBus
- * controller (`DW_apb_i2c`) into proper SMBus ARP Slave mode, detecting whether a
- * Persistent Slave Address (PSA) or Dynamic Slave Address (DSA) exists, and managing
- * the Address Valid / Resolved flags.
- *
- * The function configures the controller registers in correct sequence:
- * 1. Reset HW ARP flags
- * 2. Load persistent address if available
- * 3. Enable ARP mode in IC_CON
- * 4. Wait for ARP or SMBus command per protocol state
- *
- * @param[in] devId      Target SMBus device identifier
- * @return  0 if successful; negative error code otherwise
- *
- * @note The function must be called once after hardware reset, before SMBus slave operations.
- * [SLAVE_API] Slave API layer - high-level Slave mode operations
- */
-S32 smbusArpSlaveInit(DevList_e devId)
-{
-    SmbusDrvData_s *pDrvData = NULL;
-    S32 ret = EXIT_SUCCESS;
-    SmbusIcConReg_u con;
-
-    /* Check driver lock and validate */
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto unlock;
-    }
-
-    /* Get driver data */
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* Reset HW ARP flags */
-    pDrvData->arpEnabled = false;
-    pDrvData->arpState = SMBUS_ARP_STATE_INIT;
-
-    /* Enable SMBus controller in slave mode */
-    volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
-    if (regBase == NULL) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* Get HAL operations */
-    SmbusHalOps_s *halOps = smbusGetHalOps();
-    if (halOps == NULL || halOps->enable == NULL) {
-        ret = -ENOSYS;
-        goto unlock;
-    }
-
-    /* Configure controller for SMBus slave mode */
-    SmbusDev_s *dev = &pDrvData->pSmbusDev;
-    smbusConfigureSlave(dev);
-
-    /* Clear all SMBus-related interrupt status */
-    regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT |
-                                    SMBUS_GET_UDID_INTR_BIT | SMBUS_SAR1_INTR_BIT |
-                                    SMBUS_SAR2_INTR_BIT;
-
-    /* Enable ARP mode in IC_CON */
-    con.value = regBase->icCon.value;
-    con.fields.smbusArpEn = 1;
-    regBase->icCon.value = con.value;
-
-    /* Enable controller */
-    halOps->enable(dev);
-
-    /* Mark ARP as initialized */
-    pDrvData->arpInitialized = true;
-
-    LOGD("%s(): ARP Slave initialization completed\n", __func__);
-
-unlock:
-    devUnlockByDriver(devId);
-    return ret;
+    return -ETIMEDOUT;
 }
 
 /**
- * @brief Prepare ARP Slave for operation
- * [SLAVE_API] Slave API layer - high-level Slave mode operations
+ * @brief [Internal] 修改本机 Slave 地址
+ * @details 安全地更新硬件的从机地址寄存器 (SAR)。
+ * 通常在初始化或 ARP 地址分配完成后调用。
+ * * @param pDrv  驱动私有数据指针
+ * @param addr  新地址 (7-bit)
+ * @return S32  0 成功, <0 失败
  */
-S32 smbusArpSlaveHandlerPrep(DevList_e devId)
+static S32 smbusSetLocalAddress(SmbusDrvData_s *pDrv, U8 addr)
 {
-    S32 ret = EXIT_SUCCESS;
-    SmbusDrvData_s *pDrvData = NULL;
+    volatile SmbusRegMap_s *regBase = pDrv->pSmbusDev.regBase;
+    U32 timeout = 1000;
 
-    /* Check driver lock and validate */
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto exit;
-    }
-
-    /* Get driver data */
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* Get HAL operations */
-    SmbusHalOps_s *halOps = smbusGetHalOps();
-    if (halOps == NULL || halOps->enable == NULL) {
-        ret = -ENOSYS;
-        goto unlock;
-    }
-
-    /* Check if ARP is initialized */
-    if (!pDrvData->arpInitialized) {
-        ret = -EAGAIN;
-        goto unlock;
-    }
-
-    /* Prepare ARP Slave for operation by enabling appropriate interrupts */
-    volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
-    if (regBase == NULL) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* Enable ARP-related interrupts */
-    U32 mask = regBase->icSmbusIntrMask;
-    mask |= SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
-    regBase->icSmbusIntrMask = mask;
-
-    /* Set ARP state to ready */
-    pDrvData->arpState = SMBUS_ARP_STATE_READY;
-    pDrvData->arpEnabled = true;
-
-    LOGD("%s(): ARP Slave prepared for operation\n", __func__);
-
-unlock:
-    devUnlockByDriver(devId);
-
-exit:
-    return ret;
-}
-
-/**
- * @brief Handle ARP Slave reset command
- * [SLAVE_API] Slave API layer - high-level Slave mode operations
- */
-S32 smbusArpSlaveHandlerReset(DevList_e devId, Bool directed, const SmbusUdid_s *udid)
-{
-    S32 ret = EXIT_SUCCESS;
-    SmbusDrvData_s *pDrvData = NULL;
-
-    if (udid == NULL) {
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    /* Check driver lock and validate */
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto exit;
-    }
-
-    /* Get driver data */
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* Get HAL operations */
-    SmbusHalOps_s *halOps = smbusGetHalOps();
-    if (halOps == NULL) {
-        ret = -ENOSYS;
-        goto unlock;
-    }
-
-    /* Check if reset is directed to this device by comparing UDID */
-    if (directed) {
-        /* Compare UDID with device's UDID */
-        if (memcmp(&pDrvData->udid, udid, sizeof(SmbusUdid_s)) != 0) {
-            /* UDID doesn't match, this reset is not for us */
-            LOGD("%s(): UDID mismatch, reset not for this device\n", __func__);
-            ret = -ENOENT;
-            goto unlock;
-        }
-    }
-
-    volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
-    if (regBase == NULL) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* Reset ARP state machine */
-    pDrvData->arpState = SMBUS_ARP_STATE_INIT;
-    pDrvData->arpEnabled = false;
-    pDrvData->arpInitialized = false;
-
-    /* Clear all ARP-related interrupts */
-    regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT |
-                                    SMBUS_GET_UDID_INTR_BIT | SMBUS_SAR1_INTR_BIT |
-                                    SMBUS_SAR2_INTR_BIT;
-
-    /* Disable ARP-related interrupts */
-    U32 mask = regBase->icSmbusIntrMask;
-    mask &= ~(SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT);
-    regBase->icSmbusIntrMask = mask;
-
-    /* Reset assigned addresses if this was a directed reset */
-    if (directed) {
-        /* Clear SAR registers */
-        regBase->icSar.value = 0;
-        regBase->icSar2.value = 0;
-        LOGD("%s(): Directed ARP reset completed\n", __func__);
-    } else {
-        LOGD("%s(): General ARP reset completed\n", __func__);
-    }
-
-    /* Re-initialize ARP if needed */
-    if (halOps->enable != NULL) {
-        pDrvData->arpInitialized = false;
-        /* Note: Caller should call smbusArpSlaveInit() if re-initialization is needed */
-    }
-
-unlock:
-    devUnlockByDriver(devId);
-
-exit:
-    return ret;
-}
-
-/* ======================================================================== */
-/*                    SAR (Slave Address) Functions                         */
-/* ======================================================================== */
-
-/**
- * [SLAVE_API] Slave API layer - high-level Slave mode operations
- */
-S32 smbusSarEnable(DevList_e devId, U32 sarNum)
-{
-    SmbusDrvData_s *pDrvData = NULL;
-    volatile SmbusRegMap_s *regBase = NULL;
-
-    if (sarNum > 2 || sarNum == 0) {
+    // 1. 参数校验
+    if (addr > 0x7F) {
+        LOGE("SMBus: Invalid local address 0x%02X\n", addr);
         return -EINVAL;
     }
 
-    ///< Check driver lock and validate
-    if (smbusDrvLockAndCheck(devId) != EXIT_SUCCESS) {
-        return -EINVAL;
+    // 2. 检查当前是否忙 (如果正在传输，强制修改可能导致总线错误)
+    if (smbusIsBusBusy(regBase)) {
+        LOGW("SMBus: Warning - Changing address while bus is busy\n");
+        return -EBUSY;
+        // 策略：可以选择返回 -EBUSY，或者强行继续（视 ARP 协议要求而定）
     }
 
-    /* Get register base */
-    if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
-        devUnlockByDriver(devId);
-        return -EINVAL;
+    // 3. 禁用控制器 (DesignWare IP 修改 SAR 必须先 Disable)
+    //    注意：这里应该有一个超时等待逻辑
+    regBase->icEnable.fields.enable = 0;
+    
+    while ((regBase->icEnableStatus & 0x01)  && --timeout > 0) {
+        // 等待硬件完全关闭
+        udelay(10); 
+    }
+    if (timeout == 0) {
+        LOGE("SMBus: Failed to disable controller for address update\n");
+        return -ETIMEDOUT;
     }
 
-    /* Enable specified SAR (Slave Address Register) */
-    SmbusIcEnableReg_u sarReg;
-#if 1
-    /* Enable SAR based on number */
-    if (sarNum == 1) {
-        /* Configure and enable SAR1 */
-        sarReg.value = regBase->icEnable.value;
-        sarReg.fields.icSarEn = 1;
-        regBase->icEnable.value = sarReg.value;
+    // 4. 更新 SAR (Slave Address Register)
+    regBase->icSar.fields.icSar = addr;
 
-        /* Enable SAR1 interrupts */
-        U32 mask = regBase->icSmbusIntrMask;
-        mask |= SMBUS_SAR1_INTR_BIT;
-        regBase->icSmbusIntrMask = mask;
+    // 5. 重新启用控制器
+    regBase->icEnable.fields.enable = 1;
 
-        LOGD("%s(): SAR1 enabled\n", __func__);
-    } else if (sarNum == 2) {
-        /* Configure and enable SAR2 */
-        sarReg.value = regBase->icEnable.value;
-        sarReg.fields.icSar2En = 1;
-        regBase->icEnable.value = sarReg.value;
-
-        /* Enable SAR2 interrupts */
-        U32 mask = regBase->icSmbusIntrMask;
-        mask |= SMBUS_SAR2_INTR_BIT;
-        regBase->icSmbusIntrMask = mask;
-
-        LOGD("%s(): SAR2 enabled\n", __func__);
-    }
-#endif
-    /* Update device status */
-    pDrvData->pSmbusDev.status |= SMBUS_STATUS_SLAVE_ENABLED_MASK;
-
-    /* Unlock device */
-    devUnlockByDriver(devId);
-
+    LOGD("SMBus: Local Slave Address updated to 0x%02X\n", addr);
     return EXIT_SUCCESS;
 }
 
 /**
- * @brief Disable SAR (Slave Address)
- * [SLAVE_API] Slave API layer - high-level Slave mode operations
+ * @brief 从机端ARP地址分配处理函数
+ * @details 处理从机端的ARP地址分配命令。当接收到ARP Assign Address命令时调用此函数，
+ *          解析命令中的UDID和新地址，验证UDID是否匹配本机，如果匹配则更新硬件地址寄存器，
+ *          并通知上层应用程序地址分配完成。
+ * @param[in] pDrv 指向SMBus驱动私有数据结构的指针
+ * @param[in] payload 指向ARP Assign Address命令负载数据的指针，包含目标UDID和新分配的地址
+ * @return void
+ *
+ * @note 此函数仅在从机模式下使用
+ * @note 地址更新是硬件级别的，直接修改SAR寄存器
+ * @note 成功分配地址后会触发用户回调函数
+ * @note 如果UDID不匹配本机，函数将静默返回
+ *
+ * @par 处理流程：
+ * 1. 解析ARP命令负载，提取目标UDID和新地址
+ * 2. 比较目标UDID与本机UDID，确认是否为发给本机的命令
+ * 3. 如果UDID匹配，调用smbusSetLocalAddress更新硬件地址
+ * 4. 更新驱动内部状态，记录新的ARP状态和当前地址
+ * 5. 通过回调函数通知应用程序地址分配完成
+ *
+ * @warning 此函数假设传入的payload格式正确
+ * @warning 硬件地址更新操作具有原子性
+ * @warning 更新失败时不会触发回调函数
+ *
+ * @par 依赖函数：
+ * - parseAssignPacket: 解析ARP Assign Address命令包
+ * - isMyUdid: 比较UDID是否匹配本机
+ * - smbusSetLocalAddress: 更新硬件从机地址寄存器
+ *
+ * @par 线程安全性：
+ * 此函数不是线程安全的，应该在SMBus中断上下文或已加锁的环境中调用
  */
-S32 smbusSarDisable(DevList_e devId, U32 sarNum)
+S32 smbusArpSlaveHandleAssignAddr(SmbusDrvData_s *pDrv, const U8 *payload)
 {
+    // 1. 解析 Payload，提取 UDID 和 New Address
     S32 ret = EXIT_SUCCESS;
-    SmbusDrvData_s *pDrvData = NULL;
-    volatile SmbusRegMap_s *regBase = NULL;
+    SmbusUdid_s targetUdid;
+    U8 newAddr = 0x00;
+    parseAssignPacket(payload, &targetUdid, &newAddr);
 
-    if (sarNum > 2 || sarNum == 0) {
-        ret = -EINVAL;
-        goto exit;
+    // 2. 检查 UDID 是否匹配本机
+    if (isMyUdid(&pDrv->udid, &targetUdid)) {
+
+        // 3. 核心步骤：直接调用内部函数修改硬件地址
+        ret = smbusSetLocalAddress(pDrv, newAddr);
+
+        if (ret == EXIT_SUCCESS) {
+            // 4. 更新内部状态
+            pDrv->arpState = SMBUS_ARP_EVENT_ASSIGN;
+            pDrv->assignedAddr = newAddr;
+            LOGI("SMBus ARP: Assigned new address 0x%02X for matching UDID\n", newAddr);        
+        }
     }
-
-    ///< Check driver lock and validate
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto exit;
-    }
-
-    /* Get register base */
-    if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* Disable specified SAR (Slave Address Register) */
-      SmbusIcEnableReg_u sarReg;
-#if 1
-    /* Disable SAR based on number */
-    if (sarNum == 1) {
-        /* Configure and disable SAR1 */
-        sarReg.value = regBase->icEnable.value;
-        sarReg.fields.icSarEn = 0;
-        regBase->icEnable.value = sarReg.value;
-
-        /* Disable SAR1 interrupts */
-        U32 mask = regBase->icSmbusIntrMask;
-        mask &= ~SMBUS_SAR1_INTR_BIT;
-        regBase->icSmbusIntrMask = mask;
-
-        /* Clear any pending SAR1 interrupts */
-        regBase->icClrSmbusIntr = SMBUS_SAR1_INTR_BIT;
-
-        LOGD("%s(): SAR1 disabled\n", __func__);
-    } else if (sarNum == 2) {
-        /* Configure and disable SAR2 */
-        sarReg.value = regBase->icEnable.value;
-        sarReg.fields.icSar2En = 0;
-        regBase->icEnable.value = sarReg.value;
-
-        /* Disable SAR2 interrupts */
-        U32 mask = regBase->icSmbusIntrMask;
-        mask &= ~SMBUS_SAR2_INTR_BIT;
-        regBase->icSmbusIntrMask = mask;
-
-        /* Clear any pending SAR2 interrupts */
-        regBase->icClrSmbusIntr = SMBUS_SAR2_INTR_BIT;
-
-        LOGD("%s(): SAR2 disabled\n", __func__);
-    }
-    #endif
-    /* Update device status - check if both SARs are disabled */
-    SmbusIcEnableReg_u sar1Reg = {.value = regBase->icEnable.value};
-    SmbusIcEnableReg_u sar2Reg = {.value = regBase->icEnable.value};
-
-    if (!sar1Reg.fields.icSarEn && !sar2Reg.fields.icSar2En) {
-        pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_SLAVE_ENABLED_MASK;
-    }
-
-unlock:
-    /* Unlock device */
-    devUnlockByDriver(devId);
-
-exit:
-    return ret;
-}
-
-/* ======================================================================== */
-/*                    ARP Additional Functions                               */
-/* ======================================================================== */
-
-/**
- * @brief ARP Enable function
- * [SLAVE_API] Slave API layer - high-level Slave mode operations
- */
-S32 smbusArpEnable(DevList_e devId, U32 sarNum)
-{
-    S32 ret = EXIT_SUCCESS;
-    SmbusDrvData_s *pDrvData = NULL;
-    volatile SmbusRegMap_s *regBase = NULL;
-
-    if (sarNum > 2 || sarNum == 0) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    ///< Check driver lock and validate
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto unlock;
-    }
-
-    /* Get register base */
-    if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        ret = -ENODEV;
-        goto exit;
-    }
-
-    if (pDrvData == NULL) {
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    /* Enable ARP mode in IC_CON register */
-    SmbusIcConReg_u con;
-    con.value = regBase->icCon.value;
-    con.fields.smbusArpEn = 1;
-    regBase->icCon.value = con.value;
-
-    /* Enable ARP interrupts for the specified SAR */
-    U32 mask = regBase->icSmbusIntrMask;
-    if (sarNum == 1) {
-        mask |= SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR1_INTR_BIT |
-                SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
-    } else if (sarNum == 2) {
-        mask |= SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR2_INTR_BIT |
-                SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
-    }
-    regBase->icSmbusIntrMask = mask;
-
-    /* Mark ARP as enabled */
-    pDrvData->arpEnabled = true;
-    if (pDrvData->arpState == SMBUS_ARP_STATE_INIT) {
-        pDrvData->arpState = SMBUS_ARP_STATE_READY;
-    }
-
-    LOGD("%s(): ARP enabled for SAR%u\n", __func__, sarNum);
-
-unlock:
-    /* Unlock device */
-    devUnlockByDriver(devId);
-exit:
     return ret;
 }
 
 /**
- * @brief ARP Disable function
- * [SLAVE_API] Slave API layer - high-level Slave mode operations
+ * @brief 专门处理 ARP Reset 中断的逻辑
+ * @note 复用 smbusSetLocalAddress，但不解析 Payload
  */
-S32 smbusArpDisable(DevList_e devId, U32 sarNum)
+static void smbusSlaveHandleArpReset(SmbusDrvData_s *pDrv)
 {
-    S32 ret = EXIT_SUCCESS;
-    SmbusDrvData_s *pDrvData = NULL;
-    volatile SmbusRegMap_s *regBase = NULL;
+    SmbusArpPayload_s arpNotifyDev;
 
-    if (sarNum > 2 || sarNum == 0) {
-        ret = -EINVAL;
-        goto unlock;
-    }
+    LOGI("SMBus Slave: Handling ARP Reset...\n");
+    {
+        /* 2. 正确更新软件状态机 (与 Assign 区分开) */
+        pDrv->arpState = SMBUS_ARP_STATE_RESET; // 或者 SMBUS_ARP_STATE_DEFAULT
+        pDrv->assignedAddr = SMBUS_ARP_DEFAULT_ADDR;
+        
+        LOGI("SMBus Slave: Address reset to Default (0x%02X)\n", SMBUS_ARP_DYNAMIC_ADDR);
 
-    ///< Check driver lock and validate
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto unlock;
-    }
+        /* 4. 通知上层应用 (构造对应的 Event 数据结构) */
+        memset(&arpNotifyDev, 0, sizeof(arpNotifyDev));
+        
+        /* 填充当前设备的 UDID */
+        memcpy(&arpNotifyDev.udid, &pDrv->udid, sizeof(SmbusUdid_s));
+        
+        /* Reset 事件中，newAddr 通常填 0x61 或 0 来表示未分配 */
+        arpNotifyDev.newAddr = SMBUS_ARP_DEFAULT_ADDR; 
+        arpNotifyDev.oldAddr = 0xFFFF; // 表示复位
+        arpNotifyDev.addrValid = 0;    // 地址不再是"已分配"的有效状态
 
-    /* Get register base */
-    if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        ret = -ENODEV;
-        goto exit;
-    }
-
-    if (pDrvData == NULL) {
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    /* Disable ARP interrupts for the specified SAR */
-    U32 mask = regBase->icSmbusIntrMask;
-    if (sarNum == 1) {
-        mask &= ~(SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR1_INTR_BIT);
-    } else if (sarNum == 2) {
-        mask &= ~(SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR2_INTR_BIT);
-    }
-    regBase->icSmbusIntrMask = mask;
-
-    /* Clear any pending ARP interrupts for the specified SAR */
-    if (sarNum == 1) {
-        regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR1_INTR_BIT;
-    } else if (sarNum == 2) {
-        regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR2_INTR_BIT;
-    }
-
-    /* Check if both SARs are being disabled */
-    if (sarNum == 1) {
-        SmbusIcEnableReg_u sar2Reg = {.value = regBase->icEnable.value};
-        if (!sar2Reg.fields.icSarEn) {
-            /* Both SARs are disabled, disable ARP mode completely */
-            SmbusIcConReg_u con;
-            con.value = regBase->icCon.value;
-            con.fields.smbusArpEn = 0;
-            regBase->icCon.value = con.value;
-
-            /* Disable all ARP-related interrupts */
-            mask &= ~(SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT);
-            regBase->icSmbusIntrMask = mask;
-
-            /* Clear remaining ARP interrupts */
-            regBase->icClrSmbusIntr = SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
-
-            pDrvData->arpEnabled = false;
-            pDrvData->arpState = SMBUS_ARP_STATE_INIT;
-        }
-    } else if (sarNum == 2) {
-        SmbusIcEnableReg_u sar1Reg = {.value = regBase->icEnable.value};
-        if (!sar1Reg.fields.icSar2En) {
-            /* Both SARs are disabled, disable ARP mode completely */
-            SmbusIcConReg_u con;
-            con.value = regBase->icCon.value;
-            con.fields.smbusArpEn = 0;
-            regBase->icCon.value = con.value;
-
-            /* Disable all ARP-related interrupts */
-            mask &= ~(SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT);
-            regBase->icSmbusIntrMask = mask;
-
-            /* Clear remaining ARP interrupts */
-            regBase->icClrSmbusIntr = SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
-
-            pDrvData->arpEnabled = false;
-            pDrvData->arpState = SMBUS_ARP_STATE_INIT;
-        }
-    }
-
-    LOGD("%s(): ARP disabled for SAR%u\n", __func__, sarNum);
-
-unlock:
-    /* Unlock device */
-    devUnlockByDriver(devId);
-exit:
-    return ret;
+        /* 发送 RESET 事件 */
+        smbusTriggerSlaveEvent(pDrv, SMBUS_ARP_EVENT_RESET, &arpNotifyDev, sizeof(arpNotifyDev));
+    } 
+    return;
 }
 
 /* ======================================================================== */
-/*                    Slave API - ARP Protocol Functions                     */
+/*                    Slave API - ARP Functions                        */
 /* ======================================================================== */
-
 /**
  * @brief Slave side ARP address assignment completion handler
  * @details Handles the completion of ARP address assignment on the slave side.
@@ -722,9 +215,6 @@ exit:
  *          notifies the system of successful address assignment.
  * @param[in] pDrvData Pointer to the SMBus driver private data structure
  * @return void
- *
- * @note Handles both SAR1 and SAR2 address resolution
- * @note Waits 200ms for address assignment to settle
  * @note Calls registered ARP failure handler if available
  * @note Logs assigned addresses for debugging
  * @warning This function should only be called in Slave mode
@@ -733,328 +223,455 @@ exit:
 void smbusSlvArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData)
 {
     volatile SmbusRegMap_s *regBase;
-    U32 tmp;
-    U32 mask, ic_status, icSar;
+    U32 icStatus;
+    U16 assignedAddr;
+    SmbusArpPayload_s arpPayload;
 
+    /* Parameter validation */
     if (pDrvData == NULL || pDrvData->sbrCfg.regAddr == NULL) {
+        LOGE("%s: Invalid pDrvData\n", __func__);
         return;
     }
 
     regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
 
-    /* Read ARP interrupt status */
-    tmp = regBase->icSmbusIntrStat.value;
+    /* * At this point, the ISR has already detected SMBUS_ASSIGN_ADDR_CMD_DET_BIT.
+     * We need to verify if the hardware successfully updated its address.
+     */
 
-    /* Handle ARP GET UDID command */
-    if (tmp & SMBUS_GET_UDID_INTR_BIT) {
-        LOGT("SMBus ARP: GET_UDID_CMD detected (0x%x)\n", tmp);
-        regBase->icClrSmbusIntr = SMBUS_GET_UDID_INTR_BIT;
-    }
-
-    /* Handle ARP RESET command */
-    if (tmp & SMBUS_SLV_RX_PEC_NACK_BIT) {
-        LOGT("SMBus: SLV_RX_PEC_NACK detected (0x%x)\n", tmp);
-        regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT;
-    }
-
-    /* Handle ARP PREPARE command */
-    if (tmp & SMBUS_SAR1_INTR_BIT) {
-        LOGT("SMBus ARP: PREPARE_CMD detected (0x%x)\n", tmp);
-        regBase->icClrSmbusIntr = SMBUS_SAR1_INTR_BIT;
-    }
-
-    /* Check if ARP Assign Address command detected */
-    if ((tmp & SMBUS_ASSIGN_ADDR_INTR_BIT) == 0) {
-        return;
-    }
-
-    /* Check if callback is registered */
-    if (pDrvData->arpFailHandler == NULL) {
-        /* Clear ARP ASSIGN interrupt */
-        regBase->icClrSmbusIntr = SMBUS_ASSIGN_ADDR_INTR_BIT;
-        return;
-    }
-
-    /* Disable ARP_ASSGN_ADDR_CMD interrupt */
-    mask = regBase->icSmbusIntrMask;
-    mask &= ~SMBUS_ASSIGN_ADDR_INTR_BIT;
-    regBase->icSmbusIntrMask = mask;
-
-    /* Wait for address assignment to settle */
-    rtems_task_wake_after(2000 * 1000 * 10);
-
-    /* Read status register */
-    ic_status = regBase->icStatus.value;
-
-    /* Check SAR1 address valid and resolved */
-    if ((ic_status & (1 << 17)) && (ic_status & (1 << 18))) {
-        /* IC_STATUS_SMBUS_SLAVE_ADDR_VALID && IC_STATUS_SMBUS_SLAVE_ADDR_RESOLVED */
-        icSar = regBase->icSar.value & 0x3FF;
-
-        /* Call registered callback if available */
-        if (pDrvData->arpFailHandler != NULL) {
-            LOGD("SMBus: Calling ARP fail handler for SAR1 assignment\n");
-        }
-
-        /* Notify via ARP notification manager */
-        SmbusArpDev_s dev;
-        memset(&dev, 0, sizeof(dev));
-        dev.newAddr = icSar;
-        ///< Copy UDID information for notification
-        memcpy(&dev.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
-        dev.addrValid = true;
-        smbusArpNotifyEvent(&pDrvData->arpNotifyEvent, SMBUS_ARP_EVENT_ADDRESS_CHANGED, &dev);
-
-        LOGE("SMBus: SAR1 address assigned: 0x%03x\n", icSar);
-    }
-
-    LOGT("SMBus ARP status: 0x%x\n", ic_status);
-
-    /* Check SAR2 address valid and resolved */
-    if ((ic_status & (1 << 21)) && (ic_status & (1 << 22))) {
-        /* IC_STATUS_SMBUS_SLAVE_ADDR2_VALID && IC_STATUS_SMBUS_SLAVE_ADDR2_RESOLVED */
-        icSar = regBase->icSar2.value & 0x3FF;
-
-        /* Call registered callback if available */
-        if (pDrvData->arpFailHandler != NULL) {
-            LOGD("SMBus: Calling ARP fail handler for SAR2 assignment\n");
-        }
-
-        /* Notify via ARP notification manager */
-        SmbusArpDev_s dev;
-        memset(&dev, 0, sizeof(dev));
-        dev.newAddr = icSar;
-        ///< Copy UDID information for notification
-        memcpy(&dev.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
-        dev.addrValid = true;
-        smbusArpNotifyEvent(&pDrvData->arpNotifyEvent, SMBUS_ARP_EVENT_ADDRESS_CHANGED, &dev);
-
-        LOGE("SMBus: SAR2 address assigned: 0x%03x\n", icSar);
-    }
-
-    /* Clear ARP_ASSGN_ADDR_CMD interrupt first, then re-enable */
-    regBase->icClrSmbusIntr = SMBUS_ASSIGN_ADDR_INTR_BIT;
-    tmp = regBase->icSmbusIntrMask;
-    tmp |= SMBUS_ASSIGN_ADDR_INTR_BIT;
-    regBase->icSmbusIntrMask = tmp;
-}
-
-/* ======================================================================== */
-/*                    Slave API - Missing ARP Functions                        */
-/* ======================================================================== */
-
-/**
- * @brief Set UDID information for the specified index
- * @details Sets the UDID information to the SMBus controller according to
- *          SMBus 3.1 protocol. UDID contains 16-byte unique device identifier
- *          used for device identification in ARP protocol.
- * @param[in] devId SMBus device ID
- * @param[in] idx UDID index (supports multiple UDID storage)
- * @param[in] udidInfo Pointer to UDID information
- * @return 0 on success, negative error code on failure
- *
- * @note Writes UDID information to hardware registers IC_SMBUS_UDID_WORD0-3
- * @note Supports complete 16-byte UDID data write
- * @note Performs parameter validation and device locking
- * @warning idx parameter currently only supports 0 for main UDID storage
- * @warning Must be called after ARP initialization
- *
- */
-S32 smbusArpUdidSet(DevList_e devId, U32 idx, const SmbusUdid_s *udidInfo)
-{
-    S32 ret = EXIT_SUCCESS;
-    volatile SmbusRegMap_s *regBase = NULL;
-
-    ///< Parameter validation
-    if (udidInfo == NULL) {
-        LOGE("%s(): udidInfo is NULL\n", __func__);
-        return -EINVAL;
-    }
-
-    if (idx > 0) {
-        LOGE("%s(): idx %u not supported, only idx=0 supported\n", __func__, idx);
-        return -EINVAL;
-    }
-
-    ///< Check driver lock and validate
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto exit;
-    }
-
-    /* Get register base */
-    if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    ///< Convert UDID structure to 32-bit word array and write to hardware registers
-    U32 *udidWords = (U32*)udidInfo;
-
-    ///< Write UDID to hardware registers
-    regBase->icSmbusUdidWord0.value = udidWords[0];
-    regBase->icSmbusUdidWord1.value = udidWords[1];
-    regBase->icSmbusUdidWord2.value = udidWords[2];
-    regBase->icSmbusUdidWord3.value = udidWords[3];
-
-    ///< Also save to driver data structure
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) == EXIT_SUCCESS && pDrvData != NULL) {
-        memcpy(&pDrvData->udid, udidInfo, sizeof(SmbusUdid_s));
-    }
-
-    LOGD("%s(): UDID set successfully for idx %u\n", __func__, idx);
-
-unlock:
-    devUnlockByDriver(devId);
-
-exit:
-    return ret;
-}
-
-/**
- * @brief Get UDID information for the specified index
- * @details Reads UDID information from the SMBus controller according to
- *          SMBus 3.1 protocol. UDID contains 16-byte unique device identifier
- *          used for device identification in ARP protocol.
- * @param[in] devId SMBus device ID
- * @param[in] idx UDID index
- * @param[out] udidInfo Output pointer to UDID information
- * @return 0 on success, negative error code on failure
- *
- * @note Reads 16-byte UDID from hardware registers IC_SMBUS_UDID_WORD0-3
- * @note Prioritizes reading from driver cache, falls back to hardware if needed
- * @note Performs complete parameter validation and error handling
- * @warning idx parameter currently only supports 0 for main UDID storage
- * @warning Caller must ensure udidInfo points to valid memory space
- *
- */
-S32 smbusArpUdidGet(DevList_e devId, U32 idx, SmbusUdid_s *udidInfo)
-{
-    S32 ret = EXIT_SUCCESS;
-    volatile SmbusRegMap_s *regBase = NULL;
-
-    ///< Parameter validation
-    if (udidInfo == NULL) {
-        LOGE("%s(): udidInfo is NULL\n", __func__);
-        return -EINVAL;
-    }
-
-    if (idx > 0) {
-        LOGE("%s(): idx %u not supported, only idx=0 supported\n", __func__, idx);
-        return -EINVAL;
-    }
-
-    ///< Check driver lock and validate
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto exit;
-    }
-
-    /* Get register base */
-    if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    ///< Prioritize reading UDID from driver cache
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) == EXIT_SUCCESS && pDrvData != NULL) {
-        if (pDrvData->udid.deviceAddr != 0 ||
-            pDrvData->udid.vendorId != 0 ||
-            pDrvData->udid.deviceId != 0) {
-            memcpy(udidInfo, &pDrvData->udid, sizeof(SmbusUdid_s));
-            LOGD("%s(): UDID retrieved from cache for idx %u\n", __func__, idx);
-            goto unlock;
-        }
-    }
-
-    ///< Read UDID from hardware registers
-    U32 *udidWords = (U32*)udidInfo;
-
-    udidWords[0] = regBase->icSmbusUdidWord0.value;
-    udidWords[1] = regBase->icSmbusUdidWord1.value;
-    udidWords[2] = regBase->icSmbusUdidWord2.value;
-    udidWords[3] = regBase->icSmbusUdidWord3.value;
-
-    ///< Also update driver cache
-    if (pDrvData != NULL) {
-        memcpy(&pDrvData->udid, udidInfo, sizeof(SmbusUdid_s));
-    }
-
-    LOGD("%s(): UDID retrieved from hardware for idx %u\n", __func__, idx);
-
-unlock:
-    devUnlockByDriver(devId);
-
-exit:
-    return ret;
-}
-
-/**
- * @brief Get address valid status for specified SAR device
- * @details Checks the valid status of the specified SAR device address according
- *          to SMBus ARP protocol. Address must satisfy both valid and resolved
- *          status to be considered usable.
- * @param[in] devId SMBus device ID
- * @param[in] sarNum SAR device number (1 or 2)
- * @return 1 if address is valid, 0 if address is invalid, negative error code on failure
- *
- * @note Reads SMBUS_SLAVE_ADDR_VALID and SMBUS_SLAVE_ADDR_RESOLVED bits from IC_STATUS register
- * @note SAR1 checks bits 17 and 18, SAR2 checks bits 21 and 22
- * @note Performs device locking for thread safety
- * @warning sarNum parameter must be 1 or 2, other values return error
- * @warning Only valid in Slave mode
- *
- * [SLAVE_API] Slave API layer - ARP status management
- */
-S32 smbusArpAddrValidGetStatus(DevList_e devId, U32 sarNum)
-{
-    S32 ret = EXIT_SUCCESS;
-    volatile SmbusRegMap_s *regBase = NULL;
-
-    ///< Parameter validation
-    if (sarNum != 1 && sarNum != 2) {
-        LOGE("%s(): invalid sarNum %u, must be 1 or 2\n", __func__, sarNum);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    ///< Check driver lock and validate
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        goto unlock;
-    }
-
-    /* Get register base */
-    if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
+    /* Read IC_STATUS to check ARP resolution status */
+    icStatus = regBase->icStatus.value;
     
-    U32 status = regBase->icStatus.value;
-    
-    if (sarNum == 1) {
-        ///< SAR1: check bit 17 (valid) and bit 18 (resolved)
-        bool valid = (regBase->icStatus.fields.smbusSlaveAddrValid) != 0;
-        bool resolved = (regBase->icStatus.fields.smbusSlaveAddrResolved) != 0;
-        ret = (valid && resolved) ? 1 : 0;
+    /* * Check if the Slave Address has been Resolved.
+     * Bit 17: SMBUS_SLAVE_ADDR_VALID - Hardware has a valid address
+     * Bit 18: SMBUS_SLAVE_ADDR_RESOLVED - ARP process successfully resolved an address
+     */
+    bool addrResolved = (icStatus & (1U << 18)) != 0;
+    bool addrValid = (icStatus & (1U << 17)) != 0;
 
-        LOGD("%s(): SAR1 addr_valid=%d, addr_resolved=%d, status=%d\n",
-             __func__, valid, resolved, ret);
+    if (addrResolved && addrValid) {
+        /* Success! Hardware accepted the Assign Address command */
+        
+        /* Read the new address from the Slave Address Register (IC_SAR) */
+        assignedAddr = (U16)(regBase->icSar.value & 0x3FF); // Mask to 10 bits just in case
+
+        LOGI("SMBus Slave: ARP Address Assigned! New Address: 0x%02X\n", assignedAddr);
+
+        /* Update Driver State */
+        pDrvData->arpState = SMBUS_ARP_STATE_ASSIGNED;
+        pDrvData->assignedAddr = (U8)assignedAddr;
+
+        /* Prepare Notification Payload */
+        memset(&arpPayload, 0, sizeof(arpPayload));
+        memcpy(&arpPayload.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
+        arpPayload.newAddr = (U8)assignedAddr;
+        arpPayload.addrValid = 1;  
+        
+        /* Notify Application */
+        smbusTriggerSlaveEvent(pDrvData, 
+                               SMBUS_ARP_EVENT_ASSIGN, 
+                               &arpPayload, sizeof(arpPayload));
+
     } else {
-        ///< SAR2: check bit 21 (valid) and bit 22 (resolved)
-        bool valid = (regBase->icStatus.fields.smbusSuspendStatus) != 0;
-        bool resolved = (status & (1 << 22)) != 0;
-        ret = (valid && resolved) ? 1 : 0;
-
-        LOGD("%s(): SAR2 addr_valid=%d, addr_resolved=%d, status=%d\n",
-             __func__, valid, resolved, ret);
+        /* * The interrupt triggered, but the status bits don't show resolution.
+         * This could happen if the Assign Address command was for a DIFFERENT UDID.
+         * In that case, we remain at the default address or our previous state.
+         */
+        LOGD("SMBus Slave: ASSIGN_ADDR interrupt received, but not for me (Status: 0x%08X)\n", icStatus);
     }
 
-unlock:
-    devUnlockByDriver(devId);
-    return ret;
+    /* * Clear the interrupt bit specifically for Assign Address.
+     * Note: In the main ISR, we might clear all bits at the end, 
+     * but clearing it here explicitly is safe practice for specific handlers.
+     */
+    regBase->icClrSmbusIntr = SMBUS_ASSIGN_ADDR_CMD_DET_BIT;
 }
 
+/**
+ * @brief Trigger slave event callback
+ * @details Triggers appropriate SMBus callback for slave events
+ * @param[in] pDrvData Pointer to driver data structure
+ * @param[in] eventType Event type to trigger
+ * @param[in] data Event data pointer
+ * @param[out] len Data length
+ * @return void
+ */
+void smbusTriggerSlaveEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data, U32 len)
+{
+    if (pDrvData == NULL) return;
 
+    DevList_e devId = pDrvData->devId;
+    SmbusEventData_u eventData;
+    bool triggerCallback = true; // 默认触发用户回调
+
+    /* 0. 安全清零 Union */
+    memset(&eventData, 0, sizeof(SmbusEventData_u));
+
+    /* --- 事件分流处理 --- */
+    switch (eventType) {
+        
+        /* ==========================================================
+         * Case 1: ARP Assign Address (集成你的处理逻辑)
+         * ========================================================== */
+        case SMBUS_ARP_EVENT_ASSIGN: 
+            /* 数据长度校验: UDID(16) + Addr(1) = 17 bytes */
+            if (data == NULL || len < 17) {
+                LOGW("SMBus ARP: Invalid payload len %d\n", len);
+                return; 
+            }
+            S32 ret = smbusArpSlaveHandleAssignAddr(pDrvData, (const U8 *)data);
+            if (ret != EXIT_SUCCESS) {
+                LOGE("SMBus ARP: Failed to set hardware address 0x%02X\n", pDrvData->assignedAddr);
+                return;
+            }
+            LOGI("SMBus ARP: Assigned new address 0x%02X\n", pDrvData->assignedAddr);
+            /* 5. 准备回调数据 */
+            eventData.arp.newAddr = pDrvData->assignedAddr;
+            memcpy(&eventData.arp.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
+            break;
+        case SMBUS_ARP_EVENT_RESET:
+            /* 收到 Reset，硬件地址可能已被重置为 0x61 (由调用者处理或在此处理) */
+            /* 这里主要负责通知上层 */
+            eventData.arp.newAddr = 0x61; /* Default */
+            memcpy(&eventData.arp.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
+            break;
+        case SMBUS_ARP_EVENT_GET_UDID:
+            /* 仅通知上层被读取了 UDID */
+            memcpy(&eventData.arp.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
+            break;
+        /* ==========================================================
+         * Case 2: Slave Read Request
+         * ========================================================== */
+        case SMBUS_EVENT_SLAVE_READ_REQ:
+            eventData.slaveReq.flags = SMBUS_M_RD;
+            eventData.slaveReq.data  = NULL;
+            eventData.slaveReq.len   = 0;
+            /* 默认状态设置，等待用户在回调中调用 smbusSlaveSetResponse 修改 */
+            break;
+
+        /* ==========================================================
+         * Case 3: Slave Write Request / Data Transfer
+         * ========================================================== */
+        case SMBUS_EVENT_SLAVE_WRITE_REQ:
+            LOGD("SMBUS_EVENT_SLAVE_WRITE_REQ OCCURE:%d\r\n", eventData.slaveReq.len);
+            eventData.slaveReq.flags = 0;
+            eventData.slaveReq.data  = (U8 *)data;
+            eventData.slaveReq.len   = len;
+            break;
+
+        case SMBUS_EVENT_TX_DONE:
+        case SMBUS_EVENT_RX_DONE:
+        case SMBUS_EVENT_SLAVE_DONE:
+            eventData.transfer.buffer = (U8 *)data;
+            eventData.transfer.len    = len;
+            break;
+
+        /* ==========================================================
+         * Case 4: Errors
+         * ========================================================== */
+        case SMBUS_EVENT_PEC_ERROR:
+        case SMBUS_EVENT_ERROR:
+            eventData.error.errorCode = eventType;
+            eventData.error.statusReg = (U32)(uintptr_t)data;
+            break;
+
+        /* 其他事件... */
+        default:
+            /* 对于不需要特殊数据打包的事件，尝试转换 data 指针 */
+             if (data != NULL && len <= 4) {
+                eventData.value = (U32)(uintptr_t)data;
+            }
+            break;
+    }
+    if (triggerCallback && pDrvData->callback) {
+        pDrvData->callback(devId, eventType, &eventData, pDrvData->userData);
+    }
+}
+
+/**
+ * @brief Handle slave specific SMBus interrupts
+ * @details Processes SMBus-specific interrupts in slave mode
+ * @param[in] pDrvData Pointer to driver data structure
+ * @param[in] regBase Register base address
+ * @param[in] smbusIntrStat SMBus interrupt status
+ * @return void
+ */
+void smbusHandleSlaveSpecificInterrupts(SmbusDrvData_s *pDrvData,
+                                        volatile SmbusRegMap_s *regBase,
+                                        U32 smbusIntrStat)
+{
+    SmbusArpPayload_s arpPayload;
+    /* 1. 处理 Quick Command */
+    if (smbusIntrStat & SMBUS_QUICK_CMD_DET_BIT) {
+        LOGD("SMBus Slave: Quick Command Detected\n");
+        /* 立即清除中断 */
+        regBase->icClrSmbusIntr = SMBUS_QUICK_CMD_DET_BIT;
+        
+        /* 触发事件通知上层 注意：硬件很难区分 Quick Read/Write，通常通过后续是否有数据流判断，
+         *或者直接作为 Event 通知上层 "被 Ping 了" */
+        smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_QUICK_CMD, NULL, 0);
+    }
+
+    /* 2. 处理 ARP Reset (Master 广播复位) - 优先级高 */
+    if (smbusIntrStat & SMBUS_ARP_RST_CMD_DET_BIT) {
+        LOGI("SMBus Slave: ARP Reset Command Detected!\n");
+        
+        /* [关键操作] 硬件通常会自动重置地址到 0x61 (Default)，
+           但软件层面的状态（如 UDID 关联状态、pDrvData 中的标志位）需要重置 */
+        if (pDrvData->pSmbusDev.smbFeatures.arpEnb) {
+            smbusSlaveHandleArpReset(pDrvData); 
+            LOGD("SMBus Slave: ARP state reset to default (unassigned)\n");
+        }
+        /* Clear this specific bit */
+        regBase->icClrSmbusIntr = SMBUS_ARP_RST_CMD_DET_BIT;
+    }
+
+    /* 3. 处理 ARP Prepare (ARP 流程开始) */
+    if (smbusIntrStat & SMBUS_ARP_PREPARE_CMD_DET_BIT) {
+        LOGI("SMBus Slave: ARP Prepare Command Detected\n");
+        /* 可以在这里标记状态机进入 "ARP Ready" 状态 */
+        pDrvData->arpState = SMBUS_ARP_STATE_PREPARED;
+        ///< smbusTriggerSlaveEvent(pDrvData, SMBUS_ARP_EVENT_PREPARE, NULL, 0);
+        regBase->icClrSmbusIntr = SMBUS_ARP_PREPARE_CMD_DET_BIT;
+    }
+
+    /* 4. 处理 ARP Get UDID (Master 读取 UDID) */
+    if (smbusIntrStat & SMBUS_GET_UDID_CMD_DET_BIT) {
+        LOGI("SMBus Slave: ARP Get UDID Command Detected\n");
+        /* DW IP 配置了 UDID 寄存器，硬件会自动回传。*/
+        /* 假设 smbusSlvArpAssignAddrFinishHandle 已经更新了 slaveAddr */
+        arpPayload.newAddr = 0xFF;
+        arpPayload.addrValid = 0;
+        memcpy(&arpPayload.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
+        smbusTriggerSlaveEvent(pDrvData, SMBUS_ARP_EVENT_GET_UDID, &arpPayload, sizeof(arpPayload));
+        regBase->icClrSmbusIntr |= SMBUS_GET_UDID_CMD_DET_BIT;
+    }
+
+    /* 5. 处理 ARP Assign Address (地址分配完成) */
+    if (smbusIntrStat & SMBUS_ASSIGN_ADDR_CMD_DET_BIT) {
+        LOGI("SMBus Slave: ARP Assign Address Completed\n");
+        
+        /* 调用已有的处理函数更新软件状态（如更新 pDrvData->slaveAddr） */
+        smbusSlvArpAssignAddrFinishHandle(pDrvData);
+
+        /* The function clears the bit, but we can mask it out here to be safe for the final clear */
+        smbusIntrStat &= ~SMBUS_ASSIGN_ADDR_CMD_DET_BIT;
+        /* 触发事件，告知上层得到了新地址 */
+        SmbusArpPayload_s arpPayload;
+        /* 假设 smbusSlvArpAssignAddrFinishHandle 已经更新了 slaveAddr */
+        arpPayload.newAddr = pDrvData->pSmbusDev.slaveAddr; 
+        smbusTriggerSlaveEvent(pDrvData, SMBUS_ARP_EVENT_ASSIGN, &arpPayload, sizeof(arpPayload));
+    }
+
+    /* 6. 处理 ARP/传输 失败 (PEC NACK) */
+    if (smbusIntrStat & SMBUS_SLV_RX_PEC_NACK_BIT) {
+        LOGE("SMBus Slave: RX PEC Error (NACK sent)\n");
+        /* * 当 Slave 接收数据且 PEC 校验失败时触发。
+         * 此时 Slave 已经向 Master 发送了 NACK。
+         * 软件需要丢弃刚才接收到的缓冲区数据，因为它是损坏的。
+         */
+        pDrvData->pSmbusDev.slaveValidRxLen = 0; 
+        
+        /* 触发错误事件 */
+        smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_PEC_ERROR, NULL, 0);
+    }
+
+    /* 7. 处理 Suspend (挂起) */
+    if (smbusIntrStat & SMBUS_SUSPEND_DET_BIT) {
+        LOGI("SMBus Slave: Suspend Condition Detected\n");
+        smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SUSPEND, NULL, 0);
+    }
+
+    /* 8. 处理 Alert (Master 响应了 Alert Response Address) */
+    if (smbusIntrStat & SMBUS_ALERT_DET_BIT) {
+        LOGD("SMBus Slave: Alert Response Detected\n");
+        /* 意味着我们发出的 ALERT# 已经被 Master 处理 */
+    }
+
+    /* 9. 处理 Timeout */
+    if (smbusIntrStat & (SMBUS_SLV_CLOCK_EXTND_TIMEOUT_BIT | SMBUS_MST_CLOCK_EXTND_TIMEOUT_BIT)) {
+        LOGE("SMBus Slave: Clock Extend Timeout!\n");
+        smbusTriggerSlaveEvent(pDrvData, SMBUS_EVENT_SLV_CLK_EXT_TIMEOUT, NULL, 0);
+    }
+
+    /* 10. 清除所有已处理的中断 */
+    /* 注意：Quick Command 已经在上面单独清除了，这里清除剩余的 */
+    U32 handledMask = smbusIntrStat & ~SMBUS_QUICK_CMD_DET_BIT;
+    if (handledMask) {
+        regBase->icClrSmbusIntr = handledMask;
+        LOGD("SMBus Slave: Cleared SMBus interrupts: 0x%08X\n", handledMask);
+    }
+}
+
+/* ======================================================================== */
+/*                    Slave Mode Response Functions                          */
+/* ======================================================================== */
+/**
+ * @brief [Slave] 设置响应数据
+ * @details 在SLAVE_READ_REQ回调中调用此函数填充TX缓冲。
+ *          支持动态响应不同命令的数据。可选超时自动NACK。
+ *
+ * @param[in] devId 设备ID
+ * @param[in] data  指向要发送的数据指针（可为NULL）
+ * @param[in] len   数据长度(0-32字节)，0表示准备NACK
+ * @param[in] status 操作状态 (0=发送成功, <0=NACK/错误)
+ * @return S32  0成功, <0失败
+ *
+ * @note 必须在SLAVE_READ_REQ回调中调用
+ * @note 可选参数status：0=正常响应, -NACK/-TIMEOUT=拒绝请求
+ */
+S32 smbusSlaveSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status)
+{
+    SmbusDrvData_s *pDrvData = NULL;
+    SmbusDev_s *dev = NULL;
+    S32 ret = EXIT_SUCCESS;
+    volatile SmbusRegMap_s *regBase = NULL;
+
+    /* ========== 参数有效性检查 ========== */
+    /* 设备ID范围检查 */
+    if (devId < DEVICE_SMBUS0 || devId >= DEVICE_SMBUS6) {
+        LOGE("%s: Invalid devId %d\n", __func__, devId);
+        return -EINVAL;
+    }
+
+    /* 数据长度检查 */
+    if (len > SMBUS_BLOCK_MAXLEN) {
+        LOGE("%s: Data length %u exceeds maximum %u\n", __func__, len, SMBUS_BLOCK_MAXLEN);
+        return -ERANGE;
+    }
+
+    /* ========== 驱动初始化状态检查 ========== */
+    /* 使用smbusDrvLockAndCheck统一检查驱动匹配、初始化状态和获取设备锁 */
+    ret = smbusDrvLockAndCheck(devId);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: Driver lock and check failed, ret=%d\n", __func__, ret);
+        return ret;
+    }
+
+    /* ========== 获取驱动数据结构 ========== */
+    /* 获取驱动私有数据 */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        LOGE("%s: getDevDriver failed for devId %d\n", __func__, devId);
+        ret = -ENODEV;
+        goto unlock;
+    }
+
+    if (pDrvData == NULL) {
+        LOGE("%s: pDrvData is NULL\n", __func__);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* 获取SMBus设备指针 */
+    dev = &pDrvData->pSmbusDev;
+    if (dev == NULL) {
+        LOGE("%s: SmbusDev pointer is NULL\n", __func__);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* 获取寄存器基地址 */
+    regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
+    if (regBase == NULL) {
+        LOGE("%s: Register base address is NULL\n", __func__);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* ========== 模式检查 ========== */
+    /* 验证设备是否处于从机模式 */
+    if (pDrvData->sbrCfg.masterMode != SMBUS_MODE_SLAVE) {
+        LOGE("%s: Device not in slave mode, current mode=%d\n", __func__, pDrvData->sbrCfg.masterMode);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* 验证是否有从机TX缓冲区 */
+    if (dev->slaveTxBuf == NULL) {
+        LOGE("%s: Slave TX buffer not allocated\n", __func__);
+        ret = -ENOMEM;
+        goto unlock;
+    }
+
+    LOGD("%s: Setting slave response - len=%u, status=%d, txBuf=%p\n",
+         __func__, len, status, dev->slaveTxBuf);
+
+    /* ========== 根据status参数处理响应 ========== */
+    if (status < 0) {
+        /* 状态异常，发送NACK响应 */
+        LOGD("%s: Negative status detected, preparing NACK response (status=%d)\n", __func__, status);
+
+        /* 禁用TX_EMPTY中断以防止继续发送 */
+        U32 currentMask = regBase->icIntrMask.value;
+        currentMask &= ~SMBUS_INTR_TX_EMPTY;
+        regBase->icIntrMask.value = currentMask;
+        /* 清除TX缓冲状态 */
+        dev->slaveValidTxLen = 0;
+        dev->msgErr = status;  /* 记录错误状态 */
+        LOGD("%s: NACK prepared - TX_EMPTY disabled (mask=0x%08X)\n", __func__, currentMask);
+
+    } else {
+        /* 正常响应，检验数据有效性 */
+        if ((len > 0) && (data != NULL)) {
+            /* 将数据复制到从机TX缓冲 */
+            LOGD("%s: Copying %u bytes to slave TX buffer\n", __func__, len);
+            __asm__ volatile("dsb st" : : : "memory");
+            /* 复制数据到缓冲区 */
+            memcpy(dev->slaveTxBuf, data, len);
+
+            /* 再次添加内存屏障确保复制完成 */
+            __asm__ volatile("dsb st" : : : "memory");
+            /* 更新TX缓冲长度和索引 */
+            dev->slaveValidTxLen = len;
+            dev->txIndex = 0;
+
+            LOGD("%s: Slave TX data prepared - validTxLen=%u, txIndex=0\n",
+                 __func__, dev->slaveValidTxLen);
+
+            /* 调试：显示缓冲区内容 */
+            if (len <= 8) {
+                LOGD("%s: TX buffer content: ", __func__);
+                for (U32 i = 0; i < len; i++) {
+                    LOGD("0x%02X ", dev->slaveTxBuf[i]);
+                }
+                LOGD("\n");
+            }
+
+            /* 启用TX_EMPTY中断以处理后续数据发送 */
+            U32 currentMask = regBase->icIntrMask.value;
+            currentMask |= SMBUS_INTR_TX_EMPTY;
+            regBase->icIntrMask.value = currentMask;
+
+            LOGD("%s: TX_EMPTY enabled for data transmission (mask=0x%08X)\n",
+                 __func__, currentMask);
+
+            } else {
+                /* 数据无效或长度为0，准备NACK响应 */
+                LOGD("%s: No data or zero length - preparing NACK response (len=%u, data=%p)\n",
+                    __func__, len, data);
+
+                /* 禁用TX_EMPTY中断 */
+                U32 currentMask = regBase->icIntrMask.value;
+                currentMask &= ~SMBUS_INTR_TX_EMPTY;
+                regBase->icIntrMask.value = currentMask;
+
+                /* 清除TX缓冲状态 */
+                dev->slaveValidTxLen = 0;
+                dev->txIndex = 0;
+
+                LOGD("%s: NACK prepared - TX buffer cleared (mask=0x%08X)\n", __func__, currentMask);
+            }
+    }
+
+    /* ========== 释放资源和返回 ========== */
+    LOGD("%s: Slave response setup completed successfully\n", __func__);
+
+unlock:
+    /* 释放设备锁 */
+    devUnlockByDriver(devId);
+
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: Failed to set slave response, ret=%d, devId=%d\n", __func__, ret, devId);
+    }
+    return ret;
+}
