@@ -1,5 +1,5 @@
 /**
- * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System TechnoLOGEes Co.,Ltd
  *
  * @file drv_smbus_dw_slaver.c
  * @author wangkui (wangkui@starsmicrosystem.com)
@@ -9,10 +9,7 @@
  * @par ChangeLog:
  * Date         Author          Description
  * 2025/10/20   wangkui         Initial version
- * 2025/11/20   wangkui         porting marco style
- * 2025/11/23   wangkui         HAL operations optimization - eliminated redundant smbusGetHalOps() calls
- *                              Replaced direct HAL access with dev->halOps pointer for better performance
- *                              Reduced function call overhead by registering HAL ops during initialization
+ *
  * @note This file implements the SMBus Slave API layer, providing
  *       high-level Slave mode operations for SMBus communication.
  *       It works on top of the SMBus core layer and handles
@@ -55,21 +52,24 @@
  * @note Enables RESTART conditions for combined transactions
  * @note Configures slave address after mode configuration
  * @warning The function does not re-enable the controller after configuration
+ * [SLAVE_API] Slave API layer - slave configuration
  */
 static void smbusConfigureSlave(SmbusDev_s *dev)
 {
     SmbusIcConReg_u con;
 
-    /* Parameter validation */
-    SMBUS_CHECK_PARAM_VOID(dev == NULL || dev->regBase == NULL,
-                          "%s(): dev or dev->regBase is NULL", __func__);
+    if (dev == NULL || dev->regBase == NULL) {
+        return;
+    }
 
-    /* Check HAL operations */
-    SMBUS_CHECK_PARAM_VOID(dev->halOps == NULL || dev->halOps->disable == NULL,
-                          "%s(): dev->halOps or dev->halOps->disable is NULL", __func__);
+    /* Get HAL operations */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->disable == NULL) {
+        return;
+    }
 
     /* Disable before configuration */
-    dev->halOps->disable(dev);
+    halOps->disable(dev);
 
     /* Read current configuration */
     con.value = dev->regBase->icCon.value;
@@ -90,23 +90,20 @@ static void smbusConfigureSlave(SmbusDev_s *dev)
     /* Write configuration */
     dev->regBase->icCon.value = con.value;
 
-    /* Configure optimal interrupt mask for Slave mode - 修复添加WR_REQ中断 */
+    /* Configure optimal interrupt mask for Slave mode */
     U32 intrMask = 0;
-    intrMask |= SMBUS_IC_INTR_WR_REQ_MASK;    // bit[15] - 写请求 (关键修复！)
     intrMask |= SMBUS_IC_INTR_RD_REQ_MASK;    // bit[5] - Master 读请求
     intrMask |= SMBUS_IC_INTR_RX_FULL_MASK;   // bit[2] - RX FIFO 满
+    intrMask |= SMBUS_IC_INTR_RX_DONE_MASK;   // bit[7] - 接收完成
     intrMask |= SMBUS_IC_INTR_STOP_DET_MASK;  // bit[9] - STOP 条件
     intrMask |= SMBUS_IC_INTR_TX_ABRT_MASK;   // bit[6] - 传输终止
 
-    /* 添加Slave地址标签中断 (bits 16-19) - 使用标准定义 */
-    intrMask |= SMBUS_IC_INTR_SLV_ADDR1_TAG_MASK;  // bit[16] - Slave地址1标签
-
-    dev->regBase->icIntrMask.value = intrMask;
-    LOGD("SMBus Slave: Configured interrupt mask=0x%08X (WR_REQ+RD_REQ+RX_FULL+STOP_DET+TX_ABRT+ADDR_TAG)\n", intrMask);
+    dev->regBase->icIntrMask = intrMask;
+    LOGD("SMBus Slave: Configured interrupt mask=0x%08X (RD_REQ+RX_FULL+RX_DONE+STOP_DET+TX_ABRT)\n", intrMask);
 
     /* Set slave address */
-    if (dev->halOps->setSlaveAddr != NULL) {
-        dev->halOps->setSlaveAddr(dev);
+    if (halOps->setSlaveAddr != NULL) {
+        halOps->setSlaveAddr(dev);
     }
 }
 
@@ -130,9 +127,11 @@ static void smbusArpNotifyEvent(SmbusArpNotifyCb_s *notifyCb, SmbusArpEvent_e ev
 {
     U32 i;
 
-    /* Parameter validation */
-    SMBUS_CHECK_PARAM_VOID(notifyCb == NULL || dev == NULL,
-                          "%s(): Invalid parameters", __func__);
+    ///< Parameter validation
+    if (notifyCb == NULL || dev == NULL) {
+        LOGE("%s(): Invalid parameters\n", __func__);
+        return;
+    }
 
     ///< Log event notification
     LOGD("%s(): Notifying ARP event %d for device addr 0x%02X\n",
@@ -188,17 +187,14 @@ S32 smbusArpSlaveInit(DevList_e devId)
     /* Check driver lock and validate */
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        goto exit;
+        goto unlock;
     }
 
     /* Get driver data */
     if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
         ret = -EINVAL;
-        goto exit;
+        goto unlock;
     }
-
-    SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL,
-                     "%s(): pDrvData is NULL", __func__);
 
     /* Reset HW ARP flags */
     pDrvData->arpEnabled = false;
@@ -206,18 +202,24 @@ S32 smbusArpSlaveInit(DevList_e devId)
 
     /* Enable SMBus controller in slave mode */
     volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
-    SMBUS_CHECK_PARAM(regBase == NULL, -EINVAL,
-                     "%s(): regBase is NULL", __func__);
+    if (regBase == NULL) {
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* Get HAL operations */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->enable == NULL) {
+        ret = -ENOSYS;
+        goto unlock;
+    }
 
     /* Configure controller for SMBus slave mode */
     SmbusDev_s *dev = &pDrvData->pSmbusDev;
-    SMBUS_CHECK_PARAM(dev->halOps == NULL || dev->halOps->enable == NULL, -ENOSYS,
-                     "%s(): dev->halOps or dev->halOps->enable is NULL", __func__);
-
     smbusConfigureSlave(dev);
 
-    /* Clear all ARP-related interrupt status */
-    regBase->icClrSmbusIntr = SMBUS_ARP_INTR_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT |
+    /* Clear all SMBus-related interrupt status */
+    regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT |
                                     SMBUS_GET_UDID_INTR_BIT | SMBUS_SAR1_INTR_BIT |
                                     SMBUS_SAR2_INTR_BIT;
 
@@ -227,14 +229,14 @@ S32 smbusArpSlaveInit(DevList_e devId)
     regBase->icCon.value = con.value;
 
     /* Enable controller */
-    dev->halOps->enable(dev);
+    halOps->enable(dev);
 
     /* Mark ARP as initialized */
     pDrvData->arpInitialized = true;
 
     LOGD("%s(): ARP Slave initialization completed\n", __func__);
 
-exit:
+unlock:
     devUnlockByDriver(devId);
     return ret;
 }
@@ -260,12 +262,12 @@ S32 smbusArpSlaveHandlerPrep(DevList_e devId)
         goto unlock;
     }
 
-    SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL,
-                     "%s(): pDrvData is NULL", __func__);
-
-    /* Check HAL operations */
-    SMBUS_CHECK_PARAM(pDrvData->pSmbusDev.halOps->enable == NULL, -ENOSYS,
-                     "%s(): dev->halOps or dev->halOps->enable is NULL", __func__);
+    /* Get HAL operations */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->enable == NULL) {
+        ret = -ENOSYS;
+        goto unlock;
+    }
 
     /* Check if ARP is initialized */
     if (!pDrvData->arpInitialized) {
@@ -275,19 +277,20 @@ S32 smbusArpSlaveHandlerPrep(DevList_e devId)
 
     /* Prepare ARP Slave for operation by enabling appropriate interrupts */
     volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
-    SMBUS_CHECK_PARAM(regBase == NULL, -EINVAL,
-                     "%s(): regBase is NULL", __func__);
+    if (regBase == NULL) {
+        ret = -EINVAL;
+        goto unlock;
+    }
 
     /* Enable ARP-related interrupts */
     U32 mask = regBase->icSmbusIntrMask;
-    mask |= SMBUS_ARP_INTR_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
+    mask |= SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
     regBase->icSmbusIntrMask = mask;
 
     /* Set ARP state to ready */
     pDrvData->arpState = SMBUS_ARP_STATE_READY;
     pDrvData->arpEnabled = true;
 
-    pDrvData->pSmbusDev.halOps->enable(&pDrvData->pSmbusDev);
     LOGD("%s(): ARP Slave prepared for operation\n", __func__);
 
 unlock:
@@ -306,8 +309,10 @@ S32 smbusArpSlaveHandlerReset(DevList_e devId, Bool directed, const SmbusUdid_s 
     S32 ret = EXIT_SUCCESS;
     SmbusDrvData_s *pDrvData = NULL;
 
-    SMBUS_CHECK_PARAM(udid == NULL, -EINVAL,
-                     "%s(): udid is NULL", __func__);
+    if (udid == NULL) {
+        ret = -EINVAL;
+        goto exit;
+    }
 
     /* Check driver lock and validate */
     ret = smbusDrvLockAndCheck(devId);
@@ -321,12 +326,12 @@ S32 smbusArpSlaveHandlerReset(DevList_e devId, Bool directed, const SmbusUdid_s 
         goto unlock;
     }
 
-    SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL,
-                     "%s(): pDrvData is NULL", __func__);
-
-    /* Check HAL operations */
-    SMBUS_CHECK_PARAM(pDrvData->pSmbusDev.halOps == NULL, -ENOSYS,
-                     "%s(): pDrvData->pSmbusDev.halOps is NULL", __func__);
+    /* Get HAL operations */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL) {
+        ret = -ENOSYS;
+        goto unlock;
+    }
 
     /* Check if reset is directed to this device by comparing UDID */
     if (directed) {
@@ -340,8 +345,10 @@ S32 smbusArpSlaveHandlerReset(DevList_e devId, Bool directed, const SmbusUdid_s 
     }
 
     volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
-    SMBUS_CHECK_PARAM(regBase == NULL, -EINVAL,
-                     "%s(): regBase is NULL", __func__);
+    if (regBase == NULL) {
+        ret = -EINVAL;
+        goto unlock;
+    }
 
     /* Reset ARP state machine */
     pDrvData->arpState = SMBUS_ARP_STATE_INIT;
@@ -349,13 +356,13 @@ S32 smbusArpSlaveHandlerReset(DevList_e devId, Bool directed, const SmbusUdid_s 
     pDrvData->arpInitialized = false;
 
     /* Clear all ARP-related interrupts */
-    regBase->icClrSmbusIntr = SMBUS_ARP_INTR_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT |
+    regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT |
                                     SMBUS_GET_UDID_INTR_BIT | SMBUS_SAR1_INTR_BIT |
                                     SMBUS_SAR2_INTR_BIT;
 
     /* Disable ARP-related interrupts */
     U32 mask = regBase->icSmbusIntrMask;
-    mask &= ~(SMBUS_ARP_INTR_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT);
+    mask &= ~(SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT);
     regBase->icSmbusIntrMask = mask;
 
     /* Reset assigned addresses if this was a directed reset */
@@ -369,7 +376,7 @@ S32 smbusArpSlaveHandlerReset(DevList_e devId, Bool directed, const SmbusUdid_s 
     }
 
     /* Re-initialize ARP if needed */
-    if (pDrvData->pSmbusDev.halOps->enable != NULL) {
+    if (halOps->enable != NULL) {
         pDrvData->arpInitialized = false;
         /* Note: Caller should call smbusArpSlaveInit() if re-initialization is needed */
     }
@@ -390,33 +397,23 @@ exit:
  */
 S32 smbusSarEnable(DevList_e devId, U32 sarNum)
 {
-    S32 ret = EXIT_SUCCESS;
     SmbusDrvData_s *pDrvData = NULL;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    SMBUS_CHECK_PARAM_RETURN(sarNum > 2 || sarNum == 0, -EINVAL,
-                            "%s(): invalid sarNum %u, must be 1 or 2", __func__, sarNum);
+    if (sarNum > 2 || sarNum == 0) {
+        return -EINVAL;
+    }
 
     ///< Check driver lock and validate
-    SMBUS_CHECK_PARAM_RETURN(smbusDrvLockAndCheck(devId) != EXIT_SUCCESS, -EINVAL,
-                            "%s(): smbusDrvLockAndCheck failed", __func__);
+    if (smbusDrvLockAndCheck(devId) != EXIT_SUCCESS) {
+        return -EINVAL;
+    }
 
     /* Get register base */
     if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
         devUnlockByDriver(devId);
-        ret = -EINVAL;
-        goto exit;
+        return -EINVAL;
     }
-
-    /* Get driver data */
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        devUnlockByDriver(devId);
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    SMBUS_CHECK_PARAM_RETURN(pDrvData == NULL, -EINVAL,
-                            "%s(): pDrvData is NULL", __func__);
 
     /* Enable specified SAR (Slave Address Register) */
     SmbusIcEnableReg_u sarReg;
@@ -451,11 +448,10 @@ S32 smbusSarEnable(DevList_e devId, U32 sarNum)
     /* Update device status */
     pDrvData->pSmbusDev.status |= SMBUS_STATUS_SLAVE_ENABLED_MASK;
 
-exit:
     /* Unlock device */
     devUnlockByDriver(devId);
 
-    return ret;
+    return EXIT_SUCCESS;
 }
 
 /**
@@ -468,8 +464,10 @@ S32 smbusSarDisable(DevList_e devId, U32 sarNum)
     SmbusDrvData_s *pDrvData = NULL;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    SMBUS_CHECK_PARAM(sarNum > 2 || sarNum == 0, -EINVAL,
-                   "%s(): invalid sarNum %u, must be 1 or 2", __func__, sarNum);
+    if (sarNum > 2 || sarNum == 0) {
+        ret = -EINVAL;
+        goto exit;
+    }
 
     ///< Check driver lock and validate
     ret = smbusDrvLockAndCheck(devId);
@@ -549,13 +547,15 @@ S32 smbusArpEnable(DevList_e devId, U32 sarNum)
     SmbusDrvData_s *pDrvData = NULL;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    SMBUS_CHECK_PARAM(sarNum > 2 || sarNum == 0, -EINVAL,
-                     "%s(): invalid sarNum %u, must be 1 or 2", __func__, sarNum);
+    if (sarNum > 2 || sarNum == 0) {
+        ret = -EINVAL;
+        goto unlock;
+    }
 
     ///< Check driver lock and validate
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        return ret;
+        goto unlock;
     }
 
     /* Get register base */
@@ -569,8 +569,10 @@ S32 smbusArpEnable(DevList_e devId, U32 sarNum)
         goto exit;
     }
 
-    SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL,
-                     "%s(): pDrvData is NULL", __func__);
+    if (pDrvData == NULL) {
+        ret = -EINVAL;
+        goto exit;
+    }
 
     /* Enable ARP mode in IC_CON register */
     SmbusIcConReg_u con;
@@ -581,10 +583,10 @@ S32 smbusArpEnable(DevList_e devId, U32 sarNum)
     /* Enable ARP interrupts for the specified SAR */
     U32 mask = regBase->icSmbusIntrMask;
     if (sarNum == 1) {
-        mask |= SMBUS_ARP_INTR_BIT | SMBUS_SAR1_INTR_BIT |
+        mask |= SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR1_INTR_BIT |
                 SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
     } else if (sarNum == 2) {
-        mask |= SMBUS_ARP_INTR_BIT | SMBUS_SAR2_INTR_BIT |
+        mask |= SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR2_INTR_BIT |
                 SMBUS_ASSIGN_ADDR_INTR_BIT | SMBUS_GET_UDID_INTR_BIT;
     }
     regBase->icSmbusIntrMask = mask;
@@ -614,13 +616,15 @@ S32 smbusArpDisable(DevList_e devId, U32 sarNum)
     SmbusDrvData_s *pDrvData = NULL;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    SMBUS_CHECK_PARAM(sarNum > 2 || sarNum == 0, -EINVAL,
-                     "%s(): invalid sarNum %u, must be 1 or 2", __func__, sarNum);
+    if (sarNum > 2 || sarNum == 0) {
+        ret = -EINVAL;
+        goto unlock;
+    }
 
     ///< Check driver lock and validate
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        return ret;
+        goto unlock;
     }
 
     /* Get register base */
@@ -634,23 +638,25 @@ S32 smbusArpDisable(DevList_e devId, U32 sarNum)
         goto exit;
     }
 
-    SMBUS_CHECK_PARAM(pDrvData == NULL, -EINVAL,
-                     "%s(): pDrvData is NULL", __func__);
+    if (pDrvData == NULL) {
+        ret = -EINVAL;
+        goto exit;
+    }
 
     /* Disable ARP interrupts for the specified SAR */
     U32 mask = regBase->icSmbusIntrMask;
     if (sarNum == 1) {
-        mask &= ~(SMBUS_ARP_INTR_BIT | SMBUS_SAR1_INTR_BIT);
+        mask &= ~(SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR1_INTR_BIT);
     } else if (sarNum == 2) {
-        mask &= ~(SMBUS_ARP_INTR_BIT | SMBUS_SAR2_INTR_BIT);
+        mask &= ~(SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR2_INTR_BIT);
     }
     regBase->icSmbusIntrMask = mask;
 
     /* Clear any pending ARP interrupts for the specified SAR */
     if (sarNum == 1) {
-        regBase->icClrSmbusIntr = SMBUS_ARP_INTR_BIT | SMBUS_SAR1_INTR_BIT;
+        regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR1_INTR_BIT;
     } else if (sarNum == 2) {
-        regBase->icClrSmbusIntr = SMBUS_ARP_INTR_BIT | SMBUS_SAR2_INTR_BIT;
+        regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT | SMBUS_SAR2_INTR_BIT;
     }
 
     /* Check if both SARs are being disabled */
@@ -730,8 +736,9 @@ void smbusSlvArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData)
     U32 tmp;
     U32 mask, ic_status, icSar;
 
-    SMBUS_CHECK_PARAM_VOID(pDrvData == NULL || pDrvData->sbrCfg.regAddr == NULL,
-                          "%s(): pDrvData or pDrvData->sbrCfg.regAddr is NULL", __func__);
+    if (pDrvData == NULL || pDrvData->sbrCfg.regAddr == NULL) {
+        return;
+    }
 
     regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
 
@@ -745,9 +752,9 @@ void smbusSlvArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData)
     }
 
     /* Handle ARP RESET command */
-    if (tmp & SMBUS_ARP_INTR_BIT) {
-        LOGT("SMBus ARP: RESET_CMD detected (0x%x)\n", tmp);
-        regBase->icClrSmbusIntr = SMBUS_ARP_INTR_BIT;
+    if (tmp & SMBUS_SLV_RX_PEC_NACK_BIT) {
+        LOGT("SMBus: SLV_RX_PEC_NACK detected (0x%x)\n", tmp);
+        regBase->icClrSmbusIntr = SMBUS_SLV_RX_PEC_NACK_BIT;
     }
 
     /* Handle ARP PREPARE command */
@@ -858,11 +865,16 @@ S32 smbusArpUdidSet(DevList_e devId, U32 idx, const SmbusUdid_s *udidInfo)
     S32 ret = EXIT_SUCCESS;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    SMBUS_CHECK_PARAM_RETURN(udidInfo == NULL, -EINVAL,
-                             "%s(): udidInfo is NULL", __func__);
+    ///< Parameter validation
+    if (udidInfo == NULL) {
+        LOGE("%s(): udidInfo is NULL\n", __func__);
+        return -EINVAL;
+    }
 
-    SMBUS_CHECK_PARAM_RETURN(idx > 0, -EINVAL,
-                             "%s(): idx %u not supported, only idx=0 supported", __func__, idx);
+    if (idx > 0) {
+        LOGE("%s(): idx %u not supported, only idx=0 supported\n", __func__, idx);
+        return -EINVAL;
+    }
 
     ///< Check driver lock and validate
     ret = smbusDrvLockAndCheck(devId);
@@ -922,11 +934,16 @@ S32 smbusArpUdidGet(DevList_e devId, U32 idx, SmbusUdid_s *udidInfo)
     S32 ret = EXIT_SUCCESS;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    SMBUS_CHECK_PARAM_RETURN(udidInfo == NULL, -EINVAL,
-                             "%s(): udidInfo is NULL", __func__);
+    ///< Parameter validation
+    if (udidInfo == NULL) {
+        LOGE("%s(): udidInfo is NULL\n", __func__);
+        return -EINVAL;
+    }
 
-    SMBUS_CHECK_PARAM_RETURN(idx > 0, -EINVAL,
-                             "%s(): idx %u not supported, only idx=0 supported", __func__, idx);
+    if (idx > 0) {
+        LOGE("%s(): idx %u not supported, only idx=0 supported\n", __func__, idx);
+        return -EINVAL;
+    }
 
     ///< Check driver lock and validate
     ret = smbusDrvLockAndCheck(devId);
@@ -996,19 +1013,23 @@ S32 smbusArpAddrValidGetStatus(DevList_e devId, U32 sarNum)
     S32 ret = EXIT_SUCCESS;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    SMBUS_CHECK_PARAM(sarNum != 1 && sarNum != 2, -EINVAL,
-                   "%s(): invalid sarNum %u, must be 1 or 2", __func__, sarNum);
+    ///< Parameter validation
+    if (sarNum != 1 && sarNum != 2) {
+        LOGE("%s(): invalid sarNum %u, must be 1 or 2\n", __func__, sarNum);
+        ret = -EINVAL;
+        goto unlock;
+    }
 
     ///< Check driver lock and validate
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        goto exit;
+        goto unlock;
     }
 
     /* Get register base */
     if (getSmbusReg(devId, (SmbusRegMap_s **)&regBase) != EXIT_SUCCESS) {
         ret = -EINVAL;
-        goto exit;
+        goto unlock;
     }
     
     U32 status = regBase->icStatus.value;
@@ -1031,7 +1052,7 @@ S32 smbusArpAddrValidGetStatus(DevList_e devId, U32 sarNum)
              __func__, valid, resolved, ret);
     }
 
-exit:
+unlock:
     devUnlockByDriver(devId);
     return ret;
 }

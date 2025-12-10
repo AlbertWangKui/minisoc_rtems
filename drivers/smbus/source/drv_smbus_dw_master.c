@@ -1,5 +1,5 @@
 /**
- * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System TechnoLOGEes Co.,Ltd
  *
  * @file drv_smbus_dw_master.c
  * @author wangkui (wangkui@starsmicrosystem.com)
@@ -9,11 +9,7 @@
  * @par ChangeLog:
  * Date         Author          Description
  * 2025/10/20   wangkui         Initial version
- * 2025/11/23   wangkui         HAL operations optimization - eliminated 14+ smbusGetHalOps() calls
- *                              Replaced direct HAL access with pDrvData->pSmbusDev.halOps pointer
- *                              Added proper driver data retrieval for functions lacking pDrvData parameter
- *                              Removed unused variable declarations to fix compilation warnings
- *                              Improved performance by eliminating redundant function calls
+ *
  * @note This file implements the SMBus Master API layer, providing
  *       high-level Master mode operations for SMBus communication.
  *       It works on top of the SMBus core layer and handles
@@ -58,83 +54,94 @@
  * @note Supports PEC calculation when enabled in data structure
  * @note Maximum block length is SMBUS_BLOCK_MAXLEN (32 bytes)
  * @warning This function is thread-safe and uses device locking
+ * [MASTER_API] Master API layer - high-level Master mode operations
  */
 S32 smbusI2CBlockWrite(DevList_e devId, SmbusI2CBlockWriteData_s *data)
 {
-    S32 ret = EXIT_SUCCESS;
     SmbusDrvData_s *pDrvData = NULL;
-    SmbusDev_s *pDev = NULL;
-    SmbusMsg_s *pMsg = NULL;
+    S32 ret = EXIT_SUCCESS;
 
-    /* 1. Parameter Validation */
-    SMBUS_CHECK_PARAM(data == NULL, -EINVAL, "%s: data pointer is NULL", __func__);
-    SMBUS_CHECK_PARAM(data->length == 0, -EINVAL, "%s: data length is 0", __func__);
-    SMBUS_CHECK_PARAM(data->length > SMBUS_BLOCK_MAXLEN, -EINVAL, "%s: data length %d exceeds max %d",
-                      __func__, data->length, SMBUS_BLOCK_MAXLEN);
-
-    /* 2. Driver Lock and Validation */
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        return ret;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+    if (data == NULL || data->length == 0 || data->length > SMBUS_BLOCK_MAXLEN) {
         ret = -EINVAL;
         goto unlock;
     }
 
-    /* Local pointer aliases for better readability */
-    pDev = &pDrvData->pSmbusDev;
-
-    /* 3. Check HAL Operations */
-    if (pDev->halOps == NULL || pDev->halOps->i2cWrite == NULL) {
-        LOGE("%s: HAL I2C operations not available\n", __func__);
-        ret = -ENOTSUP;
+    /* Check driver lock and validate */
+    ret = smbusDrvLockAndCheck(devId);
+    if (ret != EXIT_SUCCESS) {
         goto unlock;
     }
 
-    /* 4. Critical Status Setup */
-    /* Ensure ISR sees active status immediately */
-    pDev->status = SMBUS_STATUS_ACTIVE;
-    LOGD("SMBus: Pre-set active status (0x%08X)\n", pDev->status);
+    /* Get driver data */
+    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
+        ret = -EINVAL;
+        goto unlock;
+    }
+    /* Get HAL operations for I2C compatibility */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->i2cWrite == NULL) {
+        LOGE("%s(): HAL I2C operations not available\n", __func__);
+        ret = -ENOTSUP;
+        goto unlock;
+    }
+    /* CRITICAL FIX: Pre-set active status in driver's main device structure */
+    /* This ensures ISR can see the active status since it uses pDrvData->pSmbusDev */
+    /* We set it before calling i2cWrite so it's already active when the transfer starts */
+    pDrvData->pSmbusDev.status = SMBUS_STATUS_ACTIVE;
+    LOGD("SMBus: Pre-set active status in driver device structure (status=0x%08X)\n",
+         pDrvData->pSmbusDev.status);
 
-    /* 5. Message and Context Initialization */
-    pMsg = pDev->msgs;
+    /* Also store the message pointer that will be used by the transfer */
+    /* This is needed because the transfer will use pDrvData->pSmbusDev.msgs */
+    pDrvData->pSmbusDev.msgs->addr = pDrvData->pSmbusDev.addrMode;  /* Use the data buffer as message buffer */
+    pDrvData->pSmbusDev.msgs->buf = data->dataBuf;
+    pDrvData->pSmbusDev.msgs->flags = pDrvData->pSmbusDev.flags;
+    pDrvData->pSmbusDev.msgs->len = data->length;
+    pDrvData->pSmbusDev.msgsNum = data->length;  /* Set message count */
+    pDrvData->pSmbusDev.msgWriteIdx = 0;
+    pDrvData->pSmbusDev.msgReadIdx = 0;
+    pDrvData->pSmbusDev.msgErr = 0;
+    pDrvData->pSmbusDev.cmdErr = 0;
+    pDrvData->pSmbusDev.abortSource = 0;
+    pDrvData->pSmbusDev.rxOutstanding = 0;
 
-    /* * Use C99 Compound Literal to assign structure fields.
-     * Benefit: Clean syntax and implicit zeroing of unlisted fields.
-     */
-    *pMsg = (SmbusMsg_s){
-        .addr  = data->slaveAddr, ///< Use address mode as addr (Legacy logic)
-        .buf   = data->dataBuf,  ///< Pointer to data buffer
-        .flags = pDev->flags,    ///< Transfer flags
-        .len   = data->length    ///< Length of data to write
-    };
+    /* Also copy the slave address for the message */
+    pDrvData->pSmbusDev.slaveAddr = data->slaveAddr;
 
-    /* Update device context state */
-    pDev->msgsNum   = data->length;    ///< Total number of messages
-    pDev->slaveAddr = data->slaveAddr; ///< Target I2C slave address
+    LOGD("SMBus: Pre-set message data - msgs=%p, msgsNum=%d, slaveAddr=0x%02X\n",
+         pDrvData->pSmbusDev.msgs, pDrvData->pSmbusDev.msgsNum, pDrvData->pSmbusDev.slaveAddr);
 
-    /* Reset runtime counters */
-    pDev->msgWriteIdx   = 0; ///< Reset write index
-    pDev->msgReadIdx    = 0; ///< Reset read index
-    pDev->msgErr        = 0; ///< Clear message errors
-    pDev->cmdErr        = 0; ///< Clear command errors
-    pDev->abortSource   = 0; ///< Clear abort source
-    pDev->rxOutstanding = 0; ///< Clear outstanding RX count
-
-    LOGD("SMBus: Setup msg - msgs=%p, len=%d, slave=0x%02X\n", pMsg, pDev->msgsNum, pDev->slaveAddr);
-    LOGD("SMBus: Master Mode: %d\n", pDrvData->sbrCfg.masterMode);
-
-    /* 6. Execute I2C Block Write via HAL */
-    ret = pDev->halOps->i2cWrite(pDev, data->slaveAddr, data->dataBuf, data->length);
-
+    LOGE("MASTER MODE:%d\r\n", pDrvData->sbrCfg.masterMode);
+    /* Perform I2C block write using HAL interface */
+    ret = halOps->i2cWrite(&pDrvData->pSmbusDev, data->slaveAddr, data->dataBuf, data->length);
 unlock:
     devUnlockByDriver(devId);
-exit:
     return ret;
 }
 
+/**
+ * @brief Performs an SMBus I2C Block Read operation
+ * @details Implements the SMBus I2C Block Read protocol with the following phases:
+ *          1. Write phase: Send command code to slave
+ *          2. Read phase: Read byte count followed by data bytes
+ *          This function performs parameter validation, device locking, and
+ *          optional PEC verification according to SMBus specification.
+ * @param[in] devId SMBus device identifier for the I2C bus to use
+ * @param[in,out] data Pointer to structure containing read parameters including
+ *                      slave address, command code, data buffer, and output for read length
+ * @return EXIT_SUCCESS on successful read, negative error code on failure:
+ *         -EINVAL: Invalid arguments (NULL parameters, invalid slave address range)
+ *         -EBUSY: Device locked by another operation
+ *         -EIO: I/O error during communication (NACK, timeout, invalid length)
+ *         -EPROTO: Protocol error (invalid byte count from slave)
+ *         -ENOMEM: Memory allocation failure for temporary buffer
+ * @note Supports PEC verification when enabled in data structure
+ * @note Maximum block length is SMBUS_BLOCK_MAXLEN (32 bytes)
+ * @note The actual number of bytes read is returned in data->readLength
+ * @warning This function is thread-safe and uses device locking
+ * @warning The data buffer must be large enough to hold SMBUS_BLOCK_MAXLEN bytes
+ * @warning Slave address must be in valid range (0x08-0x77)
+ */
 /**
  * @brief Performs RAW I2C Read for debugging Block Read issues
  * @details This function performs a simple I2C read operation without SMBus Block Read protocol
@@ -177,118 +184,19 @@ S32 smbusI2CRawRead(DevList_e devId, U8 slaveAddr, U8 *buf, U32 len)
     }
 
     /* Get HAL operations for I2C compatibility */
-    // HAL operations already registered in device structure
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->i2cRead == NULL) {
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->i2cRead == NULL) {
         LOGE("SMBus RAW I2C: HAL I2C operations not available\n");
         ret = -ENOTSUP;
         goto exit;
     }
-    volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)pDrvData->pSmbusDev.regBase;
-#if 0
-    /* ===== 3. Dump Register Status Before I2C Read ===== */
-    
-    if (regBase != NULL) {
-        LOGE("[DEBUG PRE-READ] SMBus I2C Raw Read Register Dump - Device %d:\n", devId);
 
-        /* Dump IC_CON register */
-        SmbusIcConReg_u icCon;
-        icCon.value = regBase->icCon.value;
-        LOGE("[DEBUG PRE-READ] IC_CON (0x%08X): masterMode=%u, speed=%u, ic10bitaddrSlave=%u, ic10bitaddrMaster=%u, icRestartEn=%u, icSlaveDisable=%u\n",
-             icCon.value, icCon.fields.masterMode, icCon.fields.speed, icCon.fields.ic10bitaddrSlave,
-             icCon.fields.ic10bitaddrMaster, icCon.fields.icRestartEn, icCon.fields.icSlaveDisable);
-
-        /* Dump IC_SAR register (relevant for slave mode) */
-        SmbusIcSarReg_u icSar;
-        icSar.value = regBase->icSar.value;
-        LOGE("[DEBUG PRE-READ] IC_SAR (0x%08X): slaveAddress=0x%03X\n", icSar.value, icSar.fields.icSar);
-
-        /* Dump IC_INTR_MASK register */
-        SmbusIcIntrMask_u icIntrMask;
-        icIntrMask.value = regBase->icIntrMask.value;
-        LOGE("[DEBUG PRE-READ] IC_INTR_MASK (0x%08X): rxUnder=%u, rxOver=%u, rxFull=%u, txOver=%u, txEmpty=%u, rdReq=%u, txAbrt=%u, rxDone=%u\n",
-             icIntrMask.value, icIntrMask.fields.rxUnder, icIntrMask.fields.rxOver, icIntrMask.fields.rxFull,
-             icIntrMask.fields.txOver, icIntrMask.fields.txEmpty, icIntrMask.fields.rdReq,
-             icIntrMask.fields.txAbrt, icIntrMask.fields.rxDone);
-        LOGE("[DEBUG PRE-READ] IC_INTR_MASK continued: activity=%u, stopDet=%u, startDet=%u, genCall=%u, restartDet=%u\n",
-             icIntrMask.fields.activity, icIntrMask.fields.stopDet, icIntrMask.fields.startDet,
-             icIntrMask.fields.genCall, icIntrMask.fields.restartDet);
-
-        /* Dump IC_STATUS register for additional context */
-        SmbusIcStatusReg_u icStatus;
-        icStatus.value = regBase->icStatus.value;
-        LOGE("[DEBUG PRE-READ] IC_STATUS (0x%08X): activity=%u, tfnf=%u, tfe=%u, rfne=%u, rff=%u\n",
-             icStatus.value, icStatus.fields.activity, icStatus.fields.tfnf, icStatus.fields.tfe,
-             icStatus.fields.rfne, icStatus.fields.rff);
-
-        /* Dump IC_ENABLE register */
-        SmbusIcEnableReg_u icEnable;
-        icEnable.value = regBase->icEnable.value;
-        LOGE("[DEBUG PRE-READ] IC_ENABLE (0x%08X): enable=%u, abort=%u, icSarEn=%u\n",
-             icEnable.value, icEnable.fields.enable, icEnable.fields.abort, icEnable.fields.icSarEn);
-
-        LOGE("[DEBUG PRE-READ] End of Register Dump - Device %d\n", devId);
-    }
-#endif
-    /* ===== 4. Perform RAW I2C Read ===== */
+    /* ===== 3. Perform RAW I2C Read ===== */
     LOGD("SMBus RAW I2C: Reading %d bytes from slave 0x%02X\n", len, slaveAddr);
 
-    ret = pDrvData->pSmbusDev.halOps->i2cRead(&pDrvData->pSmbusDev, slaveAddr, buf, len);
+    ret = halOps->i2cRead(&pDrvData->pSmbusDev, slaveAddr, buf, len);
 
-    /* ===== 5. Dump Register Status After I2C Read ===== */
-    if (regBase != NULL) {
-        LOGE("[DEBUG POST-READ] SMBus I2C Raw Read Register Dump - Device %d (ret=%d):\n", devId, ret);
-
-        /* Dump IC_CON register */
-        SmbusIcConReg_u icCon;
-        icCon.value = regBase->icCon.value;
-        LOGE("[DEBUG POST-READ] IC_CON (0x%08X): masterMode=%u, speed=%u, ic10bitaddrSlave=%u, ic10bitaddrMaster=%u, icRestartEn=%u, icSlaveDisable=%u\n",
-             icCon.value, icCon.fields.masterMode, icCon.fields.speed, icCon.fields.ic10bitaddrSlave,
-             icCon.fields.ic10bitaddrMaster, icCon.fields.icRestartEn, icCon.fields.icSlaveDisable);
-
-        /* Dump IC_SAR register */
-        SmbusIcSarReg_u icSar;
-        icSar.value = regBase->icSar.value;
-        LOGE("[DEBUG POST-READ] IC_SAR (0x%08X): slaveAddress=0x%03X\n", icSar.value, icSar.fields.icSar);
-
-        /* Dump IC_INTR_MASK register */
-        SmbusIcIntrMask_u icIntrMask;
-        icIntrMask.value = regBase->icIntrMask.value;
-        LOGE("[DEBUG POST-READ] IC_INTR_MASK (0x%08X): rxUnder=%u, rxOver=%u, rxFull=%u, txOver=%u, txEmpty=%u, rdReq=%u, txAbrt=%u, rxDone=%u\n",
-             icIntrMask.value, icIntrMask.fields.rxUnder, icIntrMask.fields.rxOver, icIntrMask.fields.rxFull,
-             icIntrMask.fields.txOver, icIntrMask.fields.txEmpty, icIntrMask.fields.rdReq,
-             icIntrMask.fields.txAbrt, icIntrMask.fields.rxDone);
-        LOGE("[DEBUG POST-READ] IC_INTR_MASK continued: activity=%u, stopDet=%u, startDet=%u, genCall=%u, restartDet=%u\n",
-             icIntrMask.fields.activity, icIntrMask.fields.stopDet, icIntrMask.fields.startDet,
-             icIntrMask.fields.genCall, icIntrMask.fields.restartDet);
-
-        /* Dump IC_RAW_INTR_STAT register - shows actual pending interrupts */
-        SmbusIcRawIntrStatReg_u icRawIntrStat;
-        icRawIntrStat.value = regBase->icRawIntrStat.value;
-        LOGE("[DEBUG POST-READ] IC_RAW_INTR_STAT (0x%08X): rxUnder=%u, rxOver=%u, rxFull=%u, txOver=%u, txEmpty=%u, rdReq=%u, txAbrt=%u, rxDone=%u\n",
-             icRawIntrStat.value, icRawIntrStat.fields.rxUnder, icRawIntrStat.fields.rxOver, icRawIntrStat.fields.rxFull,
-             icRawIntrStat.fields.txOver, icRawIntrStat.fields.txEmpty, icRawIntrStat.fields.rdReq,
-             icRawIntrStat.fields.txAbrt, icRawIntrStat.fields.rxDone);
-        LOGE("[DEBUG POST-READ] IC_RAW_INTR_STAT continued: activity=%u, stopDet=%u, startDet=%u, genCall=%u, restartDet=%u\n",
-             icRawIntrStat.fields.activity, icRawIntrStat.fields.stopDet, icRawIntrStat.fields.startDet,
-             icRawIntrStat.fields.genCall, icRawIntrStat.fields.restartDet);
-
-        /* Dump IC_STATUS register */
-        SmbusIcStatusReg_u icStatus;
-        icStatus.value = regBase->icStatus.value;
-        LOGE("[DEBUG POST-READ] IC_STATUS (0x%08X): activity=%u, tfnf=%u, tfe=%u, rfne=%u, rff=%u\n",
-             icStatus.value, icStatus.fields.activity, icStatus.fields.tfnf, icStatus.fields.tfe,
-             icStatus.fields.rfne, icStatus.fields.rff);
-
-        /* Dump IC_ENABLE register */
-        SmbusIcEnableReg_u icEnable;
-        icEnable.value = regBase->icEnable.value;
-        LOGE("[DEBUG POST-READ] IC_ENABLE (0x%08X): enable=%u, abort=%u, icSarEn=%u\n",
-             icEnable.value, icEnable.fields.enable, icEnable.fields.abort, icEnable.fields.icSarEn);
-
-        LOGE("[DEBUG POST-READ] End of Register Dump - Device %d\n", devId);
-    }
-
-    if (ret < 0) {
+    if (ret != EXIT_SUCCESS) {
         LOGE("SMBus RAW I2C: I2C read failed: %d\n", ret);
         ret = -EIO;
         goto exit;
@@ -311,7 +219,92 @@ exit:
 
     return ret;
 }
+#if 0
+/**
+ * @brief Implement I2C read functionality using drv_smbus_dw_i2c.c interface
+ * @details This function implements MASTER and SLAVE read functionality using the existing
+ *          smbusDwRead interface from drv_smbus_dw_i2c.c. It provides raw I2C communication
+ *          without SMBus protocol overhead for device verification.
+ *
+ * @param[in] devId Device identifier
+ * @param[in,out] data Pointer to I2C block read data structure containing:
+ *                    - slaveAddr: 7-bit slave address
+ *                    - cmdCode: Command code to write (for combined transactions)
+ *                    - readLength: Pointer to store number of bytes read
+ *                    - data: Buffer to store read data
+ * @return EXIT_SUCCESS on success, negative error code on failure
+ */
+S32 smbusI2CRead(DevList_e devId, SmbusI2CBlockReadData_s *data)
+{
+    SmbusDrvData_s *pDrvData = NULL;
+    S32 ret = EXIT_SUCCESS;
+    SmbusHalOps_s *halOps = NULL;
 
+    /* Parameter validation */
+    if (data == NULL || data->readLength == NULL || data->data == NULL) {
+        LOGD("SMBUS: I2C read - invalid parameters");
+        return -EINVAL;
+    }
+
+    LOGD("SMBUS: I2C read - addr=0x%02X cmd=0x%02X maxLen=%u",
+              data->slaveAddr, data->cmdCode, 32);
+
+    /* ===== 1. Driver Validation and Lock ===== */
+    ret = smbusDrvLockAndCheck(devId);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
+    }
+
+    /* ===== 2. Get Driver Data ===== */
+    ret = getDevDriver(devId, (void**)&pDrvData);
+    if (ret != EXIT_SUCCESS || pDrvData == NULL) {
+        LOGD("SMBUS: I2C read - Failed to get driver data");
+        goto exit;
+    }
+
+    /* ===== 3. Get HAL Operations ===== */
+    halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->i2cWriteRead == NULL) {
+        LOGD("SMBUS: I2C read - HAL operations not available");
+        ret = -ENOTSUP;
+        goto exit;
+    }
+
+    /*
+     * Use the existing HAL i2cWriteRead interface for combined write-read transaction
+     * Write 1 byte: command code
+     * Read up to SMBUS_BLOCK_MAX_LEN bytes: data
+     */
+    ret = halOps->i2cWriteRead(&pDrvData->pSmbusDev,
+                                data->slaveAddr,
+                                &data->cmdCode,        /* Write command code */
+                                1,                    /* Write 1 byte */
+                                data->data,            /* Read into data buffer */
+                                SMBUS_MAX_BLOCK_LEN);  /* Read maximum bytes */
+
+    if (ret != EXIT_SUCCESS) {
+        LOGD("SMBUS: I2C read - HAL i2cWriteRead failed with ret=%d", ret);
+        ret = -EIO;
+        goto exit;
+    }
+
+    /* Set the actual number of bytes read - caller can interpret first byte as count if needed */
+    *(data->readLength) = SMBUS_MAX_BLOCK_LEN;
+
+    LOGD("SMBUS: I2C read - Success, read up to %d bytes", SMBUS_MAX_BLOCK_LEN);
+    LOGD("SMBUS: I2C read - First few bytes: 0x%02X 0x%02X 0x%02X 0x%02X",
+              data->data[0], data->data[1], data->data[2], data->data[3]);
+
+    ret = EXIT_SUCCESS;
+
+exit:
+    /* ===== 4. Unlock Device ===== */
+    devUnlockByDriver(devId);
+
+    return ret;
+}
+
+#endif 
 S32 smbusI2CBlockRead(DevList_e devId, SmbusI2CBlockReadData_s *data)
 {
     SmbusDrvData_s *pDrvData = NULL;
@@ -346,8 +339,8 @@ S32 smbusI2CBlockRead(DevList_e devId, SmbusI2CBlockReadData_s *data)
     }
 
     /* Get HAL operations for I2C compatibility */
-    // HAL operations already registered in device structure
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->i2cWriteRead == NULL) {
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->i2cWriteRead == NULL) {
         LOGE("%s(): HAL I2C operations not available\n", __func__);
         ret = -ENOTSUP;
         goto exit;
@@ -378,7 +371,7 @@ S32 smbusI2CBlockRead(DevList_e devId, SmbusI2CBlockReadData_s *data)
      * Write: Command code
      * Read:  Byte count + data bytes (max 33 bytes total)
      */
-    ret = pDrvData->pSmbusDev.halOps->i2cWriteRead(&pDrvData->pSmbusDev,
+    ret = halOps->i2cWriteRead(&pDrvData->pSmbusDev,
                                 data->slaveAddr,
                                 cmdBuf,
                                 1,                           /* Write 1 byte (command) */
@@ -458,558 +451,441 @@ exit:
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusQuickCmdProtocol(SmbusDev_s *smbusDev,
+static S32 smbusQuickCmdProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                 SmbusParam_s *param, bool pecEn)
 {
-    /*
-     * SMBus Quick Command Protocol - Architecture Compliant Implementation
-     *
-     * Protocol Layer Definition:
-     * - Quick Command = msg.len == 0
-     * - Direction determined by msg.flags & I2C_M_RD
-     * - No data buffer required
-     *
-     * Hardware Layer Responsibility (smbusDwXfer):
-     * - Detect msg.len == 0 condition
-     * - Set icTar.fields.special = 1
-     * - Set icTar.fields.smbusQuickCmd = 1
-     * - Configure icDataCmd for quick command
-     * - Clear special flags after completion
-     *
-     * This maintains clean separation between protocol and hardware layers.
-     */
+    S32 ret = EXIT_SUCCESS;
+    U32 timeout = param->base.timeout;
 
-    /* 1. Extract Address */
-    U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    /* Configure target address */
+    volatile SmbusRegMap_s *regBase = smbusDev->regBase;
 
-    /* 2. Determine Direction based on rwBit */
-    /* If rwBit is 1, it acts like a Read request (but no data returned) */
-    U16 flags = (param->param.quick.rwBit) ? SMBUS_M_RD : 0;
+    /* Enable special SMBus quick mode */
+    regBase->icTar.fields.special = 1;
+    regBase->icTar.fields.smbusQuickCmd = 1;
 
-    /* 3. Construct Message */
-    SmbusMsg_s msg = {
-        .addr  = slaveAddr,
-        .flags = flags,
-        .len   = 0,     ///< Length 0 indicates Quick Command
-        .buf   = NULL   ///< No data buffer needed
-    };
+    /* Prepare data command with stop bit */
+    SmbusIcDataCmdReg_u icDataCmd;
+    memset(&icDataCmd, 0, sizeof(icDataCmd));
+    icDataCmd.fields.stop = 1;
+    icDataCmd.fields.cmd = (param->param.quick.rwBit == 0) ? 0 : 1;
 
-    /* 4. Execute via unified I2C Transfer interface */
-    /* The underlying driver (smbusDwXfer) MUST handle len=0 by setting special HW bits */
-    return smbusExecuteTransfer(smbusDev, &msg, 1);
+    /* Issue quick command */
+    regBase->icDataCmd.value = icDataCmd.value;
+
+    /* Wait for completion */
+    if (timeout == 0) timeout = 10; /* Default timeout */
+
+    U32 wait = timeout;
+    bool completed = false;
+
+    while (wait--) {
+        /* Clear TX abort and check status */
+        volatile U32 tmp = regBase->icClrTxAbrt;
+        (void)tmp;
+        completed = true;
+        break;
+    }
+
+    if (!completed) {
+        LOGE("%s(): Quick command timeout\n", __func__);
+        ret = -ETIMEDOUT;
+    }
+
+    /* Clear special mode flags */
+    regBase->icTar.fields.special = 0;
+    regBase->icTar.fields.smbusQuickCmd = 0;
+
+    return ret;
 }
 
 /**
- * @brief Send Byte protocol implementation (SMBus 3.1) - Optimized Version
- * @details Sends a single data byte to the slave with improved performance.
- * Packet: [Addr|W] + [Data] + [PEC(opt)]
- *
- * Optimizations:
- * - Unified i2cTransfer interface instead of i2cWrite
- * - Single stack allocation with pre-calculated length
- * - Reduced conditional branches and improved cache locality
- *
+ * @brief Send Byte protocol implementation
+ * @details Implements SMBus Send Byte protocol with optional PEC support.
+ *          Sends a single data byte to the specified slave address.
+ * @param[in] halOps HAL operations structure
  * @param[in] smbusDev SMBus device structure
  * @param[in] param Protocol parameters containing data byte
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusSendByteProtocol(SmbusDev_s *smbusDev,
-                                 SmbusParam_s *param, bool pecEn)
+static S32 smbusSendByteProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
+                                SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    U8 txData = param->param.byte.data;
 
-    /* Stack-allocated buffer: Data(1) + PEC(1) - single allocation */
-    U8 txBuffer[2];
-    U16 txLen = 1;
-
-    /* Prepare primary data */
-    txBuffer[0] = param->param.byte.data;
-
-    /* Handle PEC calculation and buffer preparation */
+    /* Send byte using HAL I2C interface */
     if (pecEn) {
-        /* PEC calculation sequence: CRC8(Addr(W) + Data) */
-        const U8 pecInput[2] = {
-            (U8)(slaveAddr << 1),  /* Slave Address + Write Bit(0) */
-            txBuffer[0]            /* Data Byte */
-        };
+        /* PEC calculation: Address(W) + Data */
+        U8 pecData[2];
+        pecData[0] = (U8)(slave7 << 1); /* Write address */
+        pecData[1] = txData;
+        U8 pec = smbusPecPktConstruct(slave7, true, pecData, 2);
 
-        /* Append PEC to buffer */
-        txBuffer[1] = smbusPecPktConstruct(slaveAddr, true, pecInput, 2);
-        txLen = 2;  /* Update length to include PEC */
+        /* Send data + PEC */
+        U8 txBuffer[2] = {txData, pec};
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, 2);
+    } else {
+        /* Send data only */
+        ret = halOps->i2cWrite(smbusDev, slave7, &txData, 1);
     }
 
-    /* Single I2C message structure - C99 compound literal */
-    SmbusMsg_s msg = {
-        .addr  = slaveAddr,
-        .flags = 0,        /* Write operation */
-        .len   = txLen,    /* Pre-calculated length */
-        .buf   = txBuffer  /* Stack-allocated buffer */
-    };
-
-    /* Unified transfer interface - single HAL call */
-    ret = smbusExecuteTransfer(smbusDev, &msg, 1);
-
-    /* Error handling with consistent logging */
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Send byte failed (Addr:0x%02X, Ret:%d)\n", __func__, slaveAddr, ret);
-        return -EIO;
+        LOGE("%s(): Send byte failed, ret=%d\n", __func__, ret);
+        ret = -EIO;
     }
 
-    return EXIT_SUCCESS;
+    return ret;
 }
 
 /**
- * @brief Receive Byte protocol implementation (SMBus 3.1) - Optimized Version
- * @details Reads a single data byte from the slave with improved performance.
- * Packet: [Addr|R] + [Data] + [PEC(opt)]
- *
- * Optimizations:
- * - Unified i2cTransfer interface instead of i2cWriteRead
- * - Single stack allocation with pre-calculated length
- * - Reduced conditional branches and improved cache locality
- *
+ * @brief Receive Byte protocol implementation
+ * @details Implements SMBus Receive Byte protocol with optional PEC support.
+ *          Reads a single data byte from the specified slave address.
+ * @param[in] halOps HAL operations structure
  * @param[in] smbusDev SMBus device structure
  * @param[in,out] param Protocol parameters, returns received data
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusReceiveByteProtocol(SmbusDev_s *smbusDev,
+static S32 smbusReceiveByteProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                    SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
 
-    /* Stack-allocated buffer: Data(1) + [PEC(1)] - single allocation */
-    U8 rxBuffer[2];
-    const U16 rxLen = pecEn ? 2 : 1;
-
-    /* Single I2C message structure for read operation */
-    SmbusMsg_s msg = {
-        .addr  = slaveAddr,
-        .flags = SMBUS_M_RD,  /* Read operation */
-        .len   = rxLen,       /* Pre-calculated length */
-        .buf   = rxBuffer     /* Stack-allocated buffer */
-    };
-
-    /* Unified transfer interface - single HAL call */
-    ret = smbusExecuteTransfer(smbusDev, &msg, 1);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Receive byte failed (Addr:0x%02X, Ret:%d)\n", __func__, slaveAddr, ret);
-        return -EIO;
-    }
-
-    /* Handle PEC validation if enabled */
     if (pecEn) {
-        /* PEC validation sequence: CRC8(Addr(R) + Data) */
-        const U8 pecInput[2] = {
-            (U8)((slaveAddr << 1) | SMBUS_I2C_READ_MODE),  /* Slave Address + Read Bit(1) */
-            rxBuffer[0]                                     /* Received Data Byte */
-        };
-
-        /* Calculate and validate PEC */
-        const U8 expectedPec = smbusPecPktConstruct(slaveAddr, false, pecInput, 2);
-        if (expectedPec != rxBuffer[1]) {
-            LOGE("%s: PEC mismatch (Addr:0x%02X, Calc:0x%02X, Recv:0x%02X)\n",
-                 __func__, slaveAddr, expectedPec, rxBuffer[1]);
+        /* Read data + PEC */
+        U8 rxBuffer[2];
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, 2);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Receive byte failed, ret=%d\n", __func__, ret);
             return -EIO;
         }
-    }
 
-    /* Store received data in output parameter */
-    param->param.byte.data = rxBuffer[0];
+        /* Verify PEC: Address(R) + Data */
+        U8 pecData[2];
+        pecData[0] = (U8)((slave7 << 1) | SMBUS_I2C_READ_MODE);
+        pecData[1] = rxBuffer[0];
+        U8 expectedPec = smbusPecPktConstruct(slave7, false, pecData, 2);
+
+        if (expectedPec != rxBuffer[1]) {
+            LOGE("%s(): PEC mismatch: calc=0x%02X, recv=0x%02X\n",
+                 __func__, expectedPec, rxBuffer[1]);
+            return -EIO;
+        }
+
+        param->param.byte.data = rxBuffer[0];
+    } else {
+        /* Read data only */
+        U8 rxData = 0;
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, &rxData, 1);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Receive byte failed, ret=%d\n", __func__, ret);
+            return -EIO;
+        }
+
+        param->param.byte.data = rxData;
+    }
 
     return EXIT_SUCCESS;
 }
 
 /**
- * @brief Write Byte protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes command code followed by data byte to the slave with improved performance.
- * Packet: [Addr|W] + [Command] + [Data] + [PEC(opt)]
- *
- * Optimizations:
- * - Unified i2cTransfer interface instead of i2cWrite
- * - Single stack allocation with pre-calculated length
- * - Reduced conditional branches and improved cache locality
- *
+ * @brief Write Byte protocol implementation
+ * @details Implements SMBus Write Byte protocol with optional PEC support.
+ *          Writes command code followed by data byte to the slave.
+ * @param[in] halOps HAL operations structure
  * @param[in] smbusDev SMBus device structure
  * @param[in] param Protocol parameters containing command and data
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusWriteByteProtocol(SmbusDev_s *smbusDev,
+static S32 smbusWriteByteProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                  SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
-    const U8 cmdCode = param->param.data.cmdCode;
-    const U8 dataByte = param->param.data.buffer ? param->param.data.buffer[0] : param->param.byte.data;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    U8 cmdCode = param->param.data.cmdCode;
+    U8 dataByte = param->param.data.buffer ? param->param.data.buffer[0] : param->param.byte.data;
 
-    /* Stack-allocated buffer: Command(1) + Data(1) + [PEC(1)] - single allocation */
-    U8 txBuffer[3];
-    U16 txLen = 2;  /* Default: Command + Data */
-
-    /* Prepare command and data */
-    txBuffer[0] = cmdCode;
-    txBuffer[1] = dataByte;
-
-    /* Handle PEC calculation and buffer preparation */
     if (pecEn) {
-        /* PEC calculation sequence: CRC8(Addr(W) + Command + Data) */
-        const U8 pecInput[3] = {
-            (U8)(slaveAddr << 1),  /* Slave Address + Write Bit(0) */
-            cmdCode,               /* Command Code */
-            dataByte               /* Data Byte */
-        };
+        /* Send command + data + PEC */
+        U8 txBuffer[3];
+        txBuffer[0] = cmdCode;
+        txBuffer[1] = dataByte;
 
-        /* Append PEC to buffer */
-        txBuffer[2] = smbusPecPktConstruct(slaveAddr, true, pecInput, 3);
-        txLen = 3;  /* Update length to include PEC */
+        /* Calculate PEC: Address(W) + Command + Data */
+        U8 pecData[3];
+        pecData[0] = (U8)(slave7 << 1);
+        pecData[1] = cmdCode;
+        pecData[2] = dataByte;
+        txBuffer[2] = smbusPecPktConstruct(slave7, true, pecData, 3);
+
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, 3);
+    } else {
+        /* Send command + data */
+        U8 txBuffer[2] = {cmdCode, dataByte};
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, 2);
     }
 
-    /* Single I2C message structure - C99 compound literal */
-    SmbusMsg_s msg = {
-        .addr  = slaveAddr,
-        .flags = 0,        /* Write operation */
-        .len   = txLen,    /* Pre-calculated length */
-        .buf   = txBuffer  /* Stack-allocated buffer */
-    };
-
-    /* Unified transfer interface - single HAL call */
-    ret = smbusExecuteTransfer(smbusDev, &msg, 1);
-
-    /* Error handling with consistent logging */
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Write byte failed (Addr:0x%02X, Cmd:0x%02X, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, ret);
-        return -EIO;
+        LOGE("%s(): Write byte failed, ret=%d\n", __func__, ret);
+        ret = -EIO;
     }
 
-    return EXIT_SUCCESS;
+    return ret;
 }
 
 /**
- * @brief Read Byte protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes command code, then reads data byte from the slave with improved performance.
- * Packet: [Addr|W][Cmd] + [Addr|R][Data] + [PEC(opt)]
- *
+ * @brief Read Byte protocol implementation
+ * @details Implements SMBus Read Byte protocol with optional PEC support.
+ *          Writes command code, then reads data byte from the slave.
+ * @param[in] halOps HAL operations structure
  * @param[in] smbusDev SMBus device structure
  * @param[in,out] param Protocol parameters containing command, returns data
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusReadByteProtocol(SmbusDev_s *smbusDev,
+static S32 smbusReadByteProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                 SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
-    const U8 cmdCode = param->param.data.cmdCode;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    U8 cmdCode = param->param.data.cmdCode;
 
-    /* Validate buffer pointer */
-    if (param->param.data.buffer == NULL) {
-        return -EINVAL;
-    }
-
-    /* Stack-allocated buffers and message structures */
-    U8 rxBuffer[2];  /* Data(1) + [PEC(1)] */
-    const U16 rxLen = pecEn ? 2 : 1;
-
-    /* Create message array for atomic write+read operation */
-    SmbusMsg_s msgs[2] = {
-        {
-            .addr  = slaveAddr,
-            .flags = 0,            /* Write operation */
-            .len   = 1,            /* Command length */
-            .buf   = (U8*)&cmdCode /* Command code */
-        },
-        {
-            .addr  = slaveAddr,
-            .flags = SMBUS_M_RD,   /* Read operation */
-            .len   = rxLen,        /* Pre-calculated read length */
-            .buf   = rxBuffer      /* Stack-allocated receive buffer */
-        }
-    };
-
-    /* Unified transfer interface - atomic write+read operation */
-    ret = smbusExecuteTransfer(smbusDev, msgs, 2);
+    /* Write command code */
+    ret = halOps->i2cWrite(smbusDev, slave7, &cmdCode, 1);
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Read byte failed (Addr:0x%02X, Cmd:0x%02X, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, ret);
+        LOGE("%s(): Write command failed, ret=%d\n", __func__, ret);
         return -EIO;
     }
 
-    /* Handle PEC validation if enabled */
+    /* Read data byte (and optional PEC) */
     if (pecEn) {
-        /* Optimized PEC calculation: CRC8(Addr(W) + Cmd + Addr(R) + Data) */
-        const U8 pecInput[4] = {
-            (U8)(slaveAddr << 1),                      /* Address with Write bit */
-            cmdCode,                                    /* Command code */
-            (U8)((slaveAddr << 1) | SMBUS_I2C_READ_MODE), /* Address with Read bit */
-            rxBuffer[0]                                 /* Received data */
-        };
-
-        const U8 expectedPec = smbusPecPktConstruct(slaveAddr, false, pecInput, 4);
-        if (expectedPec != rxBuffer[1]) {
-            LOGE("%s: PEC mismatch (Addr:0x%02X, Cmd:0x%02X, Calc:0x%02X, Recv:0x%02X)\n",
-                 __func__, slaveAddr, cmdCode, expectedPec, rxBuffer[1]);
+        U8 rxBuffer[2];
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, 2);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read data failed, ret=%d\n", __func__, ret);
             return -EIO;
         }
-    }
 
-    /* Store received data and update read length */
-    param->param.data.buffer[0] = rxBuffer[0];
-    if (param->param.data.readLen) {
-        *param->param.data.readLen = 1;
+        /* Calculate PEC: Address(W) + Command + Address(R) + Data */
+        U8 pec = smbusCrc8CalcOne(0, (U8)(slave7 << 1));
+        pec = smbusCrc8CalcOne(pec, cmdCode);
+        pec = smbusCrc8CalcOne(pec, (U8)((slave7 << 1) | SMBUS_I2C_READ_MODE));
+        pec = smbusCrc8CalcOne(pec, rxBuffer[0]);
+
+        if (pec != rxBuffer[1]) {
+            LOGE("%s(): PEC mismatch: calc=0x%02X, recv=0x%02X\n",
+                 __func__, pec, rxBuffer[1]);
+            return -EIO;
+        }
+
+        param->param.data.buffer[0] = rxBuffer[0];
+        if (param->param.data.readLen) *param->param.data.readLen = 1;
+    } else {
+        U8 rxData = 0;
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, &rxData, 1);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read data failed, ret=%d\n", __func__, ret);
+            return -EIO;
+        }
+
+        param->param.data.buffer[0] = rxData;
+        if (param->param.data.readLen) *param->param.data.readLen = 1;
     }
 
     return EXIT_SUCCESS;
 }
 
 /**
- * @brief Write Word protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes command code followed by 2-byte data (little-endian) to the slave with improved performance.
- * Packet: [Addr|W] + [Command] + [Low Byte] + [High Byte] + [PEC(opt)]
- *
- * Optimizations:
- * - Unified i2cTransfer interface instead of i2cWrite
- * - Single stack allocation with pre-calculated length
- * - Reduced conditional branches and improved cache locality
- * - Enhanced error logging with detailed context
- *
+ * @brief Write Word protocol implementation
+ * @details Implements SMBus Write Word protocol with optional PEC support.
+ *          Writes command code followed by 2-byte data (little-endian) to the slave.
+ * @param[in] halOps HAL operations structure
  * @param[in] smbusDev SMBus device structure
  * @param[in] param Protocol parameters containing command and 2-byte data
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusWriteWordProtocol(SmbusDev_s *smbusDev,
+static S32 smbusWriteWordProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                  SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
 
-    /* Validate buffer pointer */
     if (param->param.data.buffer == NULL) {
         return -EINVAL;
     }
 
-    const U8 cmdCode = param->param.data.cmdCode;
-    const U8 lowByte = param->param.data.buffer[0];
-    const U8 highByte = param->param.data.buffer[1];
+    U8 cmdCode = param->param.data.cmdCode;
+    U8 lowByte = param->param.data.buffer[0];
+    U8 highByte = param->param.data.buffer[1];
 
-    /* Stack-allocated buffer: Command(1) + Low(1) + High(1) + [PEC(1)] */
-    U8 txBuffer[4];
-    U16 txLen = 3;  /* Default: Command + Low + High */
-
-    /* Prepare command and word data (Little-endian: Low byte first) */
-    txBuffer[0] = cmdCode;
-    txBuffer[1] = lowByte;
-    txBuffer[2] = highByte;
-
-    /* Handle PEC calculation and buffer preparation */
     if (pecEn) {
-        /* PEC calculation sequence: CRC8(Addr(W) + Cmd + Low + High) */
-        const U8 pecInput[4] = {
-            (U8)(slaveAddr << 1),  /* Address + Write bit */
-            cmdCode,               /* Command Code */
-            lowByte,               /* Low Byte */
-            highByte               /* High Byte */
-        };
+        /* Send command + low + high + PEC */
+        U8 txBuffer[4];
+        txBuffer[0] = cmdCode;
+        txBuffer[1] = lowByte;
+        txBuffer[2] = highByte;
 
-        /* Append PEC to buffer */
-        txBuffer[3] = smbusPecPktConstruct(slaveAddr, true, pecInput, 4);
-        txLen = 4;  /* Update length to include PEC */
+        /* Calculate PEC: Address(W) + Command + Low + High */
+        U8 pecData[3];
+        pecData[0] = cmdCode;
+        pecData[1] = lowByte;
+        pecData[2] = highByte;
+        txBuffer[3] = smbusPecPktConstruct(slave7, true, pecData, 3);
+
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, 4);
+    } else {
+        /* Send command + low + high */
+        U8 txBuffer[3] = {cmdCode, lowByte, highByte};
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, 3);
     }
 
-    /* Single I2C message structure - C99 compound literal */
-    SmbusMsg_s msg = {
-        .addr  = slaveAddr,
-        .flags = 0,        /* Write operation */
-        .len   = txLen,    /* Pre-calculated length */
-        .buf   = txBuffer  /* Stack-allocated buffer */
-    };
-
-    /* Unified transfer interface - single HAL call */
-    ret = smbusExecuteTransfer(smbusDev, &msg, 1);
-
-    /* Error handling with enhanced logging */
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Write word failed (Addr:0x%02X, Cmd:0x%02X, Data:0x%04X, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, (U16)((highByte << 8) | lowByte), ret);
-        return -EIO;
+        LOGE("%s(): Write word failed, ret=%d\n", __func__, ret);
+        ret = -EIO;
     }
 
-    return EXIT_SUCCESS;
+    return ret;
 }
 
 /**
- * @brief Read Word protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes command code, then reads 2-byte data (little-endian) from the slave with improved performance.
- * Packet: [Addr|W][Cmd] + [Addr|R][Low Byte][High Byte] + [PEC(opt)]
- *
+ * @brief Read Word protocol implementation
+ * @details Implements SMBus Read Word protocol with optional PEC support.
+ *          Writes command code, then reads 2-byte data (little-endian) from the slave.
+ * @param[in] halOps HAL operations structure
  * @param[in] smbusDev SMBus device structure
  * @param[in,out] param Protocol parameters containing command, returns 2-byte data
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusReadWordProtocol(SmbusDev_s *smbusDev,
+static S32 smbusReadWordProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                 SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
-    const U8 cmdCode = param->param.data.cmdCode;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
 
-    /* Validate buffer pointer */
     if (param->param.data.buffer == NULL) {
         return -EINVAL;
     }
 
-    /* Stack-allocated buffers and message structures */
-    U8 rxBuffer[3];  /* Low(1) + High(1) + [PEC(1)] */
-    const U16 rxLen = pecEn ? 3 : 2;
+    U8 cmdCode = param->param.data.cmdCode;
 
-    /* Create message array for atomic write+read operation */
-    SmbusMsg_s msgs[2] = {
-        {
-            .addr  = slaveAddr,
-            .flags = 0,            /* Write operation */
-            .len   = 1,            /* Command length */
-            .buf   = (U8*)&cmdCode /* Command code */
-        },
-        {
-            .addr  = slaveAddr,
-            .flags = SMBUS_M_RD,   /* Read operation */
-            .len   = rxLen,        /* Pre-calculated read length */
-            .buf   = rxBuffer      /* Stack-allocated receive buffer */
-        }
-    };
-
-    /* Unified transfer interface - atomic write+read operation */
-    ret = smbusExecuteTransfer(smbusDev, msgs, 2);
+    /* Write command code */
+    ret = halOps->i2cWrite(smbusDev, slave7, &cmdCode, 1);
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Read word failed (Addr:0x%02X, Cmd:0x%02X, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, ret);
+        LOGE("%s(): Write command failed, ret=%d\n", __func__, ret);
         return -EIO;
     }
 
-    /* Handle PEC validation if enabled */
+    /* Read word data (and optional PEC) */
     if (pecEn) {
-        /* Optimized PEC calculation: CRC8(Addr(W) + Cmd + Addr(R) + Low + High) */
-        const U8 pecInput[5] = {
-            (U8)(slaveAddr << 1),                      /* Address with Write bit */
-            cmdCode,                                    /* Command code */
-            (U8)((slaveAddr << 1) | SMBUS_I2C_READ_MODE), /* Address with Read bit */
-            rxBuffer[0],                                /* Low byte */
-            rxBuffer[1]                                 /* High byte */
-        };
-
-        const U8 expectedPec = smbusPecPktConstruct(slaveAddr, false, pecInput, 5);
-        if (expectedPec != rxBuffer[2]) {
-            LOGE("%s: PEC mismatch (Addr:0x%02X, Cmd:0x%02X, Calc:0x%02X, Recv:0x%02X)\n",
-                 __func__, slaveAddr, cmdCode, expectedPec, rxBuffer[2]);
+        U8 rxBuffer[3]; /* low + high + pec */
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, 3);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read word failed, ret=%d\n", __func__, ret);
             return -EIO;
         }
-    }
 
-    /* Store received data (Little-endian: Low byte first) and update read length */
-    param->param.data.buffer[0] = rxBuffer[0]; /* Low byte */
-    param->param.data.buffer[1] = rxBuffer[1]; /* High byte */
-    if (param->param.data.readLen) {
-        *param->param.data.readLen = 2;
+        /* Calculate PEC: Address(W) + Command + Address(R) + Low + High */
+        U8 pec = smbusCrc8CalcOne(0, (U8)(slave7 << 1));
+        pec = smbusCrc8CalcOne(pec, cmdCode);
+        pec = smbusCrc8CalcOne(pec, (U8)((slave7 << 1) | SMBUS_I2C_READ_MODE));
+        pec = smbusCrc8CalcOne(pec, rxBuffer[0]); /* low byte */
+        pec = smbusCrc8CalcOne(pec, rxBuffer[1]); /* high byte */
+
+        if (pec != rxBuffer[2]) {
+            LOGE("%s(): PEC mismatch: calc=0x%02X, recv=0x%02X\n",
+                 __func__, pec, rxBuffer[2]);
+            return -EIO;
+        }
+
+        param->param.data.buffer[0] = rxBuffer[0]; /* low byte */
+        param->param.data.buffer[1] = rxBuffer[1]; /* high byte */
+        if (param->param.data.readLen) *param->param.data.readLen = 2;
+    } else {
+        U8 rxBuffer[2];
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, 2);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read word failed, ret=%d\n", __func__, ret);
+            return -EIO;
+        }
+
+        param->param.data.buffer[0] = rxBuffer[0]; /* low byte */
+        param->param.data.buffer[1] = rxBuffer[1]; /* high byte */
+        if (param->param.data.readLen) *param->param.data.readLen = 2;
     }
 
     return EXIT_SUCCESS;
 }
 
 /**
- * @brief Block Write protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes command code, byte count, and data block to the slave with improved performance.
- * Sequence: [S] [Addr|W] [Cmd] [Count] [Data...] [PEC] [P]
- *
- * Optimizations:
- * - Stack allocation instead of dynamic malloc/free (no memory fragmentation)
- * - Unified i2cTransfer interface instead of i2cWrite
- * - Single memcpy operation with pre-calculated lengths
- * - Optimized PEC calculation covering complete transaction
- * - Enhanced error logging with detailed context information
- *
+ * @brief Block Write protocol implementation
+ * @details Implements SMBus Block Write protocol with optional PEC support.
+ *          Writes command code, byte count, and data block to the slave.
+ * @param[in] halOps HAL operations structure
  * @param[in] smbusDev SMBus device structure
  * @param[in] param Protocol parameters containing command and block data
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusBlockWriteProtocol(SmbusDev_s *smbusDev,
+static S32 smbusBlockWriteProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                   SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
 
-    /* Enhanced parameter validation */
     if (param->param.block.buffer == NULL || param->param.block.length == 0) {
-        LOGE("%s: Invalid parameters for Block Write (buffer:%p, length:%d)\n",
-             __func__, param->param.block.buffer, param->param.block.length);
         return -EINVAL;
     }
 
     if (param->param.block.length > SMBUS_BLOCK_MAXLEN) {
-        LOGE("%s: Block length %d exceeds maximum %d\n",
+        LOGE("%s(): Block length %d exceeds maximum %d\n",
              __func__, param->param.block.length, SMBUS_BLOCK_MAXLEN);
         return -EINVAL;
     }
 
-    const U8 cmdCode = param->param.block.cmdCode;
-    const U8 byteCount = (U8)param->param.block.length;
+    U8 cmdCode = param->param.block.cmdCode;
+    U8 byteCount = (U8)param->param.block.length;
 
-    /*
-     * Stack-allocated Buffer Management (Optimized Performance)
-     * Buffer: Cmd(1) + Count(1) + Data(32) + [PEC(1)] = 35 Max
-     * Total stack usage: ~35 bytes (vs original malloc/free + memcpy overhead)
-     */
-    U8 txBuffer[SMBUS_BLOCK_MAXLEN + 3];  /* Maximum required space */
-    U16 txLen = 2 + byteCount;  /* Default: Cmd + Count + Data */
+    /* Calculate total transfer size: cmd + count + data (+ optional PEC) */
+    U32 totalSize = 2 + param->param.block.length;
+    U8 *txBuffer = (U8 *)malloc(totalSize + (pecEn ? 1 : 0));
+    if (txBuffer == NULL) {
+        return -ENOMEM;
+    }
 
-    /* --- 1. Prepare Write Message --- */
-    txBuffer[0] = cmdCode;  /* Command code */
-    txBuffer[1] = byteCount;  /* Byte count */
+    /* Construct transfer buffer */
+    txBuffer[0] = cmdCode;
+    txBuffer[1] = byteCount;
+    memcpy(&txBuffer[2], param->param.block.buffer, param->param.block.length);
 
-    /* Single memcpy operation for data block */
-    memcpy(&txBuffer[2], param->param.block.buffer, byteCount);
-
-    /* --- 2. Handle PEC Calculation and Buffer Preparation --- */
     if (pecEn) {
-        /* PEC calculation sequence: CRC8(Addr(W) + Cmd + Count + Data) */
-        U8 pecInput[2 + SMBUS_BLOCK_MAXLEN] = {
-            cmdCode,   /* Command code */
-            byteCount  /* Byte count */
-        };
+        /* Calculate and append PEC: Address(W) + Command + Count + Data */
+        U8 pecData[2 + param->param.block.length];
+        pecData[0] = cmdCode;
+        pecData[1] = byteCount;
+        memcpy(&pecData[2], param->param.block.buffer, param->param.block.length);
+        txBuffer[totalSize] = smbusPecPktConstruct(slave7, true, pecData, 2 + param->param.block.length);
 
-        /* Copy data to PEC input buffer for continuous calculation */
-        memcpy(&pecInput[2], param->param.block.buffer, byteCount);
-
-        /* Append PEC to transmit buffer */
-        txBuffer[txLen] = smbusPecPktConstruct(slaveAddr, true, pecInput, 2 + byteCount);
-        txLen++;  /* Update length to include PEC */
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, totalSize + 1);
+    } else {
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, totalSize);
     }
 
-    /* --- 3. Single I2C Message Structure --- */
-    SmbusMsg_s msg = {
-        .addr  = slaveAddr,
-        .flags = 0,        /* Write operation */
-        .len   = txLen,    /* Pre-calculated length */
-        .buf   = txBuffer  /* Stack-allocated buffer */
-    };
+    free(txBuffer);
 
-    /* --- 4. Unified Transfer Interface (Single HAL Call) --- */
-    ret = smbusExecuteTransfer(smbusDev, &msg, 1);
-
-    /* --- 5. Enhanced Error Handling --- */
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Block write failed (Addr:0x%02X, Cmd:0x%02X, Count:%d, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, byteCount, ret);
-        return -EIO;
+        LOGE("%s(): Block write failed, ret=%d\n", __func__, ret);
+        ret = -EIO;
     }
 
-    return EXIT_SUCCESS;
+    return ret;
 }
 
 /**
@@ -1022,119 +898,84 @@ static S32 smbusBlockWriteProtocol(SmbusDev_s *smbusDev,
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-/**
- * @brief Block Read protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes command code, then reads byte count and data block from the slave with improved performance.
- * Sequence: [S] [Addr|W] [Cmd] [Sr] [Addr|R] [Count] [Data...] [PEC] [P]
- *
- * @param[in] smbusDev SMBus device structure
- * @param[in,out] param Protocol parameters containing command, returns block data
- * @param[in] pecEn PEC enable flag
- * @return EXIT_SUCCESS on success, negative error code on failure
- */
-static S32 smbusBlockReadProtocol(SmbusDev_s *smbusDev,
+static S32 smbusBlockReadProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
                                  SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
 
-    /* Enhanced parameter validation */
     if (param->param.block.buffer == NULL) {
-        LOGE("%s: Invalid buffer pointer for Block Read\n", __func__);
         return -EINVAL;
     }
 
-    const U8 cmdCode = param->param.block.cmdCode;
+    U8 cmdCode = param->param.block.cmdCode;
 
-    /*
-     * Stack-allocated Buffer Management (Optimized Performance)
-     * Strategy: Request maximum possible data length and parse dynamically
-     * Rx Buffer: Count(1) + Data(32) + [PEC(1)] = 34 Max
-     * Total stack usage: ~34 bytes (vs original malloc/free overhead)
-     */
-    U8 rxBuffer[SMBUS_BLOCK_MAXLEN + 2];  /* Maximum required space */
-
-    /* --- 1. Prepare Atomic I2C Messages --- */
-    /*
-     * Message 0: Write Command (Single byte)
-     * Message 1: Read Block (Count + Data + [PEC])
-     * Strategy: Request maximum length since response size is unknown initially
-     */
-    const U16 maxRxLen = pecEn ? (SMBUS_BLOCK_MAXLEN + 2) : (SMBUS_BLOCK_MAXLEN + 1);
-
-    SmbusMsg_s msgs[2] = {
-        {
-            .addr  = slaveAddr,
-            .flags = 0,             /* Write operation */
-            .len   = 1,             /* Command length */
-            .buf   = (U8*)&cmdCode /* Command code */
-        },
-        {
-            .addr  = slaveAddr,
-            .flags = SMBUS_M_RD,    /* Read operation (corrected macro) */
-            .len   = maxRxLen,      /* Request maximum possible length */
-            .buf   = rxBuffer       /* Stack-allocated receive buffer */
-        }
-    };
-
-    /* --- 2. Execute Atomic Transfer (Single HAL Call) --- */
-    ret = smbusExecuteTransfer(smbusDev, msgs, 2);
+    /* Write command code */
+    ret = halOps->i2cWrite(smbusDev, slave7, &cmdCode, 1);
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Atomic Block Read failed (Addr:0x%02X, Cmd:0x%02X, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, ret);
-        return ret;
+        LOGE("%s(): Write command failed, ret=%d\n", __func__, ret);
+        return -EIO;
     }
 
-    /* --- 3. Parse Response Byte Count --- */
-    const U8 byteCount = rxBuffer[0];  /* First byte is the block length */
+    /* Read byte count first */
+    U8 byteCount = 0;
+    ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, &byteCount, 1);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s(): Read byte count failed, ret=%d\n", __func__, ret);
+        return -EIO;
+    }
 
-    /* Validate received byte count */
     if (byteCount == 0 || byteCount > SMBUS_BLOCK_MAXLEN) {
-        LOGE("%s: Invalid response byte count %d (Addr:0x%02X, Cmd:0x%02X, Max:%d)\n",
-             __func__, byteCount, slaveAddr, cmdCode, SMBUS_BLOCK_MAXLEN);
+        LOGE("%s(): Invalid byte count: %d\n", __func__, byteCount);
         return -EPROTO;
     }
 
-    /* --- 4. Handle Buffer Size Limitations --- */
-    /* Limit actual read count to user buffer capacity */
-    const U8 actualReadCount = (byteCount < param->param.block.length) ?
-                               byteCount : (U8)param->param.block.length;
-
-    /* --- 5. Validate PEC (if enabled) --- */
-    if (pecEn) {
-        /*
-         * PEC Calculation covers the ENTIRE transaction for SMBus 3.1 compliance:
-         * Addr(W) + Cmd + Addr(R) + Count + Data...
-         */
-
-        /* Construct continuous data stream for PEC calculation */
-        /* Max Size: Cmd(1) + Count(1) + Data(32) = 34 bytes */
-        U8 pecInput[2 + SMBUS_BLOCK_MAXLEN];
-        pecInput[0] = cmdCode;    /* Command code */
-        pecInput[1] = byteCount;  /* Response count */
-
-        /* Copy received data to PEC input buffer */
-        memcpy(&pecInput[2], &rxBuffer[1], actualReadCount);
-
-        /* Calculate PEC over complete transaction: Addr(W) + Cmd + Addr(R) + Count + Data */
-        const U8 expectedPec = smbusPecPktConstruct(slaveAddr, false, pecInput, 2 + actualReadCount);
-
-        /* PEC byte is located after the data block: rxBuffer[1 + actualReadCount] */
-        const U8 receivedPec = rxBuffer[1 + actualReadCount];
-
-        if (expectedPec != receivedPec) {
-            LOGE("%s: PEC mismatch (Addr:0x%02X, Cmd:0x%02X, Count:%d, Calc:0x%02X, Recv:0x%02X)\n",
-                 __func__, slaveAddr, cmdCode, byteCount, expectedPec, receivedPec);
-            return -EIO;
-        }
+    /* Limit read size to buffer capacity */
+    U8 readCount = byteCount;
+    if (readCount > param->param.block.length) {
+        readCount = param->param.block.length;
     }
 
-    /* --- 6. Copy Received Data to User Buffer --- */
-    memcpy(param->param.block.buffer, &rxBuffer[1], actualReadCount);
+    /* Read data block (and optional PEC) */
+    if (pecEn) {
+        U8 *rxBuffer = (U8 *)malloc(readCount + 1);
+        if (rxBuffer == NULL) {
+            return -ENOMEM;
+        }
 
-    /* Update actual read length indicator */
-    if (param->param.block.readLen) {
-        *param->param.block.readLen = actualReadCount;
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, readCount + 1);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read block data failed, ret=%d\n", __func__, ret);
+            free(rxBuffer);
+            return -EIO;
+        }
+
+        /* Calculate PEC: Address(W) + Command + Address(R) + Count + Data */
+        U8 pec = smbusPecPktConstruct(slave7, true, &cmdCode, 1);
+
+        U8 pecInput[1 + readCount];
+        pecInput[0] = byteCount;
+        memcpy(&pecInput[1], rxBuffer, readCount);
+        pec = smbusPecPktConstruct(slave7, false, pecInput, 1 + readCount);
+
+        if (pec != rxBuffer[readCount]) {
+            LOGE("%s(): PEC mismatch: calc=0x%02X, recv=0x%02X\n",
+                 __func__, pec, rxBuffer[readCount]);
+            free(rxBuffer);
+            return -EIO;
+        }
+
+        memcpy(param->param.block.buffer, rxBuffer, readCount);
+        if (param->param.block.readLen) *param->param.block.readLen = readCount;
+        free(rxBuffer);
+    } else {
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, param->param.block.buffer, readCount);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read block data failed, ret=%d\n", __func__, ret);
+            return -EIO;
+        }
+
+        if (param->param.block.readLen) *param->param.block.readLen = readCount;
     }
 
     return EXIT_SUCCESS;
@@ -1150,261 +991,203 @@ static S32 smbusBlockReadProtocol(SmbusDev_s *smbusDev,
  * @param[in] pecEn PEC enable flag
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
-/**
- * @brief Process Call protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes command and 2-byte data, then reads 2-byte response with improved performance.
- * Sequence: [S] [Addr|W] [Cmd] [DataLow] [DataHigh] [Sr] [Addr|R] [RespLow] [RespHigh] [PEC] [P]
- *
- * @param[in]     smbusDev SMBus device handle
- * @param[in,out] param    Protocol parameters with 2-byte write/read buffers
- * @param[in]     pecEn    PEC enable flag
- * @return EXIT_SUCCESS or negative error code
- */
-static S32 smbusProcessCallProtocol(SmbusDev_s *smbusDev, SmbusParam_s *param, bool pecEn)
+static S32 smbusProcessCallProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
+                                   SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
 
-    /* Enhanced Parameter Validation - Process Call requires exactly 2 bytes */
     if (param->param.processCall.wbuffer == NULL ||
         param->param.processCall.rbuffer == NULL ||
         param->param.processCall.wlen < 2) {
-        LOGE("%s: Invalid parameters for Process Call (wlen:%d, required:2)\n",
-             __func__, param->param.processCall.wlen);
         return -EINVAL;
     }
 
-    const U8 cmdCode = param->param.processCall.cmdCode;
-    const U8 lowByte = param->param.processCall.wbuffer[0];   /* Little-endian: low byte first */
-    const U8 highByte = param->param.processCall.wbuffer[1];  /* High byte second */
+    U8 cmdCode = param->param.processCall.cmdCode;
 
-    /*
-     * Stack-allocated Buffer Management (Optimized Performance)
-     * Tx: Cmd(1) + DataLow(1) + DataHigh(1) + [PEC(1)] = 4 Max
-     * Rx: DataLow(1) + DataHigh(1) + [PEC(1)] = 3 Max
-     * Total stack usage: ~7 bytes (vs original malloc/free + memcpy overhead)
-     */
-    U8 txBuffer[4];  /* Command + 2-byte data + optional PEC */
-    U8 rxBuffer[3];  /* 2-byte response + optional PEC */
+    /* Write phase: command + 2-byte data */
+    U8 writeBuffer[3];
+    writeBuffer[0] = cmdCode;
+    writeBuffer[1] = param->param.processCall.wbuffer[0]; /* low byte */
+    writeBuffer[2] = param->param.processCall.wbuffer[1]; /* high byte */
 
-    /* --- 1. Prepare Write Message (Little-endian format) --- */
-    txBuffer[0] = cmdCode;      /* Command code */
-    txBuffer[1] = lowByte;     /* Data low byte */
-    txBuffer[2] = highByte;    /* Data high byte */
-    U16 writeLen = 3;           /* Default: Cmd + Low + High */
-
-    /* --- 2. Handle PEC for Write Phase --- */
     if (pecEn) {
-        /* PEC calculation: CRC8(Addr(W) + Cmd + Low + High) */
-        const U8 pecInput[3] = {
-            cmdCode,   /* Command code */
-            lowByte,   /* Data low byte */
-            highByte   /* Data high byte */
-        };
+        /* Calculate PEC for write phase: Address(W) + Command + Data */
+        U8 pec = smbusPecPktConstruct(slave7, true, writeBuffer, 3);
 
-        txBuffer[3] = smbusPecPktConstruct(slaveAddr, true, pecInput, 3);
-        writeLen = 4;  /* Include PEC in write length */
+        U8 txBuffer[4];
+        memcpy(txBuffer, writeBuffer, 3);
+        txBuffer[3] = pec;
+
+        ret = halOps->i2cWrite(smbusDev, slave7, txBuffer, 4);
+    } else {
+        ret = halOps->i2cWrite(smbusDev, slave7, writeBuffer, 3);
     }
 
-    /* --- 3. Prepare Atomic I2C Messages --- */
-    const U16 rxLen = pecEn ? 3 : 2;  /* Response data + optional PEC */
-
-    SmbusMsg_s msgs[2] = {
-        {
-            .addr  = slaveAddr,
-            .flags = 0,              /* Write operation */
-            .len   = writeLen,       /* Pre-calculated write length */
-            .buf   = txBuffer
-        },
-        {
-            .addr  = slaveAddr,
-            .flags = SMBUS_M_RD,     /* Read operation (corrected macro) */
-            .len   = rxLen,          /* Pre-calculated read length */
-            .buf   = rxBuffer
-        }
-    };
-
-    /* --- 4. Execute Atomic Transfer (Single HAL Call) --- */
-    ret = smbusExecuteTransfer(smbusDev, msgs, 2);
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Atomic Process Call failed (Addr:0x%02X, Cmd:0x%02X, Data:0x%04X, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, (U16)((highByte << 8) | lowByte), ret);
-        return ret;
+        LOGE("%s(): Write phase failed, ret=%d\n", __func__, ret);
+        return -EIO;
     }
 
-    /* --- 5. Validate PEC (if enabled) --- */
+    /* Read phase: 2-byte data (and optional PEC) */
     if (pecEn) {
-        /*
-         * PEC Calculation covers the ENTIRE transaction for SMBus 3.1 compliance:
-         * Addr(W) + Cmd + DataLow + DataHigh + Addr(R) + RespLow + RespHigh
-         */
-
-        /* Construct continuous data stream for PEC calculation */
-        const U8 pecInput[5] = {
-            cmdCode,        /* Command code */
-            lowByte,        /* Transmit low byte */
-            highByte,       /* Transmit high byte */
-            rxBuffer[0],    /* Response low byte */
-            rxBuffer[1]     /* Response high byte */
-        };
-
-        /* Calculate PEC over complete transaction: Addr(W) + Data + Addr(R) + Response */
-        const U8 expectedPec = smbusPecPktConstruct(slaveAddr, false, pecInput, 5);
-
-        /* PEC byte is located after the response data: rxBuffer[2] */
-        const U8 receivedPec = rxBuffer[2];
-
-        if (expectedPec != receivedPec) {
-            LOGE("%s: PEC mismatch (Addr:0x%02X, Cmd:0x%02X, Tx:0x%04X, Rx:0x%04X, Calc:0x%02X, Recv:0x%02X)\n",
-                 __func__, slaveAddr, cmdCode, (U16)((highByte << 8) | lowByte),
-                 (U16)((rxBuffer[1] << 8) | rxBuffer[0]), expectedPec, receivedPec);
+        U8 rxBuffer[3]; /* low + high + pec */
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, 3);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read phase failed, ret=%d\n", __func__, ret);
             return -EIO;
         }
-    }
 
-    /* --- 6. Copy Response Data to User Buffer (Little-endian) --- */
-    param->param.processCall.rbuffer[0] = rxBuffer[0];  /* Response low byte */
-    param->param.processCall.rbuffer[1] = rxBuffer[1];  /* Response high byte */
+        /* Calculate PEC: Address(W) + Command + Address(R) + ResponseData */
+        U8 pec = smbusCrc8CalcOne(0, (U8)(slave7 << 1));
+        pec = smbusCrc8CalcOne(pec, cmdCode);
+        pec = smbusCrc8CalcOne(pec, (U8)((slave7 << 1) | SMBUS_I2C_READ_MODE));
+        pec = smbusCrc8CalcOne(pec, rxBuffer[0]); /* response low */
+        pec = smbusCrc8CalcOne(pec, rxBuffer[1]); /* response high */
 
-    /* Update read length indicator */
-    if (param->param.processCall.readLen) {
-        *param->param.processCall.readLen = 2;  /* Process Call always returns 2 bytes */
+        if (pec != rxBuffer[2]) {
+            LOGE("%s(): PEC mismatch: calc=0x%02X, recv=0x%02X\n",
+                 __func__, pec, rxBuffer[2]);
+            return -EIO;
+        }
+
+        param->param.processCall.rbuffer[0] = rxBuffer[0];
+        param->param.processCall.rbuffer[1] = rxBuffer[1];
+        if (param->param.processCall.readLen) *param->param.processCall.readLen = 2;
+    } else {
+        U8 rxBuffer[2];
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, 2);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read phase failed, ret=%d\n", __func__, ret);
+            return -EIO;
+        }
+
+        param->param.processCall.rbuffer[0] = rxBuffer[0];
+        param->param.processCall.rbuffer[1] = rxBuffer[1];
+        if (param->param.processCall.readLen) *param->param.processCall.readLen = 2;
     }
 
     return EXIT_SUCCESS;
 }
 
 /**
- * @brief Block Process Call protocol implementation (SMBus 3.1) - Optimized Version
- * @details Writes a command and data block, then reads a data block response with improved performance.
- * Sequence: [S] [Addr|W] [Cmd] [CntW] [DataW...] [Sr] [Addr|R] [CntR] [DataR...] [PEC] [P]
- * @param[in]     smbusDev SMBus device handle
- * @param[in,out] param    Protocol parameters with write/read buffers
- * @param[in]     pecEn    PEC enable flag
- * @return EXIT_SUCCESS or negative error code
+ * @brief Block Process Call protocol implementation
+ * @details Implements SMBus Block Process Call protocol with optional PEC support.
+ *          Writes command, count and data block, then reads response count and data block.
+ * @param[in] halOps HAL operations structure
+ * @param[in] smbusDev SMBus device structure
+ * @param[in,out] param Protocol parameters containing command and block data
+ * @param[in] pecEn PEC enable flag
+ * @return EXIT_SUCCESS on success, negative error code on failure
  */
-static S32 smbusBlockProcessCallProtocol(SmbusDev_s *smbusDev, SmbusParam_s *param, bool pecEn)
+static S32 smbusBlockProcessCallProtocol(SmbusHalOps_s *halOps, SmbusDev_s *smbusDev,
+                                        SmbusParam_s *param, bool pecEn)
 {
-    S32 ret;
-    const U8 slaveAddr = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
+    S32 ret = EXIT_SUCCESS;
+    U8 slave7 = param->base.slaveAddr & SMBUS_ADDRESS_MASK;
 
-    /* Enhanced Parameter Validation */
     if (param->param.processCall.wbuffer == NULL ||
         param->param.processCall.rbuffer == NULL ||
-        param->param.processCall.wlen == 0 ||
-        param->param.processCall.wlen > SMBUS_BLOCK_MAXLEN) {
-        LOGE("%s: Invalid parameters for Block Process Call (wlen:%d, max:%d)\n",
+        param->param.processCall.wlen == 0) {
+        return -EINVAL;
+    }
+
+    if (param->param.processCall.wlen > SMBUS_BLOCK_MAXLEN) {
+        LOGE("%s(): Write block length %d exceeds maximum %d\n",
              __func__, param->param.processCall.wlen, SMBUS_BLOCK_MAXLEN);
         return -EINVAL;
     }
 
-    const U8 cmdCode = param->param.processCall.cmdCode;
-    const U8 wLen = (U8)param->param.processCall.wlen;
+    U8 cmdCode = param->param.processCall.cmdCode;
+    U8 writeCount = (U8)param->param.processCall.wlen;
 
-    /*
-     * Stack-allocated Buffer Management (Optimized Performance)
-     * Tx: Cmd(1) + Count(1) + Data(32) = 34 Max
-     * Rx: Count(1) + Data(32) + PEC(1) = 34 Max
-     * Total stack usage: ~68 bytes (vs original malloc/free overhead)
-     */
-    U8 txBuffer[SMBUS_BLOCK_MAXLEN + 2];
-    U8 rxBuffer[SMBUS_BLOCK_MAXLEN + 2];
-
-    /* --- 1. Prepare Write Message --- */
-    txBuffer[0] = cmdCode;                              /* Command code */
-    txBuffer[1] = wLen;                                 /* Write byte count */
-    memcpy(&txBuffer[2], param->param.processCall.wbuffer, wLen);  /* Write data */
-
-    /* --- 2. Prepare Atomic I2C Messages --- */
-    /*
-     * Message 0: Write Block (Cmd + Count + Data)
-     * Message 1: Read Block  (Count + Data + PEC)
-     * Note: Request maximum length since response size is unknown at this point
-     */
-    const U16 rxReqLen = pecEn ? (SMBUS_BLOCK_MAXLEN + 2) : (SMBUS_BLOCK_MAXLEN + 1);
-
-    SmbusMsg_s msgs[2] = {
-        {
-            .addr  = slaveAddr,
-            .flags = 0,                         /* Write operation */
-            .len   = (U16)(2 + wLen),           /* Cmd + Count + Data length */
-            .buf   = txBuffer
-        },
-        {
-            .addr  = slaveAddr,
-            .flags = SMBUS_M_RD,                /* Read operation (corrected macro) */
-            .len   = rxReqLen,                  /* Request max length for safety */
-            .buf   = rxBuffer
-        }
-    };
-
-    /* --- 3. Execute Atomic Transfer (Single HAL Call) --- */
-    ret = smbusExecuteTransfer(smbusDev, msgs, 2);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Atomic Block Process Call failed (Addr:0x%02X, Cmd:0x%02X, Wlen:%d, Ret:%d)\n",
-             __func__, slaveAddr, cmdCode, wLen, ret);
-        return ret;
+    /* Write phase: command + count + data */
+    U32 writeSize = 2 + writeCount;
+    U8 *writeBuffer = (U8 *)malloc(writeSize + (pecEn ? 1 : 0));
+    if (writeBuffer == NULL) {
+        return -ENOMEM;
     }
 
-    /* --- 4. Parse Response --- */
-    /* First byte of RX buffer is the response byte count */
-    const U8 rLen = rxBuffer[0];
+    writeBuffer[0] = cmdCode;
+    writeBuffer[1] = writeCount;
+    memcpy(&writeBuffer[2], param->param.processCall.wbuffer, writeCount);
 
-    if (rLen == 0 || rLen > SMBUS_BLOCK_MAXLEN) {
-        LOGE("%s: Invalid response block length %d (Addr:0x%02X, Cmd:0x%02X, Max:%d)\n",
-             __func__, rLen, slaveAddr, cmdCode, SMBUS_BLOCK_MAXLEN);
+    if (pecEn) {
+        /* Calculate PEC for write phase */
+        U8 pec = smbusPecPktConstruct(slave7, true, writeBuffer, writeSize);
+        writeBuffer[writeSize] = pec;
+
+        ret = halOps->i2cWrite(smbusDev, slave7, writeBuffer, writeSize + 1);
+    } else {
+        ret = halOps->i2cWrite(smbusDev, slave7, writeBuffer, writeSize);
+    }
+
+    free(writeBuffer);
+
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s(): Write phase failed, ret=%d\n", __func__, ret);
+        return -EIO;
+    }
+
+    /* Read phase: read response count */
+    U8 readCount = 0;
+    ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, &readCount, 1);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s(): Read response count failed, ret=%d\n", __func__, ret);
+        return -EIO;
+    }
+
+    if (readCount == 0 || readCount > SMBUS_BLOCK_MAXLEN) {
+        LOGE("%s(): Invalid response count: %d\n", __func__, readCount);
         return -EPROTO;
     }
 
-    /* --- 5. Validate PEC (if enabled) --- */
-    if (pecEn) {
-        /*
-         * PEC Calculation covers the ENTIRE transaction for SMBus 3.1 compliance:
-         * Addr(W) + Cmd + CntW + DataW... + Addr(R) + CntR + DataR...
-         */
-
-        /* Construct temporary buffer for continuous CRC calculation */
-        /* Max Size: AddrW(1)+Cmd(1)+CntW(1)+DataW(32) + AddrR(1)+CntR(1)+DataR(32) = 70 bytes */
-        U8 pecCalcBuf[72];  /* Slightly larger for safety */
-        U32 pIdx = 0;
-
-        /* Write Phase Data Stream */
-        pecCalcBuf[pIdx++] = (U8)(slaveAddr << 1);        /* Addr + Write bit */
-        pecCalcBuf[pIdx++] = cmdCode;                     /* Command code */
-        pecCalcBuf[pIdx++] = wLen;                        /* Write count */
-        memcpy(&pecCalcBuf[pIdx], param->param.processCall.wbuffer, wLen);
-        pIdx += wLen;
-
-        /* Read Phase Data Stream */
-        pecCalcBuf[pIdx++] = (U8)((slaveAddr << 1) | SMBUS_I2C_READ_MODE); /* Addr + Read bit */
-        pecCalcBuf[pIdx++] = rLen;                        /* Read count */
-        memcpy(&pecCalcBuf[pIdx], &rxBuffer[1], rLen);    /* Read data */
-        pIdx += rLen;
-
-        /* Calculate Expected PEC over complete transaction */
-        /* Pass 'false' to treat buffer as raw data stream (no address prefix) */
-        const U8 expectedPec = smbusPecPktConstruct(slaveAddr, false, pecCalcBuf, pIdx);
-
-        /* PEC byte is located after the data block: rxBuffer[1 + rLen] */
-        const U8 receivedPec = rxBuffer[1 + rLen];
-
-        if (expectedPec != receivedPec) {
-            LOGE("%s: PEC mismatch (Addr:0x%02X, Cmd:0x%02X, Wlen:%d, Rlen:%d, Calc:0x%02X, Recv:0x%02X)\n",
-                 __func__, slaveAddr, cmdCode, wLen, rLen, expectedPec, receivedPec);
-            return -EIO;
-        }
+    /* Limit read size to buffer capacity */
+    U8 actualReadCount = readCount;
+    if (actualReadCount > param->param.processCall.rlen) {
+        actualReadCount = (U8)param->param.processCall.rlen;
     }
 
-    /* --- 6. Safe Data Copy to User Buffer --- */
-    /* Handle user buffer size limitations safely */
-    const U8 userBufLen = (U8)param->param.processCall.rlen;
-    const U8 copyLen = (rLen < userBufLen) ? rLen : userBufLen;
+    /* Read response data (and optional PEC) */
+    if (pecEn) {
+        U8 *rxBuffer = (U8 *)malloc(actualReadCount + 1);
+        if (rxBuffer == NULL) {
+            return -ENOMEM;
+        }
 
-    memcpy(param->param.processCall.rbuffer, &rxBuffer[1], copyLen);
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, rxBuffer, actualReadCount + 1);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read response data failed, ret=%d\n", __func__, ret);
+            free(rxBuffer);
+            return -EIO;
+        }
 
-    /* Always return actual received length for user information */
-    if (param->param.processCall.readLen) {
-        *param->param.processCall.readLen = rLen;
+        /* Calculate PEC: Address(W) + Command + Address(R) + Count + Data */
+        U8 pec = smbusPecPktConstruct(slave7, true, &cmdCode, 1);
+
+        U8 pecInput[1 + actualReadCount];
+        pecInput[0] = readCount;
+        memcpy(&pecInput[1], rxBuffer, actualReadCount);
+        pec = smbusPecPktConstruct(slave7, false, pecInput, 1 + actualReadCount);
+
+        if (pec != rxBuffer[actualReadCount]) {
+            LOGE("%s(): PEC mismatch: calc=0x%02X, recv=0x%02X\n",
+                 __func__, pec, rxBuffer[actualReadCount]);
+            free(rxBuffer);
+            return -EIO;
+        }
+
+        memcpy(param->param.processCall.rbuffer, rxBuffer, actualReadCount);
+        if (param->param.processCall.readLen) *param->param.processCall.readLen = actualReadCount;
+        free(rxBuffer);
+    } else {
+        ret = halOps->i2cWriteRead(smbusDev, slave7, NULL, 0, param->param.processCall.rbuffer, actualReadCount);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("%s(): Read response data failed, ret=%d\n", __func__, ret);
+            return -EIO;
+        }
+
+        if (param->param.processCall.readLen) *param->param.processCall.readLen = actualReadCount;
     }
 
     return EXIT_SUCCESS;
@@ -1423,6 +1206,7 @@ static S32 smbusBlockProcessCallProtocol(SmbusDev_s *smbusDev, SmbusParam_s *par
  * @warning This function is not thread-safe
  * @warning Caller must ensure pointers are valid
  *
+ * [CORE] Core protocol layer - ARP device management
  */
 static SmbusArpDeviceNode_s* ArpDevFind(SmbusArpMaster_s *master, const SmbusUdid_s *udid)
 {
@@ -1480,8 +1264,8 @@ S32 smbusMasterOperation(DevList_e devId, SmbusParam_s *param)
     bool pecEn = (param->base.enablePec != 0);
 
     /* Get HAL operations */
-    // HAL operations already registered in device structure
-    if (pDrvData->pSmbusDev.halOps == NULL) {
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL) {
         LOGE("%s(): HAL operations not available\n", __func__);
         ret = -ENOTSUP;
         goto unlock;
@@ -1500,47 +1284,47 @@ S32 smbusMasterOperation(DevList_e devId, SmbusParam_s *param)
     /* Dispatch to appropriate protocol handler */
     switch (param->protocol) {
     case SMBUS_PROTOCOL_QUICK_CMD:
-        ret = smbusQuickCmdProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusQuickCmdProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_SEND_BYTE:
-        ret = smbusSendByteProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusSendByteProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_RECEIVE_BYTE:
-        ret = smbusReceiveByteProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusReceiveByteProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_WRITE_BYTE:
-        ret = smbusWriteByteProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusWriteByteProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_READ_BYTE:
-        ret = smbusReadByteProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusReadByteProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_WRITE_WORD:
-        ret = smbusWriteWordProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusWriteWordProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_READ_WORD:
-        ret = smbusReadWordProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusReadWordProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_BLOCK_WRITE:
-        ret = smbusBlockWriteProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusBlockWriteProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_BLOCK_READ:
-        ret = smbusBlockReadProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusBlockReadProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_PROCESS_CALL:
-        ret = smbusProcessCallProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusProcessCallProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     case SMBUS_PROTOCOL_BLOCK_PROCESS_CALL:
-        ret = smbusBlockProcessCallProtocol(&pDrvData->pSmbusDev, param, pecEn);
+        ret = smbusBlockProcessCallProtocol(halOps, &pDrvData->pSmbusDev, param, pecEn);
         break;
 
     default:
@@ -1565,13 +1349,13 @@ S32 smbusHostNotifyCmd(DevList_e devId, SmbusHostNotifyData_s *data)
     /* Step 0: Parameter validation */
     if (data == NULL) {
         ret = -EINVAL;
-        return ret;
+        goto exit;
     }
 
     /* Check driver lock and validate */
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        return ret;
+        goto exit;
     }
 
     ///< Get register base
@@ -1581,22 +1365,16 @@ S32 smbusHostNotifyCmd(DevList_e devId, SmbusHostNotifyData_s *data)
         goto exit;
     }
 
-    /* Step 4: Get driver data and check HAL operations */
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS || pDrvData == NULL) {
-        LOGE("%s(): Failed to get driver data\n", __func__);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->hostNotifyCore == NULL) {
+    /* Step 4: Get HAL operations */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->hostNotifyCore == NULL) {
         LOGE("%s(): HAL operations not available\n", __func__);
         ret = -ENOTSUP;
         goto unlock;
     }
 
     /* Step 5: Call HAL layer Host Notify core function */
-    ret = pDrvData->pSmbusDev.halOps->hostNotifyCore(regBase, data);
+    ret = halOps->hostNotifyCore(regBase, data);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): HAL Host Notify failed, ret=%d\n", __func__, ret);
         goto exit;
@@ -1703,21 +1481,15 @@ S32 smbusDevAddrAssign(DevList_e devId, U8 assignAddr)
         return -EINVAL;
     }
 
-    /* Get driver data and HAL operations */
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS || pDrvData == NULL) {
-        LOGE("%s(): Failed to get driver data\n", __func__);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->devAddrAssignCore == NULL) {
+    /* Get HAL operations */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->devAddrAssignCore == NULL) {
         ret = -ENOTSUP;
         goto unlock;
     }
 
     /* Call core layer function */
-    ret = pDrvData->pSmbusDev.halOps->devAddrAssignCore(regBase, assignAddr);
+    ret = halOps->devAddrAssignCore(regBase, assignAddr);
 
 unlock:
     devUnlockByDriver(devId);
@@ -1769,7 +1541,7 @@ S32 smbusArpResetDeviceGeneral(DevList_e devId)
     /* Check driver lock and validate */
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        return ret;
+        goto exit;
     }
 
     ///< Get register base
@@ -1781,15 +1553,9 @@ S32 smbusArpResetDeviceGeneral(DevList_e devId)
 
     LOGD("%s: Sending general reset command\n", __func__);
 
-    ///< Get driver data and HAL operations for TX checks
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS || pDrvData == NULL) {
-        LOGE("%s(): Failed to get driver data\n", __func__);
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->checkTxReady == NULL) {
+    ///< Get HAL operations for TX checks
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->checkTxReady == NULL) {
         LOGE("%s: HAL operations not available\n", __func__);
         ret = -ENOTSUP;
         goto unlock;
@@ -1799,7 +1565,7 @@ S32 smbusArpResetDeviceGeneral(DevList_e devId)
     regBase->icTar.fields.icTar = defaultAddr;
 
     ///< Step 2: Send Reset Device command byte (without STOP)
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: TX ready timeout for reset command\n", __func__);
         ret = -ETIMEDOUT;
@@ -1811,7 +1577,7 @@ S32 smbusArpResetDeviceGeneral(DevList_e devId)
     pecData = smbusPecPktConstruct(defaultAddr, true, &resetCmd, 1);  ///<<false表示Write
 
     ///< Step 4: Send PEC byte with STOP bit
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: TX ready timeout for PEC\n", __func__);
         ret = -ETIMEDOUT;
@@ -1821,12 +1587,12 @@ S32 smbusArpResetDeviceGeneral(DevList_e devId)
     regBase->icDataCmd.fields.dat = pecData | (1 << 9);  ///<<Set STOP bit
 
     ///< Step 5: Wait for transmission to complete
-    if (pDrvData->pSmbusDev.halOps->waitTransmitComplete == NULL) {
+    if (halOps->waitTransmitComplete == NULL) {
         LOGE("%s: HAL waitTransmitComplete not available\n", __func__);
         ret = -ENOTSUP;
         goto unlock;
     }
-    ret = pDrvData->pSmbusDev.halOps->waitTransmitComplete(regBase);
+    ret = halOps->waitTransmitComplete(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: General reset transmission failed\n", __func__);
         goto unlock;
@@ -1836,7 +1602,7 @@ S32 smbusArpResetDeviceGeneral(DevList_e devId)
     abrtSource.value = regBase->icTxAbrtSource.value;
     if ((abrtSource.value & SMBUS_ARP_ABORT_MASK) != 0) {
         LOGE("%s: General reset failed, abort source=0x%08X\n", __func__, abrtSource.value);
-///<清除abort状态
+///<<清除abort状态
         regBase->icClrTxAbrt = 1;
         ret = -EIO;
         goto unlock;
@@ -1884,6 +1650,8 @@ exit:
  * @warning May fail if no devices are listening at ARP address
  * @warning Multiple devices responding may cause bus contention
  * @warning Only discovers one device at a time - use directed commands for specific devices
+ *
+ * [MASTER_API] Master API layer - ARP protocol operations
  */
 S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
 {
@@ -1908,7 +1676,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
     /* Check driver lock and validate */
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        return ret;
+        goto exit;
     }
 
     /* Get register base */
@@ -1920,16 +1688,10 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
 
     LOGD("%s: Getting UDID from general address\n", __func__);
 
-    ///< Get driver data and HAL operations for TX/RX checks
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS || pDrvData == NULL) {
-        LOGE("%s(): Failed to get driver data\n", __func__);
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->checkTxReady == NULL ||
-        pDrvData->pSmbusDev.halOps->checkRxReady == NULL) {
+    ///< Get HAL operations for TX/RX checks
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->checkTxReady == NULL || 
+        halOps->checkRxReady == NULL) {
         LOGE("%s: HAL operations not available\n", __func__);
         ret = -ENOTSUP;
         goto unlock;
@@ -1940,7 +1702,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
 
     ///< Step 2: Send Get UDID command (Write phase)
     ///< S + Address(Write) + Command
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: TX ready timeout for Get UDID command\n", __func__);
         ret = -ETIMEDOUT;
@@ -1953,7 +1715,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
     ///< Sr + Address(Read) + Byte Count
     
     ///< 首先发送Read命令以触发Repeated Start + 读取Byte Count
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: TX ready timeout for read command\n", __func__);
         ret = -ETIMEDOUT;
@@ -1963,7 +1725,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
     regBase->icDataCmd.value = (1 << 8);  ///<<CMD_READ bit
 
     ///< Step 4: Read Byte Count
-    ret = pDrvData->pSmbusDev.halOps->checkRxReady(regBase);
+    ret = halOps->checkRxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: RX ready timeout for byte count\n", __func__);
         ret = -ETIMEDOUT;
@@ -1982,7 +1744,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
 
     ///< Step 5: Issue read commands for 17 data bytes
     for (i = 0; i < 17; i++) {
-        ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+        ret = halOps->checkTxReady(regBase);
         if (ret != EXIT_SUCCESS) {
             LOGE("%s: TX ready timeout for read command %d\n", __func__, i);
             ret = -ETIMEDOUT;
@@ -1993,7 +1755,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
     }
 
     ///< Step 6: Issue read command for PEC byte (with STOP)
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: TX ready timeout for PEC read command\n", __func__);
         ret = -ETIMEDOUT;
@@ -2004,7 +1766,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
 
     ///< Step 7: Read 17 data bytes
     for (i = 0; i < 17; i++) {
-        ret = pDrvData->pSmbusDev.halOps->checkRxReady(regBase);
+        ret = halOps->checkRxReady(regBase);
         if (ret != EXIT_SUCCESS) {
             LOGE("%s: RX ready timeout for UDID data byte %d\n", __func__, i);
             ret = -ETIMEDOUT;
@@ -2014,7 +1776,7 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
     }
 
     ///< Step 8: Read PEC byte
-    ret = pDrvData->pSmbusDev.halOps->checkRxReady(regBase);
+    ret = halOps->checkRxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: RX ready timeout for PEC\n", __func__);
         ret = -ETIMEDOUT;
@@ -2348,7 +2110,7 @@ S32 smbusArpResetDeviceDirected(DevList_e devId, const SmbusUdid_s *udid)
     /* Check driver lock and validate */
     ret = smbusDrvLockAndCheck(devId);
     if (ret != EXIT_SUCCESS) {
-        return ret;
+        goto exit;
     }
 
     /* Get register base */
@@ -2359,8 +2121,8 @@ S32 smbusArpResetDeviceDirected(DevList_e devId, const SmbusUdid_s *udid)
     }
 
     ///< Get HAL operations
-    // HAL operations already registered in device structure
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->i2cWrite == NULL) {
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->i2cWrite == NULL) {
         LOGE("%s(): HAL operations not available\n", __func__);
         ret = -ENOTSUP;
         goto unlock;
@@ -2381,7 +2143,7 @@ S32 smbusArpResetDeviceDirected(DevList_e devId, const SmbusUdid_s *udid)
     LOGD("%s(): Using pDrvData->pSmbusDev directly for directed reset\n", __func__);
 
     ///< Send directed reset command to ARP address (0x61)
-    ret = pDrvData->pSmbusDev.halOps->i2cWrite(&pDrvData->pSmbusDev, SMBUS_ARP_ADDR, resetCmd, 17);
+    ret = halOps->i2cWrite(&pDrvData->pSmbusDev, SMBUS_ARP_ADDR, resetCmd, 17);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): Directed reset command failed, ret=%d\n", __func__, ret);
         ret = -EIO;
@@ -2398,6 +2160,8 @@ S32 smbusArpResetDeviceDirected(DevList_e devId, const SmbusUdid_s *udid)
 
 unlock:
     devUnlockByDriver(devId);
+
+exit:
     return ret;
 }
 
@@ -2430,13 +2194,14 @@ __attribute((unused)) static void smbusConfigureMaster(SmbusDev_s *dev)
         return;
     }
 
-    /* Check HAL operations */
-    if (dev->halOps == NULL || dev->halOps->disable == NULL) {
+    /* Get HAL operations */
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->disable == NULL) {
         return;
     }
 
     /* Disable before configuration */
-    dev->halOps->disable(dev);
+    halOps->disable(dev);
 
     /* Read current configuration */
     con.value = dev->regBase->icCon.value;
@@ -2494,14 +2259,9 @@ S32 smbusArpPrepareToArp(DevList_e devId)
 
     LOGD("%s(): Sending Prepare to ARP command\n", __func__);
 
-    ///< Get driver data and HAL operations for TX checks
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS || pDrvData == NULL) {
-        LOGE("%s(): Failed to get driver data\n", __func__);
-        return -EINVAL;
-    }
-
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->checkTxReady == NULL) {
+    ///< Get HAL operations for TX checks
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->checkTxReady == NULL) {
         LOGE("%s(): HAL operations not available\n", __func__);
         return -ENOTSUP;
     }
@@ -2510,7 +2270,7 @@ S32 smbusArpPrepareToArp(DevList_e devId)
     regBase->icTar.fields.icTar = defaultAddr;
 
     ///< Step 2: Send Prepare to ARP command
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): TX ready timeout for prepare command\n", __func__);
         return -ETIMEDOUT;
@@ -2521,7 +2281,7 @@ S32 smbusArpPrepareToArp(DevList_e devId)
     pecData = smbusPecPktConstruct(defaultAddr, true, &prepareData, 1);
     pecData = (pecData & 0xff) | (1 << 9); ///< Set STOP bit
 
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): TX ready timeout for PEC\n", __func__);
         return -ETIMEDOUT;
@@ -2529,7 +2289,7 @@ S32 smbusArpPrepareToArp(DevList_e devId)
     regBase->icDataCmd.fields.dat = pecData;
 
     ///< Step 4: Wait for transmission to complete
-    ret = pDrvData->pSmbusDev.halOps->waitTransmitComplete(regBase);
+    ret = halOps->waitTransmitComplete(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): Prepare to ARP transmission failed\n", __func__);
         return ret;
@@ -2583,14 +2343,9 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
 
     LOGD("%s(): Assigning address to device\n", __func__);
 
-    ///< Get driver data and HAL operations for TX checks
-    SmbusDrvData_s *pDrvData = NULL;
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS || pDrvData == NULL) {
-        LOGE("%s(): Failed to get driver data\n", __func__);
-        return -EINVAL;
-    }
-
-    if (pDrvData->pSmbusDev.halOps == NULL || pDrvData->pSmbusDev.halOps->checkTxReady == NULL) {
+    ///< Get HAL operations for TX checks
+    SmbusHalOps_s *halOps = smbusGetHalOps();
+    if (halOps == NULL || halOps->checkTxReady == NULL) {
         LOGE("%s(): HAL operations not available\n", __func__);
         return -ENOTSUP;
     }
@@ -2614,7 +2369,7 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
     regBase->icTar.fields.icTar = defaultAddr;
 
     ///< Step 3: Send Assign Address command
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): TX ready timeout for assign command\n", __func__);
         return -ETIMEDOUT;
@@ -2622,7 +2377,7 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
     regBase->icDataCmd.fields.dat = assignAddrCmd;
 
     ///< Step 4: Send Byte Count = 17 (16 bytes UDID + 1 byte address)
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): TX ready timeout for byte count\n", __func__);
         return -ETIMEDOUT;
@@ -2631,7 +2386,7 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
 
     ///< Step 5: Send 16-byte UDID data
     for (i = 0; i < 16; i++) {
-        ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+        ret = halOps->checkTxReady(regBase);
         if (ret != EXIT_SUCCESS) {
             LOGE("%s(): TX ready timeout for UDID data byte %d\n", __func__, i);
             return -ETIMEDOUT;
@@ -2640,7 +2395,7 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
     }
 
     ///< Step 6: Send Assigned Address
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): TX ready timeout for assigned address\n", __func__);
         return -ETIMEDOUT;
@@ -2659,7 +2414,7 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
     pec = smbusPecPktConstruct(defaultAddr, true, pec_buffer, 19);
     pec = (pec & 0xff) | (1 << 9); ///< Set STOP bit
 
-    ret = pDrvData->pSmbusDev.halOps->checkTxReady(regBase);
+    ret = halOps->checkTxReady(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): TX ready timeout for PEC\n", __func__);
         return -ETIMEDOUT;
@@ -2667,11 +2422,11 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
     regBase->icDataCmd.fields.dat = pec;
 
     ///< Step 8: Wait for transmission to complete
-    if (pDrvData->pSmbusDev.halOps->waitTransmitComplete == NULL) {
+    if (halOps->waitTransmitComplete == NULL) {
         LOGE("%s(): HAL waitTransmitComplete not available\n", __func__);
         return -ENOTSUP;
     }
-    ret = pDrvData->pSmbusDev.halOps->waitTransmitComplete(regBase);
+    ret = halOps->waitTransmitComplete(regBase);
     if (ret != EXIT_SUCCESS) {
         LOGE("%s(): Assign address transmission failed\n", __func__);
         return ret;
@@ -2710,6 +2465,7 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid)
 S32 smbusReset(DevList_e devId)
 {
     SmbusDrvData_s *pDrvData = NULL;
+    SmbusHalOps_s *halOps = NULL;
     S32 ret = EXIT_SUCCESS;
 
     LOGD("SMBus I2C Reset: Starting API reset for device %d\n", devId);
@@ -2732,8 +2488,9 @@ S32 smbusReset(DevList_e devId)
        /* Verify controller status */
     volatile U32 sar2 = pDrvData->pSmbusDev.regBase->icSar2.value;
     LOGD("SMBus I2C Reset: Controller status after reset: 0x%08X\n", sar2);
-    /* ===== 3. Check HAL Operations ===== */
-    if (pDrvData->pSmbusDev.halOps == NULL) {
+    /* ===== 3. Get HAL Operations ===== */
+    halOps = smbusGetHalOps();
+    if (halOps == NULL) {
         LOGE("SMBus I2C Reset: HAL operations not available\n");
         ret = -ENOTSUP;
         goto exit;
@@ -2745,9 +2502,9 @@ S32 smbusReset(DevList_e devId)
          pDrvData->pSmbusDev.enabled, pDrvData->pSmbusDev.busId);
 
     /* ===== 5. Perform HAL Reset Operation ===== */
-    if (pDrvData->pSmbusDev.halOps->i2cReset != NULL) {
+    if (halOps->i2cReset != NULL) {
         LOGD("SMBus I2C Reset: Using I2C reset operation (SMBus reset not available)\n");
-        ret = pDrvData->pSmbusDev.halOps->i2cReset(&pDrvData->pSmbusDev, devId);
+        ret = halOps->i2cReset(&pDrvData->pSmbusDev, devId);
     } else {
         LOGE("SMBus I2C Reset: Both SMBus and I2C reset operations not available\n");
         ret = -ENOTSUP;
@@ -2785,12 +2542,28 @@ S32 smbusReset(DevList_e devId)
     if (pDrvData->pSmbusDev.semaphoreId == 0) {
         LOGD("SMBus I2C Reset: Device semaphoreId is 0, attempting to restore device state\n");
 
-        /* CRITICAL FIX: Recreate semaphore using the static inline function */
-        S32 semRet = smbusCreateSemaphore(&pDrvData->pSmbusDev, "SMBus I2C Reset");
-        if (semRet != 0) {
-            ret = semRet;
+        /* CRITICAL FIX: Recreate semaphore using the same pattern as initialization */
+        /* Use a fixed name to avoid character calculation issues */
+        rtems_name semName = rtems_build_name('S', 'M', 'B', '0');
+
+        /* Debug: print channelNum and semName */
+        LOGD("SMBus I2C Reset: Creating semaphore with channelNum=%d, semName=0x%08X\n",
+             pDrvData->pSmbusDev.channelNum, semName);
+
+        S32 semRet = rtems_semaphore_create(semName, 0,
+                                            RTEMS_SIMPLE_BINARY_SEMAPHORE | RTEMS_FIFO, 0,
+                                            &(pDrvData->pSmbusDev.semaphoreId));
+        LOGD("SMBus I2C Reset: rtems_semaphore_create returned %d\n", semRet);
+        if (semRet != RTEMS_SUCCESSFUL) {
+            LOGE("SMBus I2C Reset: Semaphore creation failed, ret=%d, channelNum=%d\n",
+                 semRet, pDrvData->pSmbusDev.channelNum);
+            /* Ensure semaphoreId is set to 0 on failure */
+            pDrvData->pSmbusDev.semaphoreId = 0;
+            ret = -EIO;
             goto exit;
         }
+        LOGD("SMBus I2C Reset: Semaphore created successfully, ID=%d, channelNum=%d\n",
+             pDrvData->pSmbusDev.semaphoreId, pDrvData->pSmbusDev.channelNum);
 
         /* Re-initialize device state if needed */
         if (pDrvData->pSmbusDev.mode == DW_SMBUS_MODE_MASTER) {

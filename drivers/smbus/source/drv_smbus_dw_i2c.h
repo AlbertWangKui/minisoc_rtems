@@ -1,5 +1,5 @@
 /**
- * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System TechnoLOGEes Co.,Ltd
  *
  * @file drv_smbus_dw_i2c.h
  * @author wangkui (wangkui@starsmicrosystem.com)
@@ -53,10 +53,8 @@
 #define SMBUS_TRANSACTION_TIMEOUT_US  (100000U)
 #define SMBUS_ARP_ADDR                (0x61)
 #define SMBUS_HOST_NOTIFY_ADDR        (0x08)
-#define SMBUS_SLAVE_DEFAULT_ADDR      (0x21)  /**< Default SMBus slave address */
 #define SMBUS_ARP_ABORT_MASK          (0x09)
 #define SMBUS_MODE_SLAVE              (0)
-#define SMBUS_MODE_MASTER             (1)
 #define SMBUS_DEFAULT_TIMEOUT_MS      (5000)
 
 /* IC_DATA_CMD Register Bit Definitions */
@@ -68,11 +66,11 @@
 #define SMBUS_IC_CON_RESTART_EN     (1U << 5)   /* Restart enable */
 #define SMBUS_IC_CON_MASTER         (1U << 0)   /* Master mode */
 
+
 /* Forward declarations */
 typedef struct SmbusDev SmbusDev_s;
-typedef struct SmbusMsg SmbusMsg_s;
+typedef struct SmbusMsg SmbusMsg_t;
 typedef struct SmbusDrvData SmbusDrvData_s;
-
 
 #ifdef __cplusplus
 extern "C" {
@@ -187,32 +185,30 @@ typedef union SmbusIcDataCmdReg {
  */
 typedef union SmbusIcIntrStatReg {
     struct {
-        U32 rxUnder             : 1;   /**< [0] RX under - Receiver Under */
-        U32 rxOver              : 1;   /**< [1] RX over - Receiver Over */
-        U32 rxFull              : 1;   /**< [2] RX full - Receive Full */
-        U32 txOver              : 1;   /**< [3] TX over - Interrupt Transmit Over */
-        U32 txEmpty             : 1;   /**< [4] TX empty - Interrupt Transmit Empty */
-        U32 rdReq               : 1;   /**< [5] Read request - Interrupt Read Request */
-        U32 txAbrt              : 1;   /**< [6] TX abort - Interrupt TX Abort */
-        U32 rxDone              : 1;   /**< [7] RX done - Interrupt RX Done */
-        U32 activity            : 1;   /**< [8] Activity - Interrupt R_activity */
-        U32 stopDet             : 1;   /**< [9] Stop detection - Interrupt Stop Detect */
-        U32 startDet            : 1;   /**< [10] Start detection - Interrupt Start Detect */
-        U32 genCall             : 1;   /**< [11] General call - Interrupt General Call */
-        U32 restartDet          : 1;   /**< [12] Restart detection - Interrupt ReStart Detect */
-        U32 mstOnHold           : 1;   /**< [13] Master on hold - Interrupt Master On Hold */
-        U32 sclStuckAtLow       : 1;   /**< [14] SCL stuck at low - Interrupt R_SCL_STUCK_AT_LOW */
-        U32 WrReq               : 1;    /**< [15] WR request */
-        U32 slaverAddr1Tag      : 1;    /**< [16] Slave Address 1 Tag */
-        U32 slaverAdd21Tag      : 1;    /**< [17] Slave Address 2 Tag */
-        U32 slaverAddr3Tag      : 1;    /**< [18] Slave Address 3 Tag */
-        U32 slaverAddr4Tag      : 1;    /**< [19] Slave Address 4 Tag */
-        U32 reserved            : 12;   /**< [31:20] Reserved bits */
+        U32 rxUnder             : 1;   /**< [0] RX buffer underflow */
+        U32 rxOver              : 1;   /**< [1] RX buffer overflow */
+        U32 rxFull              : 1;   /**< [2] RX buffer full */
+        U32 txOver              : 1;   /**< [3] TX buffer overflow */
+        U32 txEmpty             : 1;   /**< [4] TX buffer empty */
+        U32 rdReq               : 1;   /**< [5] Read request */
+        U32 txAbrt              : 1;   /**< [6] TX abort */
+        U32 rxDone              : 1;   /**< [7] RX done */
+        U32 activity            : 1;   /**< [8] I2C activity */
+        U32 stopDet             : 1;   /**< [9] STOP condition detected */
+        U32 startDet            : 1;   /**< [10] START condition detected */
+        U32 genCall             : 1;   /**< [11] General call received */
+        U32 restartDet          : 1;   /**< [12] RESTART condition detected */
+        U32 mstOnHold           : 1;   /**< [13] Master on hold */
+        U32 sclStuckAtLow       : 1;   /**< [14] SCL stuck at low */
+        U32 reserved             : 17;  /**< [31:15] Reserved */
     } fields;
     U32 value;
 } SmbusIcIntrStatReg_u;
 
-typedef union IcIntrMask {
+/**
+ * @brief IC_INTR_MASK - Interrupt Mask Register Bitfield
+ */
+typedef union SmbusIcIntrMask {
   struct {
     uint32_t rxUnder             : 1;  /**< [0] M_RX_UNDER */
     uint32_t rxOver              : 1;  /**< [1] M_RX_OVER */
@@ -247,22 +243,22 @@ typedef union IcIntrMask {
  */
 typedef union SmbusIcRawIntrStatReg {
     struct {
-        U32 rxUnder             : 1;   /**< [0] RX under - Receiver Under */
-        U32 rxOver              : 1;   /**< [1] RX over - Receiver Over */
-        U32 rxFull              : 1;   /**< [2] RX full - Receive Full */
-        U32 txOver              : 1;   /**< [3] TX over - Interrupt Transmit Over */
-        U32 txEmpty             : 1;   /**< [4] TX empty - Interrupt Transmit Empty */
-        U32 rdReq               : 1;   /**< [5] Read request - Interrupt Read Request */
-        U32 txAbrt              : 1;   /**< [6] TX abort - Interrupt TX Abort */
-        U32 rxDone              : 1;   /**< [7] RX done - Interrupt RX Done */
-        U32 activity            : 1;   /**< [8] Activity - Interrupt R_activity */
-        U32 stopDet             : 1;   /**< [9] Stop detection - Interrupt Stop Detect */
-        U32 startDet            : 1;   /**< [10] Start detection - Interrupt Start Detect */
-        U32 genCall             : 1;   /**< [11] General call - Interrupt General Call */
-        U32 restartDet          : 1;   /**< [12] Restart detection - Interrupt ReStart Detect */
-        U32 mstOnHold           : 1;   /**< [13] Master on hold - Interrupt Master On Hold */
-        U32 sclStuckAtLow       : 1;   /**< [14] SCL stuck at low - Interrupt R_SCL_STUCK_AT_LOW */
-        U32 reserved            : 17;  /**< [31:15] Reserved bits */
+        U32 rxUnder             : 1;   /**< [0] RX buffer underflow */
+        U32 rxOver              : 1;   /**< [1] RX buffer overflow */
+        U32 rxFull              : 1;   /**< [2] RX buffer full */
+        U32 txOver              : 1;   /**< [3] TX buffer overflow */
+        U32 txEmpty             : 1;   /**< [4] TX buffer empty */
+        U32 rdReq               : 1;   /**< [5] Read request */
+        U32 txAbrt              : 1;   /**< [6] TX abort */
+        U32 rxDone              : 1;   /**< [7] RX done */
+        U32 activity            : 1;   /**< [8] I2C activity */
+        U32 stopDet             : 1;   /**< [9] STOP condition detected */
+        U32 startDet            : 1;   /**< [10] START condition detected */
+        U32 genCall             : 1;   /**< [11] General call received */
+        U32 restartDet          : 1;   /**< [12] RESTART condition detected */
+        U32 mstOnHold           : 1;   /**< [13] Master on hold */
+        U32 sclStuckAtLow       : 1;   /**< [14] SCL stuck at low */
+        U32 reserved             : 17;  /**< [31:15] Reserved */
     } fields;
     U32 value;
 } SmbusIcRawIntrStatReg_u;
@@ -418,12 +414,7 @@ typedef struct SmbusRegMap {
     U32                          icRxflr;               /**< 0x78: RX FIFO level */
     U32                          icSdaHold;             /**< 0x7C: SDA hold time */
     SmbusIcTxAbrtSourceReg_u     icTxAbrtSource;        /**< 0x80: TX abort source */
-    U32                          icSlvDataNackOnly;     /**< 0x84: Generate Slave Data NACK */
-    U32                          icDmaCr;               /**< 0x88: DMA Control Register */
-    U32                          icDmaTdlr;             /**< 0x8C: DMA Transmit Data Level */
-    U32                          icDmaRdlr;             /**< 0x90: DMA Receive Data Level */
-    U32                          icSdaSetup;            /**< 0x94: I2C SDA Setup Register */
-
+    U32                          reserved2[5];          /**< 0x84-0x94: Reserved */
     U32                          icAckGeneralCall;      /**< 0x98: ACK general call */
     U32                          icEnableStatus;        /**< 0x9C: Enable status */
     U32                          icFsSpklen;            /**< 0xA0: Fast speed spike length */
@@ -431,11 +422,7 @@ typedef struct SmbusRegMap {
     U32                          icClrRestartDet;       /**< 0xA8: Clear RESTART detection */
     U32                          icSclStuckTimeout;     /**< 0xAC: SCL stuck at low timeout */
     U32                          icSdaStuckTimeout;     /**< 0xB0: SDA stuck at low timeout */
-    U32                          icClrSclStuckDet;      /**< 0xB4: Clear SCL Stuck at Low Detect */
-    U32                          icDeviceId;            /**< 0xB8: I2C Device ID */
-    U32                          icSmbusClkLowSext;     /**< 0xBC: SMBus Slave Clock Extend Timeout */
-    U32                          icSmbusClkLowMext;     /**< 0xC0: SMBus Master Clock Extend Timeout */
-    U32                          icSmbusThighMaxIdleCount; /**< 0xC4: SMBus Master THigh MAX Bus-idle count */
+    U32                          reserved3[5];          /**< 0xB4-0xC4: Reserved */
     SmbusIntrStatReg_u           icSmbusIntrStat;       /**< 0xC8: SMBus interrupt status */
     U32                          icSmbusIntrMask;       /**< 0xCC: SMBus interrupt mask */
     SmbusIntrStatReg_u           icSmbusRawIntrStat;    /**< 0xD0: SMBus raw interrupt status */
@@ -445,17 +432,12 @@ typedef struct SmbusRegMap {
     SmbusUdidWordReg_u           icSmbusUdidWord1;      /**< 0xE0: UDID word 1 */
     SmbusUdidWordReg_u           icSmbusUdidWord2;      /**< 0xE4: UDID word 2 */
     SmbusUdidWordReg_u           icSmbusUdidWord3;      /**< 0xE8: UDID word 3 */
-    U32                          reserved4;             /**< 0xEC: Reserved (Still undefined in docs provided) */
-    U32                          icRegTimeoutRst;       /**< 0xF0: Register timeout counter reset value */
+    U32                          reserved4[2];          /**< 0xEC-0xF0: Reserved */
     U32                          icCompParam1;          /**< 0xF4: Component parameter 1 */
     U32                          icCompVersion;         /**< 0xF8: Component version */
     U32                          icCompType;            /**< 0xFC: Component type */
     SmbusIcSarReg_u              icSar2;                /**< 0x100: Slave address 2 */
-    SmbusIcSarReg_u              icSar3;                /**< 0x104: Slave address 3 */
-    SmbusIcSarReg_u              icSar4;                /**< 0x108: Slave address 4 */
-    U32                          reserved5[4];          /**< 0x10C-0x118: Reserved */
-    U32                          icClrWrReq;            /**< 0x11C: Clear WR_REQ interrupt */
-    U32                          icClrSlvAddrTag;       /**< 0x120: Clear SLV_ADDR_TAG interrupt */
+    U32                          reserved5[8];          /**< 0x104-0x120: Reserved */
     SmbusUdidWordReg_u           icSmbus2UdidWord0;     /**< 0x124: SAR2 UDID word 0 */
     SmbusUdidWordReg_u           icSmbus2UdidWord1;     /**< 0x128: SAR2 UDID word 1 */
     SmbusUdidWordReg_u           icSmbus2UdidWord2;     /**< 0x12C: SAR2 UDID word 2 */
@@ -490,32 +472,36 @@ typedef struct SmbusHalOps {
     S32 (*i2cWrite)(SmbusDev_s *dev, U16 slaveAddr, const U8 *dataBuf, U32 length);
     S32 (*i2cRead)(SmbusDev_s *dev, U16 slaveAddr, U8 *dataBuf, U32 length);
     S32 (*i2cWriteRead)(SmbusDev_s *dev, U16 slaveAddr, const U8 *writeBuf, U32 writeLen, U8 *readBuf, U32 readLen);
-    S32 (*i2cTransfer)(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num);  /**< Generic I2C transfer with message array */
     S32 (*i2cReset)(SmbusDev_s *dev, DevList_e devId);
     void (*smbusDwRead)(SmbusDrvData_s *pDrvData);
     void (*smbusDwXferMsg)(SmbusDev_s *dev);    ///< block write TX empty used
-    void (*configureSlave)(SmbusDev_s *dev);        ///< Configure SMBus device for slave mode
 } SmbusHalOps_s;
 
 /* ======================================================================== */
 /*                      HAL Export Functions                                 */
 /* ======================================================================== */
 
-
-/**
- * @brief Generic I2C transfer function
- * @param[in] dev SMBus device handle
- * @param[in] msgs Array of I2C messages
- * @param[in] num Number of messages in array
- * @return EXIT_SUCCESS on success, negative error code on failure
- */
-S32 smbusI2cTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num);
-
 /**
  * @brief Get HAL function pointers for external use
  * @return Pointer to HAL operations structure
  */
 SmbusHalOps_s* smbusGetHalOps(void);
+
+/**
+ * @brief Core SMBus device address assignment LOGEc
+ * @details Implements the core LOGEc for assigning an address to an SMBus
+ *          device using ARP protocol. This function configures the controller
+ *          and performs the address assignment sequence.
+ * @param[in] regBase Pointer to the SMBus controller register base
+ * @param[in] assign_addr Address to assign to the device
+ * @return EXIT_SUCCESS on success, negative error code on failure
+ *
+ * @note Configures controller for 7-bit addressing
+ * @note Sets target address to SMBUS_ARP_ADDR
+ * @note Calls ARP address assignment protocol
+ * @warning This function should only be called in Master mode
+ * [HAL] Hardware abstraction layer - ARP protocol operations
+ */
 
 /**
  * @brief SMBus master probe function compatible with I2C initialization
@@ -606,6 +592,104 @@ S32 smbusUnprobeSlave(SmbusDev_s *dev);
  */
 S32 smbusCalcFifoSize(SmbusDev_s *dev);
 
+/**
+ * @brief SMBus Host Notify core function
+ * @details Implements the SMBus Host Notify protocol at the HAL layer.
+ *          This function sends a Host Notify command to notify the host
+ *          about device status changes using the SMBus Host Notify protocol.
+ * @param[in] regBase Pointer to SMBus register map base address
+ * @param[in] data Pointer to Host Notify data structure containing device address and status data
+ * @return EXIT_SUCCESS on successful transmission, negative error code on failure:
+ *         -EINVAL: Invalid parameters (NULL regBase or data)
+ *         -EBUSY: Bus is busy or controller is not ready
+ *         -EIO: Transmission failed or timeout occurred
+ *         -EPROTO: Protocol error during communication
+ *
+ * @note Implements SMBus Host Notify protocol according to specification
+ * @note Uses SMBus Host Notify fixed address (0x08) for communication
+ * @note Sends device address followed by 16-bit status data
+ * @note Handles bus idle checking and transmission completion
+ * @note Configures controller for Host Notify operation
+ * @warning This function should only be called in Master mode
+ * @warning Caller must ensure proper device locking before calling this function
+ * [HAL] Hardware abstraction layer - Host Notify protocol operations
+ */
+
+/**
+ * @brief SMBus Master/Slave mode switch core function
+ * @details Implements the core LOGEc for switching between Master and Slave modes
+ *          at the HAL layer. This function handles the hardware reconfiguration
+ *          required to safely switch between operational modes.
+ * @param[in] dev Pointer to SMBus device structure
+ * @param[in] targetMode Target mode to switch to (SMBUS_MODE_MASTER or SMBUS_MODE_SLAVE)
+ * @return EXIT_SUCCESS on successful mode switch, negative error code on failure:
+ *         -EINVAL: Invalid parameters (NULL dev or invalid target mode)
+ *         -EBUSY: Bus is busy and cannot be switched
+ *         -EIO: Hardware configuration failed
+ *         -ETIMEDOUT: Bus idle wait timeout
+ *
+ * @note Disables controller before reconfiguration
+ * @note Waits for bus to be idle before mode switch
+ * @note Configures controller for target mode (master or slave)
+ * @note Re-enables controller after successful reconfiguration
+ * @note Handles both master-to-slave and slave-to-master transitions
+ * @warning This function should be called with proper device locking
+ * @warning Controller is temporarily disabled during mode switch
+ * @warning All ongoing transfers will be aborted during mode switch
+ * [HAL] Hardware abstraction layer - mode switching operations
+ */
+
+/**
+ * @brief I2C write operation for SMBus HAL layer
+ * @details Implements I2C-compatible write operation at the HAL layer.
+ *          This function provides direct I2C write capability without
+ *          SMBus protocol overhead, enabling compatibility with I2C devices.
+ * @param[in] dev Pointer to SMBus device structure
+ * @param[in] slaveAddr 7-bit or 10-bit slave address
+ * @param[in] dataBuf Pointer to data buffer to write
+ * @param[in] length Number of bytes to write
+ * @return EXIT_SUCCESS on successful write, negative error code on failure:
+ *         -EINVAL: Invalid parameters (NULL dev or dataBuf, zero length)
+ *         -EBUSY: Bus is busy or controller is not ready
+ *         -EIO: I/O error during communication (NACK, timeout, bus error)
+ *         -ETIMEDOUT: Transfer timeout
+ *
+ * @note Configures controller for master mode operation
+ * @note Handles both 7-bit and 10-bit addressing
+ * @note Performs basic I2C write without SMBus protocol overhead
+ * @note Waits for bus idle before starting transfer
+ * @note Configures appropriate timing based on device settings
+ * @warning This function should only be called in Master mode
+ * @warning Caller must ensure proper device locking before calling this function
+ * [HAL] Hardware abstraction layer - I2C compatibility operations
+ */
+
+/**
+ * @brief I2C write-then-read operation for SMBus HAL layer
+ * @details Implements I2C-compatible write-then-read operation at the HAL layer.
+ *          This function provides direct I2C write-read capability without
+ *          SMBus protocol overhead, enabling compatibility with I2C devices.
+ * @param[in] dev Pointer to SMBus device structure
+ * @param[in] slaveAddr 7-bit or 10-bit slave address
+ * @param[in] writeBuf Pointer to data buffer to write
+ * @param[in] writeLen Number of bytes to write
+ * @param[out] readBuf Pointer to buffer to store read data
+ * @param[in] readLen Number of bytes to read
+ * @return EXIT_SUCCESS on successful operation, negative error code on failure:
+ *         -EINVAL: Invalid parameters (NULL pointers, zero lengths)
+ *         -EBUSY: Bus is busy or controller is not ready
+ *         -EIO: I/O error during communication (NACK, timeout, bus error)
+ *         -ETIMEDOUT: Transfer timeout
+ *
+ * @note Configures controller for master mode operation
+ * @note Handles both 7-bit and 10-bit addressing
+ * @note Performs combined write-then-read transaction with repeated start
+ * @note Waits for bus idle before starting transfer
+ * @note Configures appropriate timing based on device settings
+ * @warning This function should only be called in Master mode
+ * @warning Caller must ensure proper device locking before calling this function
+ * [HAL] Hardware abstraction layer - I2C compatibility operations
+ */
 
 #ifdef __cpluscplus
 }

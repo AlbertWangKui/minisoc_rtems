@@ -1,5 +1,5 @@
 /**
- * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System TechnoLOGEes Co.,Ltd
  *
  * @file drv_smbus_dw.h
  * @author wangkui (wangkui@starsmicrosystem.com)
@@ -17,20 +17,10 @@
 #include "osp_types.h"
 #include "bsp_sbr.h"
 #include <stdbool.h>
-#include "../../include/drivers/drv_smbus_api.h"
-#include "drv_smbus_dw_i2c.h"
-
-/* RTEMS includes for static inline functions */
-#include <rtems.h>
-
-/* System includes for static inline functions */
-#include <errno.h>
-
-/* Logging includes for static inline functions */
-#include "log_msg.h"
+#include "drv_smbus_api.h"
 
 #define TEST_SUITS_1
-#ifndef TEST_SUITS_1
+#ifdef TEST_SUITS_1
     #define I2C_TESTSUITE_SLAVE_ADDR (0x21) /* test slave address 0x21 == 33 */
     #define TEST_SMBUS_DEVICE_ID     (DEVICE_SMBUS0)
     #define TEST_I2C_DEVICE_ID       (DEVICE_SMBUS0) /* I2C bus 0 */
@@ -41,9 +31,6 @@
 #endif
 /* Forward declaration for SmbusRegMap structure */
 typedef struct SmbusRegMap SmbusRegMap_s;
-
-/* Forward declaration for SmbusHalOps structure */
-typedef struct SmbusHalOps SmbusHalOps_s;
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,28 +51,6 @@ extern "C" {
 #define SMBUS_UDID_SIZE               (16U)     /**< Size of the SMBus Unique Device Identifier (UDID) in bytes */
 #define SMBUS_MAX_BUFFER_SIZE         (256U)    /**< Maximum buffer size for SMBus data transfer */
 #define SMBUS_ARP_TIMEOUT_MS          (5000U)   /**< Timeout for the SMBus Address Resolution Protocol (ARP) in milliseconds */
-
-/* ======================================================================== */
-/*                    Unified I2C Transfer Constants                          */
-/* ======================================================================== */
-
-/* SMBus Block Transfer Constants */
-#define SMBUS_BLOCK_MAX                (32)      /**< Maximum SMBus block size */
-#define SMBUS_PEC_LEN                  (1)       /**< PEC (Packet Error Code) length */
-#define SMBUS_CMD_LEN                  (1)       /**< Command length */
-#define SMBUS_LEN_BYTE                 (1)       /**< Length byte size */
-#define SMBUS_ADDR_LEN                 (1)       /**< Address byte size */
-
-/* I2C Message Flags */
-#define I2C_M_RD                       0x0001    /**< I2C read direction flag */
-#define I2C_M_TEN                      0x0010    /**< Ten-bit chip address */
-#define I2C_M_DMA_SAFE                 0x0200    /**< DMA safe flag */
-
-/* Maximum Transfer Sizes */
-#define SMBUS_MAX_WRITE_BLOCK_SIZE     (SMBUS_CMD_LEN + SMBUS_LEN_BYTE + SMBUS_BLOCK_MAX + SMBUS_PEC_LEN)  /**< Max write block: Cmd + Len + Data + PEC */
-#define SMBUS_MAX_READ_BLOCK_SIZE      (SMBUS_LEN_BYTE + SMBUS_BLOCK_MAX + SMBUS_PEC_LEN)                /**< Max read block: Len + Data + PEC */
-#define SMBUS_MAX_WORD_XFER_SIZE       (SMBUS_CMD_LEN + 2 + SMBUS_PEC_LEN)                             /**< Max word transfer: Cmd + 2 bytes + PEC */
-#define SMBUS_MAX_BYTE_XFER_SIZE       (SMBUS_CMD_LEN + 1 + SMBUS_PEC_LEN)                             /**< Max byte transfer: Cmd + 1 byte + PEC */
 
 /* ======================================================================== */
 /*                       SMBus Hardware Timing Constants                      */
@@ -149,7 +114,6 @@ typedef enum SmbusTransferState {
 
 #define SMBUS_ARP_DEFAULT_ADDR (0x61)
 #define CRC8_POLY              (0x1070U << 3)
-#define	BIT(nr)			       (1UL << (nr))
 
 /* ======================================================================== */
 /*                           Named Constants                                   */
@@ -184,9 +148,9 @@ typedef enum SmbusTransferState {
 /* SAR Register Constants */
 #define SMBUS_SAR1_INTR_BIT            (1U << 4)     /**< SAR1 interrupt bit */
 #define SMBUS_SAR2_INTR_BIT            (1U << 5)     /**< SAR2 interrupt bit */
-#define SMBUS_ARP_INTR_BIT             (1U << 6)     /**< ARP interrupt bit */
-#define SMBUS_GET_UDID_INTR_BIT        (1U << 7)     /**< Get UDID interrupt bit */
-#define SMBUS_ASSIGN_ADDR_INTR_BIT     (1U << 8)     /**< Assign Address interrupt bit */
+#define SMBUS_SLV_RX_PEC_NACK_BIT      (1U << 6)     /**< Slave RX PEC NACK interrupt bit - bit [6] */
+#define SMBUS_GET_UDID_INTR_BIT        (1U << 7)     /**< Get UDID interrupt bit - bit [7] */
+#define SMBUS_ASSIGN_ADDR_INTR_BIT     (1U << 8)     /**< Assign Address interrupt bit - bit [8] */
 #define SMBUS_HOST_NOTIFY_INTR_BIT     (1U << 9)     /**< Host notify interrupt bit */
 #define SMBUS_ALERT_INTR_BIT           (1U << 10)    /**< Alert interrupt bit */
 #define SMBUS_SUSPEND_INTR_BIT         (1U << 10)    /**< Suspend interrupt bit */
@@ -233,136 +197,14 @@ typedef enum SmbusTransferState {
 #define SMBUS_IC_INTR_START_DET_MASK      (1 << 10)     /**< Start detection interrupt mask - 0x400 */
 #define SMBUS_IC_INTR_GEN_CALL_MASK       (1 << 11)     /**< General call interrupt mask - 0x800 */
 #define SMBUS_IC_INTR_RESTART_DET_MASK    (1 << 12)     /**< Restart detection interrupt mask - 0x1000 */
-#define SMBUS_IC_INTR_WR_REQ_MASK         (1 << 15)     /**< Write request interrupt mask - 0x8000 */
-#define SMBUS_IC_INTR_SLV_ADDR1_TAG_MASK  (1 << 16)     /**< Slave Address 1 Tag interrupt mask - 0x10000 */
-#define SMBUS_IC_INTR_SLV_ADDR2_TAG_MASK  (1 << 17)     /**< Slave Address 2 Tag interrupt mask - 0x20000 */
-#define SMBUS_IC_INTR_SLV_ADDR3_TAG_MASK  (1 << 18)     /**< Slave Address 3 Tag interrupt mask - 0x40000 */
-#define SMBUS_IC_INTR_SLV_ADDR4_TAG_MASK  (1 << 19)     /**< Slave Address 4 Tag interrupt mask - 0x80000 */
 
 /* All interrupts mask for clearing all interrupts */
 #define SMBUS_IC_INTR_ALL                 (0xFFFFFFFF)   /**< All interrupts mask */
 
-/* ===== SMBUS Interrupt Bit Definitions (using BIT macro) ===== */
-#define SMBUS_INTR_RX_UNDER        BIT(0)   /**< RX under interrupt */
-#define SMBUS_INTR_RX_OVER         BIT(1)   /**< RX over interrupt */
-#define SMBUS_INTR_RX_FULL         BIT(2)   /**< RX full interrupt */
-#define SMBUS_INTR_TX_OVER         BIT(3)   /**< TX over interrupt */
-#define SMBUS_INTR_TX_EMPTY        BIT(4)   /**< TX empty interrupt */
-#define SMBUS_INTR_RD_REQ          BIT(5)   /**< Read request interrupt */
-#define SMBUS_INTR_WR_REQ          BIT(15)  /**< Write request interrupt (bit 15) */
-#define SMBUS_INTR_TX_ABRT         BIT(6)   /**< TX abort interrupt */
-#define SMBUS_INTR_RX_DONE         BIT(7)   /**< RX done interrupt */
-#define SMBUS_INTR_ACTIVITY        BIT(8)   /**< Activity interrupt */
-#define SMBUS_INTR_STOP_DET        BIT(9)   /**< Stop detection interrupt */
-#define SMBUS_INTR_START_DET       BIT(10)  /**< Start detection interrupt */
-#define SMBUS_INTR_GEN_CALL        BIT(11)  /**< General call interrupt */
-#define SMBUS_INTR_RESTART_DET     BIT(12)  /**< Restart detection interrupt */
-#define SMBUS_INTR_SLV_ADDR1_TAG   BIT(16)  /**< Slave Address 1 Tag interrupt */
-#define SMBUS_INTR_SLV_ADDR2_TAG   BIT(17)  /**< Slave Address 2 Tag interrupt */
-#define SMBUS_INTR_SLV_ADDR3_TAG   BIT(18)  /**< Slave Address 3 Tag interrupt */
-#define SMBUS_INTR_SLV_ADDR4_TAG   BIT(19)  /**< Slave Address 4 Tag interrupt */
-
-/* ===== Grouped Interrupt Masks ===== */
-#define SMBUS_SLAVE_INTR_MASK ( \
-        SMBUS_INTR_WR_REQ | \
-        SMBUS_INTR_RX_FULL | \
-        SMBUS_INTR_TX_EMPTY | \
-        SMBUS_INTR_RD_REQ | \
-        SMBUS_INTR_TX_ABRT | \
-        SMBUS_INTR_RX_DONE | \
-        SMBUS_INTR_STOP_DET )                       /**< Slave mode interrupt mask (with WR_REQ) */
-
-#define SMBUS_SLAVE_INIT_INTR_MASK ( \
-        SMBUS_INTR_WR_REQ | \
-        SMBUS_INTR_RX_FULL | \
-        SMBUS_INTR_RD_REQ | \
-        SMBUS_INTR_TX_ABRT | \
-        SMBUS_INTR_RX_DONE | \
-        SMBUS_INTR_STOP_DET )                       /**< Slave mode initial interrupt mask (TX_EMPTY disabled) */
-
-#define SMBUS_SLAVE_INTERRUPT_CONFIG ( \
-        SMBUS_INTR_RX_FULL | \
-        SMBUS_INTR_RD_REQ | \
-        SMBUS_INTR_TX_ABRT | \
-        SMBUS_INTR_RX_DONE | \
-        SMBUS_INTR_STOP_DET )                       /**< Slave interrupt configuration mask */
-
-#define SMBUS_SLAVE_INTERRUPT_EXTENDED_CONFIG ( \
-        SMBUS_INTR_RX_UNDER | \
-        SMBUS_INTR_RX_OVER | \
-        SMBUS_INTR_RX_FULL | \
-        SMBUS_INTR_TX_OVER | \
-        SMBUS_INTR_RD_REQ | \
-        SMBUS_INTR_TX_ABRT | \
-        SMBUS_INTR_RX_DONE | \
-        SMBUS_INTR_ACTIVITY | \
-        SMBUS_INTR_STOP_DET | \
-        SMBUS_INTR_START_DET | \
-        SMBUS_INTR_GEN_CALL | \
-        SMBUS_INTR_RESTART_DET )                     /**< Slave extended interrupt configuration mask */
-
-#define SMBUS_MASTER_INTERRUPT_CONFIG ( \
-        SMBUS_INTR_RX_FULL | \
-        SMBUS_INTR_TX_EMPTY | \
-        SMBUS_INTR_TX_ABRT | \
-        SMBUS_INTR_STOP_DET | \
-        SMBUS_INTR_START_DET | \
-        SMBUS_INTR_ACTIVITY )                          /**< Master interrupt configuration mask */
-
-#define SMBUS_ERROR_INTERRUPT_CONFIG ( \
-        SMBUS_INTR_RX_UNDER | \
-        SMBUS_INTR_RX_OVER | \
-        SMBUS_INTR_TX_OVER | \
-        SMBUS_INTR_TX_ABRT )                        /**< Error-related interrupt configuration mask */
-
-/* ===== SMBUS Protocol Transfer Flow Based Interrupt Configurations ===== */
-#define SMBUS_SLAVE_WRITE_XFER_CONFIG ( \
-        SMBUS_INTR_WR_REQ | \
-        SMBUS_INTR_RX_FULL | \
-        SMBUS_INTR_TX_ABRT | \
-        SMBUS_INTR_STOP_DET | \
-        SMBUS_INTR_RESTART_DET | \
-        SMBUS_INTR_SLV_ADDR1_TAG )   /**< Slave write transfer config (修复添加Slave地址标签) */
-
-#define SMBUS_SLAVE_READ_XFER_CONFIG ( \
-        SMBUS_INTR_RD_REQ | \
-        SMBUS_INTR_TX_EMPTY | \
-        SMBUS_INTR_TX_ABRT | \
-        SMBUS_INTR_RX_DONE | \
-        SMBUS_INTR_STOP_DET )       /**< Slave read transfer config */
-
-#define SMBUS_SLAVE_OPTIMAL_CONFIG ( \
-        SMBUS_SLAVE_WRITE_XFER_CONFIG | \
-        SMBUS_SLAVE_READ_XFER_CONFIG )   /**< Combined slave optimal config (与probe模式一致) */
-
-#define SMBUS_ARP_ASSIGN_ADDR_MASK (1U << 7)         /**< ARP assign address command detect mask - bit [7] */
-
-#define SMBUS_MASTER_INTR_MASK ( \
-        SMBUS_INTR_TX_EMPTY | \
-        SMBUS_INTR_TX_ABRT  | \
-        SMBUS_INTR_STOP_DET )                       /**< Master mode interrupt mask (basic) */
-
 /* I2C TX Abort Source Mask Constants */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_7B_ADDR_NOACK_MASK (1U << 0)   /**< 7-bit address NACK abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_MASTER_DIS_MASK (1U << 1)      /**< Master disable abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_10B_ADDR_NOACK_MASK (1U << 2)  /**< 10-bit address NACK abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_TXDATA_NOACK_MASK (1U << 3)     /**< TX data NACK abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_GCALL_NOACK_MASK (1U << 4)      /**< General Call NACK abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_GCALL_READ_MASK (1U << 5)       /**< General Call read abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_HIGH_SPEED_NACK_MASK (1U << 6)  /**< High speed NACK abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_BYTE_NACK_MASK (1U << 7)        /**< Byte NACK abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_SDA_STUCK_LOW_MASK (1U << 8)    /**< SDA stuck low abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_ARB_LOST_MASK (1U << 9)         /**< Arbitration lost abort source mask */
-
-/* SMBus Error Types */
-#define SMBUS_ERR_TYPE_NACK_7BIT          (1)  /**< 7-bit address NACK */
-#define SMBUS_ERR_TYPE_NACK_10BIT         (2)  /**< 10-bit address NACK */
-#define SMBUS_ERR_TYPE_NACK_DATA          (3)  /**< Data NACK */
-#define SMBUS_ERR_TYPE_NACK_GCALL         (4)  /**< General Call NACK */
-#define SMBUS_ERR_TYPE_ARB_LOST           (5)  /**< Arbitration lost */
-#define SMBUS_ERR_TYPE_SDA_STUCK          (6)  /**< SDA stuck low */
-#define SMBUS_ERR_TYPE_MASTER_DISABLED    (7)  /**< Master disabled */
-#define SMBUS_ERR_TYPE_UNKNOWN            (8)  /**< Unknown abort source */
+#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_MASTER_DIS_MASK (1U << 1)  /**< Master disable abort source mask */
+#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_7B_ADDR_NOACK_MASK (1U << 0)  /**< 7-bit address NACK abort source mask */
+#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_ARB_LOST_MASK (1U << 9)     /**< Arbitration lost abort source mask */
 
 /* SDA Stuck Recovery Abort and Status Masks */
 #define SMBUS_IC_TX_ABRT_SDA_STUCK_AT_LOW_MASK (1U << 17) /**< SDA stuck at low abort mask */
@@ -371,116 +213,6 @@ typedef enum SmbusTransferState {
 /* Utility Macros */
 #define BIT(nr)                 (1UL << (nr))                    /**< Bit macro */
 #define GENMASK(h, l)           (((~0UL) << (l)) & (~0UL >> (31 - (h))))  /**< Generate mask */
-
-/* ===== Parameter Validation Macros ===== */
-/**
- * @brief Parameter validation macro with goto exit for error handling
- * @param[in] cond Condition to check (if true, error occurs)
- * @param[in] errcode Error code to return
- * @param[in] fmt Format string for error log
- * @param[in] ... Variable arguments for format string
- */
-#define SMBUS_CHECK_PARAM(cond, errcode, fmt, ...)      \
-    do {                                                \
-        if (cond) {                                     \
-            LOGE(fmt, ##__VA_ARGS__);                   \
-            ret = (errcode);                            \
-            goto exit;                                  \
-        }                                               \
-    } while (0)
-
-/**
- * @brief Parameter validation macro with direct return (no goto)
- * @param[in] cond Condition to check (if true, error occurs)
- * @param[in] errcode Error code to return
- * @param[in] fmt Format string for error log
- * @param[in] ... Variable arguments for format string
- */
-#define SMBUS_CHECK_PARAM_RETURN(cond, errcode, fmt, ...) \
-    do {                                                \
-        if (cond) {                                     \
-            LOGE(fmt, ##__VA_ARGS__);                   \
-            return (errcode);                           \
-        }                                               \
-    } while (0)
-
-/**
- * @brief Parameter validation macro for void functions
- * @param[in] cond Condition to check (if true, error occurs)
- * @param[in] fmt Format string for error log
- * @param[in] ... Variable arguments for format string
- */
-#define SMBUS_CHECK_PARAM_VOID(cond, fmt, ...)         \
-    do {                                                \
-        if (cond) {                                     \
-            LOGE(fmt, ##__VA_ARGS__);                   \
-            return;                                    \
-        }                                               \
-    } while (0)
-
-/* ===== Structure Initialization Macros ===== */
-/**
- * @brief Driver data structure initialization macro
- * @details Provides standardized initialization for SmbusDrvData_s basic fields
- */
-#define SMBUS_DRV_DATA_INIT {          \
-    .devId               = 0,           \
-    .retryCount          = 0,           \
-    .enablePec           = 0,           \
-    .txComplete          = 0,           \
-    .rxComplete          = 0,           \
-    .errorCode           = 0,           \
-    .lastError           = 0,           \
-    .errorCount          = 0,           \
-    .slaveTransferActive = 0            \
-}
-
-/**
- * @brief SMBUS device structure initialization macro
- * @details Provides standardized initialization for SmbusDev_s basic fields
- */
-#define SMBUS_DEV_INIT {              \
-    .busId               = 0,         \
-    .status              = 0,         \
-    .cmdErr              = 0,         \
-    .abortSource         = 0,         \
-    .errorType           = 0,         \
-    .enabled             = 0,         \
-    .mode                = 0,         \
-    .flags               = 0,         \
-    .transferTimeout     = 0,         \
-    .transferStartTime   = 0          \
-}
-
-/**
- * @brief ARP configuration structure initialization macro
- * @details Provides standardized initialization for ARP configuration with default values
- */
-#define SMBUS_ARP_CONFIG_INIT {      \
-    .maxRetries          = 3,         \
-    .retryStrategy       = 1,         \
-    .defaultPriority     = 1,         \
-    .autoSwitchToSlave   = 0,         \
-    .retryDelayMin       = 1,         \
-    .retryDelayMax       = 100,       \
-    .backoffMultiplier   = 2,         \
-    .failureThreshold    = 5,         \
-    .busyWaitTimeout     = 1000       \
-}
-
-/**
- * @brief ARP Master structure initialization macro
- * @details Provides standardized initialization for ARP Master context
- */
-#define SMBUS_ARP_MASTER_INIT {     \
-    .busId               = 0,         \
-    .nextAddress         = 0x10,       \
-    .addressPoolStart    = 0x10,       \
-    .addressPoolEnd      = 0x7E,       \
-    .deviceList          = NULL,       \
-    .deviceCount         = 0,          \
-    .hwContext           = NULL        \
-}
 
 /* I2C Status Mask Constants */
 #define SMBUS_IC_STATUS_SLAVE_ACTIVITY_MASK   (1U << 5)     /**< Slave activity status mask */
@@ -564,75 +296,8 @@ typedef enum SmbusTransferState {
 /* Bus Clear Control Mask */
 #define SMBUS_IC_CON_BUS_CLEAR_CTRL_MASK      (1U << 20)  /**< Bus clear control bit mask */
 
-/* ======================================================================== */
-/*                    SMBus Enable Register Macros                           */
-/* ======================================================================== */
-
-/* IC_ENABLE Register Bit Position Macros */
-#define SMBUS_IC_ENABLE_BIT                    (0)   /**< Enable bit position */
-#define SMBUS_IC_TX_CMD_BLOCK_BIT              (2)   /**< TX command block bit position */
-#define SMBUS_IC_SDA_STUCK_RECOVERY_BIT        (3)   /**< SDA stuck recovery bit position */
-#define SMBUS_IC_SMBUS_CLK_RESET_BIT           (16)  /**< SMBus clock line reset bit position */
-#define SMBUS_IC_SMBUS_SUSPEND_BIT             (17)  /**< SMBus suspend bit position */
-#define SMBUS_IC_SMBUS_ALERT_BIT               (18)  /**< SMBus alert bit position */
-#define SMBUS_IC_SAR_ENABLE_BIT                (19)  /**< SAR enable bit position */
-#define SMBUS_IC_SAR2_ENABLE_BIT               (20)  /**< SAR2 enable bit position */
-#define SMBUS_IC_SAR3_ENABLE_BIT               (21)  /**< SAR3 enable bit position */
-#define SMBUS_IC_SAR4_ENABLE_BIT               (22)  /**< SAR4 enable bit position */
-
-/* IC_ENABLE Register Bit Mask Macros */
-#define SMBUS_IC_ENABLE_MASK                   (1U << SMBUS_IC_ENABLE_BIT)               /**< Enable mask */
-#define SMBUS_IC_TX_CMD_BLOCK_MASK             (1U << SMBUS_IC_TX_CMD_BLOCK_BIT)         /**< TX command block mask */
-#define SMBUS_IC_SDA_STUCK_RECOVERY_MASK       (1U << SMBUS_IC_SDA_STUCK_RECOVERY_BIT)   /**< SDA stuck recovery mask */
-#define SMBUS_IC_SMBUS_CLK_RESET_MASK          (1U << SMBUS_IC_SMBUS_CLK_RESET_BIT)      /**< SMBus clock line reset mask */
-#define SMBUS_IC_SMBUS_SUSPEND_MASK            (1U << SMBUS_IC_SMBUS_SUSPEND_BIT)        /**< SMBus suspend mask */
-#define SMBUS_IC_SMBUS_ALERT_MASK              (1U << SMBUS_IC_SMBUS_ALERT_BIT)          /**< SMBus alert mask */
-#define SMBUS_IC_SAR_ENABLE_MASK               (1U << SMBUS_IC_SAR_ENABLE_BIT)           /**< SAR enable mask */
-#define SMBUS_IC_SAR2_ENABLE_MASK              (1U << SMBUS_IC_SAR2_ENABLE_BIT)          /**< SAR2 enable mask */
-#define SMBUS_IC_SAR3_ENABLE_MASK              (1U << SMBUS_IC_SAR3_ENABLE_BIT)          /**< SAR3 enable mask */
-#define SMBUS_IC_SAR4_ENABLE_MASK              (1U << SMBUS_IC_SAR4_ENABLE_BIT)          /**< SAR4 enable mask */
-
 /* Enable Status Mask */
 #define SMBUS_IC_ENABLE_STATUS_IC_EN          (0x01)      /**< Enable status bit mask */
-
-/* Interrupt Clearing Macros - Optimized Approach */
-/**
- * @brief Clear all SMBus interrupt status bits in a single macro call
- * @param[in] regBase Pointer to SMBus register base address
- *
- * This macro replaces verbose dummy read operations with a compact,
- * optimized approach that eliminates redundant code and unnecessary variables.
- *
- * Usage: SMBUS_CLEAR_ALL_INTERRUPTS(regBase);
- */
-#define SMBUS_CLEAR_ALL_INTERRUPTS(regBase) do { \
-    (void)(regBase)->icClrIntr;      /* Clear combined interrupt */ \
-    (void)(regBase)->icClrTxAbrt;    /* Clear TX abort */ \
-    (void)(regBase)->icClrRxUnder;   /* Clear RX underflow */ \
-    (void)(regBase)->icClrRxOver;    /* Clear RX overflow */ \
-    (void)(regBase)->icClrTxOver;    /* Clear TX overflow */ \
-    (void)(regBase)->icClrRdReq;     /* Clear read request */ \
-    (void)(regBase)->icClrRxDone;    /* Clear RX done */ \
-    (void)(regBase)->icClrActivity;  /* Clear activity */ \
-    (void)(regBase)->icClrStopDet;   /* Clear stop detection */ \
-    (void)(regBase)->icClrStartDet;  /* Clear start detection */ \
-    (void)(regBase)->icClrGenCall;   /* Clear general call */ \
-} while(0)
-
-/**
- * @brief Clear essential SMBus interrupt status bits (performance optimized)
- * @param[in] regBase Pointer to SMBus register base address
- *
- * This macro clears only the most critical interrupt bits that are
- * commonly encountered during normal operation, providing better
- * performance for frequent interrupt handling.
- */
-#define SMBUS_CLEAR_ESSENTIAL_INTERRUPTS(regBase) do { \
-    (void)(regBase)->icClrIntr;      /* Clear combined interrupt */ \
-    (void)(regBase)->icClrTxAbrt;    /* Clear TX abort */ \
-    (void)(regBase)->icClrRxDone;    /* Clear RX done */ \
-    (void)(regBase)->icClrActivity;  /* Clear activity */ \
-} while(0)
 
 /* Speed Threshold Values (Hz) */
 #define SMBUS_SPEED_HIGH_THRESHOLD            (3400000U)  /**< High speed threshold (3.4 MHz) */
@@ -681,13 +346,7 @@ typedef struct SmbusArpDeviceNode {
     struct SmbusArpDeviceNode *next;       /**< Next device in list */
 } SmbusArpDeviceNode_s;
 
-/* Configure clock rate based on speed setting using enum+lookup table */
-typedef enum {
-    SMBUS_SPEED_MODE_STANDARD = 0,   /* 100 kHz */
-    SMBUS_SPEED_MODE_FAST     = 1,   /* 400 kHz */
-    SMBUS_SPEED_MODE_FAST_PLUS = 2,  /* 1 MHz */
-    SMBUS_SPEED_MODE_MAX
-} SmbusSpeedMode_e;
+
 
 /**
  * @brief SMBus ARP Master Context Structure
@@ -721,7 +380,7 @@ typedef struct SmbusMsg {
   U16 flags;
   U16 len;
   U8 *buf;
-}SmbusMsg_s;
+}SmbusMsg_t;
 /**
  * @brief SMBus device structure (wrapper around adapter)
  */
@@ -735,8 +394,7 @@ typedef struct SmbusDev {
     U32                      status;                                /**< Device status */
     S32                      cmdErr;                                /**< Command error code */
     U32                      abortSource;                           /**< Abort source register value */
-    U32                      errorType;                             /**< Specific error type (NACK, ARB_LOST, etc.) */
-    SmbusMsg_s		         msgs[SMBUS_MAX_BLOCK_LEN + 1];         /**< SMBus messages parameters */
+    SmbusMsg_t		         msgs[SMBUS_MAX_BLOCK_LEN + 1];         /**< SMBus messages parameters */
 
     U32                      irq;                /**< Interrupt number */
     U32                      channelNum;         /**< Channel number for compatibility */
@@ -780,24 +438,20 @@ typedef struct SmbusDev {
     U16                      fpLcnt;             /**< Fast mode plus SCL low count */
     U16                      fsSpklen;           /**< Fast mode spike suppression length */
     U16                      hsSpklen;           /**< High speed spike suppression length */
-
-    /* HAL Operations - pointer to HAL function table */
-    SmbusHalOps_s            *halOps;            /**< HAL operations function table */
 } SmbusDev_s;
 
 /* SMBus status constants for async operations */
-#define SMBUS_STATUS_IDLE               (0x00000000)
-#define SMBUS_STATUS_ACTIVE             (0x00000001)  ///< Transfer in progress
-#define SMBUS_STATUS_READ_IN_PROGRESS   (0x00000002)  ///< Read operation in progress
-#define SMBUS_STATUS_WRITE_IN_PROGRESS  (0x00000004)  ///< Write operation in progress
-#define SMBUS_STATUS_MASK               (0x00000007)  ///< Status mask
+#define SMBUS_STATUS_ACTIVE          0x00000001  ///< Transfer in progress
+#define SMBUS_STATUS_READ_IN_PROGRESS 0x00000002  ///< Read operation in progress
+#define SMBUS_STATUS_WRITE_IN_PROGRESS 0x00000004  ///< Write operation in progress
+#define SMBUS_STATUS_MASK            0x00000007  ///< Status mask
 
 /* SMBus error codes */
-#define SMBUS_ERR_TX_ABRT               (0x00000001)  ///< TX abort error
-#define SMBUS_ERR_RX_UNDER              (0x00000002)  ///< RX underflow error
-#define SMBUS_ERR_RX_OVER               (0x00000004)  ///< RX overflow error
-#define SMBUS_ERR_TX_OVER               (0x00000008)  ///< TX overflow error
-#define SMBUS_ERR_ACTIVITY              (0x00000010)  ///< Activity error
+#define SMBUS_ERR_TX_ABRT             0x00000001  ///< TX abort error
+#define SMBUS_ERR_RX_UNDER            0x00000002  ///< RX underflow error
+#define SMBUS_ERR_RX_OVER             0x00000004  ///< RX overflow error
+#define SMBUS_ERR_TX_OVER             0x00000008  ///< TX overflow error
+#define SMBUS_ERR_ACTIVITY            0x00000010  ///< Activity error
 
 /* Callback function type definitions */
 typedef struct SmbusTxDoneEventData {
@@ -820,7 +474,7 @@ typedef struct SmbusSlaveReadReqEventData {
 } SmbusSlaveReadReqEventData_s;
 
 typedef struct SmbusSlaveWriteReqEventData {
-    U8  data[32];
+    U8 *data;
     U32 len;
 } SmbusSlaveWriteReqEventData_s;
 
@@ -865,7 +519,7 @@ typedef struct SmbusDrvData {
     U8                     devId;           /**< device number include device list */
     U8                     retryCount;      /**< Current retry count */
     U8                     enablePec;       /**< PEC enable */
-    U8                     enableArp;       /**< Reserved for Arp */
+    U8                     reserved1;       /**< Reserved for alignment */
     U8                     txComplete;      /**< tx COMPLETE detect flag */
     U8                     slaveTransferActive;
     U8                     *rxBuffer;
@@ -882,6 +536,7 @@ typedef struct SmbusDrvData {
     SmbusArpFailHandler_t  arpFailHandler;  /**< ARP failure handler */
     void                   *arpFailParam;   /**< ARP failure callback parameter */
     void                   *arpContext;     /**< ARP context */
+    U32                    slaveValidRxLen; /**< Slave valid RX length */
     U32                    slaveTxIndex;   /**< Slave TX buffer index */
     SmbusDev_s             pSmbusDev;      /**< SMBus device context */
     SmbusArpMaster_s       arpMaster;       /**< ARP master context */
@@ -995,7 +650,7 @@ const U8 i2cAddrConvert(U8 addrIn, bool isWrite);
  * @note Validates input parameters for safety
  * @note Returns 0xFF for invalid parameters
  */
-U8 smbusPecPktConstruct(U8 addr7bitIn, bool isWrite, const U8 *pData, U32 count);
+U8 smbusPecPktConstruct(U8 addr7bitIn, bool isWrite, U8 *pData, U32 count);
 
 /* ======================================================================== */
 /*                    ISR Helper Function Declarations                           */
@@ -1144,133 +799,6 @@ S32 ArpDevInstall(SmbusArpMaster_s *master, const SmbusUdid_s *udid, U8 address)
 S32 getSmbusReg(DevList_e devId, SmbusRegMap_s **pCtrlReg);
 
 S32 smbusDrvLockAndCheck(DevList_e devId);
-
-/* ======================================================================== */
-/*                        Static Inline Functions                           */
-/* ======================================================================== */
-
-/**
- * @brief Create SMBus semaphore with comprehensive logging and error handling
- * @param pSmbusDev Pointer to SMBus device structure
- * @param context Optional context string for logging (NULL for default)
- * @return 0 on success, -EIO on failure
- *
- * This static inline function encapsulates the common pattern of:
- * - Creating an RTEMS semaphore with fixed name
- * - Comprehensive debug logging
- * - Error handling with semaphore ID cleanup
- * - Consistent return value handling
- *
- * Usage Example:
- * @code
- * S32 ret = smbusCreateSemaphore(&pDrvData->pSmbusDev, "Init");
- * if (ret != 0) {
- *     return ret;  // Error already logged
- * }
- * @endcode
- */
-static inline S32 smbusCreateSemaphore(SmbusDev_s *pSmbusDev, const char *context)
-{
-    pSmbusDev->busId = pSmbusDev->channelNum - (U32)DEVICE_SMBUS0;  // Ensure busId is set from channelNum
-    
-    rtems_name semName = rtems_build_name('S', 'M', 'B', '0' + pSmbusDev->busId);
-
-    LOGD("%s%s: Creating semaphore with channelNum=%d, semName=0x%08X\n",
-         context ? context : "", __func__, pSmbusDev->busId, semName);
-
-    S32 semRet = rtems_semaphore_create(semName, 0,
-                                        RTEMS_SIMPLE_BINARY_SEMAPHORE | RTEMS_FIFO, 0,
-                                        &(pSmbusDev->semaphoreId));
-    LOGD("%s%s: rtems_semaphore_create returned %d\n",
-         context ? context : "", __func__, semRet);
-
-    if (semRet != RTEMS_SUCCESSFUL) {
-        LOGE("%s%s: Semaphore creation failed, ret=%d, channelNum=%d\n",
-             context ? context : "", __func__, semRet, pSmbusDev->channelNum);
-        /* Ensure semaphoreId is set to 0 on failure */
-        pSmbusDev->semaphoreId = 0;
-        return -EIO;
-    }
-
-    LOGD("%s%s: Semaphore created successfully, ID=%d, channelNum=%d\n",
-         context ? context : "", __func__, pSmbusDev->semaphoreId, pSmbusDev->channelNum);
-
-    return 0;
-}
-
-/**
- * @brief Delete SMBus semaphore with comprehensive logging
- * @param pSmbusDev Pointer to SMBus device structure
- * @param context Optional context string for logging (NULL for default)
- * @return 0 on success, -EIO on failure
- *
- * This static inline function encapsulates semaphore deletion with proper
- * logging and error handling for consistent cleanup behavior.
- */
-static inline S32 smbusDeleteSemaphore(SmbusDev_s *pSmbusDev, const char *context)
-{
-    if (pSmbusDev->semaphoreId == 0) {
-        /* Already deleted or never created */
-        return 0;
-    }
-
-    S32 semRet = rtems_semaphore_delete(pSmbusDev->semaphoreId);
-    if (semRet == RTEMS_SUCCESSFUL) {
-        LOGD("%s%s: Semaphore deleted successfully\n", context ? context : "", __func__);
-    } else {
-        LOGW("%s%s: Semaphore deletion failed, ret=%d\n", context ? context : "", __func__, semRet);
-        return -EIO;
-    }
-
-    /* Clear semaphore ID */
-    pSmbusDev->semaphoreId = 0;
-    return 0;
-}
-
-/**
- * @brief Release SMBus semaphore with comprehensive logging
- * @param pSmbusDev Pointer to SMBus device structure
- * @param context Optional context string for logging (NULL for default)
- * @return 0 on success, -EIO on failure
- *
- * This static inline function encapsulates semaphore release with proper
- * logging for debugging and error tracking.
- */
-static inline S32 smbusReleaseSemaphore(SmbusDev_s *pSmbusDev, const char *context)
-{
-    if (pSmbusDev->semaphoreId == 0) {
-        LOGE("%s%s: Invalid semaphoreId (0)\n", context ? context : "", __func__);
-        return -EIO;
-    }
-
-    S32 releaseResult = rtems_semaphore_release(pSmbusDev->semaphoreId);
-    LOGD("%s%s: Semaphore release result=%d (semId=%d)\n",
-         context ? context : "", __func__, releaseResult, pSmbusDev->semaphoreId);
-
-    if (releaseResult != RTEMS_SUCCESSFUL) {
-        LOGE("%s%s: Semaphore release failed! result=%d\n",
-             context ? context : "", __func__, releaseResult);
-        return -EIO;
-    }
-
-    return 0;
-}
-
-/**
- * @brief Generic inline helper to execute I2C transfer via HAL
- * @param[in] dev SMBus device handle
- * @param[in] msgs Array of I2C messages
- * @param[in] num Number of messages in array
- * @return Result from i2cTransfer or -ENOTSUP if HAL not available
- * @note This inline function validates HAL availability before calling transfer
- */
-static inline S32 smbusExecuteTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num)
-{
-    if (dev->halOps == NULL || dev->halOps->i2cTransfer == NULL) {
-        return -ENOTSUP;
-    }
-    return dev->halOps->i2cTransfer(dev, msgs, num);
-}
 
 #ifdef __cplusplus
 }
