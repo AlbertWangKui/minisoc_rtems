@@ -9,6 +9,7 @@
  * @par ChangeLog:
  * Date         Author          Description
  * 2025/10/20   wangkui         Initial version
+ * 2025/12/01   wangkui         refactor and simplify the code as for core function
  *
  * @note This file implements the I2C Hardware register Layer, providing
  *       direct register access functions and low-level hardware operations.
@@ -28,22 +29,15 @@
 #include "drv_smbus_dw.h"
 
 /* ======================================================================== */
-/*                    Function Forward Declarations                          */
+/*                    Function Forward Declarations                         */
 /* ======================================================================== */
-
 static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num);
 static S32 smbusWaitBusNotBusy(SmbusDev_s *dev);
 static bool smbusIsControllerActive(SmbusDev_s *dev);
 static S32 smbusHandleTxAbort(SmbusDev_s *dev);
 static S32 smbusHandleQuickCommand(SmbusDev_s *dev, SmbusMsg_s *msg);
-
-/* ======================================================================== */
-/*                    HAL Layer - Register Access Functions                  */
-/* ======================================================================== */
-
 /**
  * @brief Check if TX FIFO is ready (not full)
- * [HAL] Hardware abstraction layer - direct register access
  */
 static inline S32 smbusCheckTxready(volatile SmbusRegMap_s *regBase)
 {
@@ -54,14 +48,13 @@ static inline S32 smbusCheckTxready(volatile SmbusRegMap_s *regBase)
         if (status.fields.tfnf) {  /* TX FIFO not full */
             return 0;
         }
-        udelay(1);
+        rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(1));
     }
     return -ETIMEDOUT;
 }
 
 /**
  * @brief Check if RX FIFO has data
- * [HAL] Hardware abstraction layer - direct register access
  */
 static inline S32 smbusCheckRxready(volatile SmbusRegMap_s *regBase)
 {
@@ -72,34 +65,9 @@ static inline S32 smbusCheckRxready(volatile SmbusRegMap_s *regBase)
         if (status.fields.rfne) {  /* RX FIFO not empty */
             return 0;
         }
-        udelay(1);
+        rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(1));
     }
     return -ETIMEDOUT;
-}
-
-/**
- * @brief Wait for the current SMBus transaction to complete on the bus.
- *        This function should be called after all data has been written to the TX FIFO
- *        or after all expected data has been read from the RX FIFO.
- * @param pDrvData Pointer to the driver's private data structure.
- * @return 0 on success, -ETIMEDOUT on failure.
- * [HAL] Hardware abstraction layer - direct register access
- */
-static inline S32 waitTransmitComplete(volatile SmbusRegMap_s *regBase)
-{
-    SmbusIcStatusReg_u status;
-    U32 timeout = SMBUS_TRANSACTION_TIMEOUT_US; // Timeout may need to be longer for full transaction
-
-    while (timeout--) {
-        status.value = regBase->icStatus.value;
-        // We wait for the 'activity' bit to be cleared, indicating the
-        // master is no longer active on the bus (i.e., STOP condition has been sent).
-        if (!status.fields.activity) {
-            return 0; // Transaction completed successfully
-        }
-        rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(10));
-    }
-    return -ETIMEDOUT; // Transaction timeout
 }
 
 /**
@@ -116,7 +84,6 @@ static inline S32 waitTransmitComplete(volatile SmbusRegMap_s *regBase)
  * @note Follows SMBus Address Assignment protocol per official specification
  * @note IC_SAR[9:0] = slave address, IC_SAR_ENABLE[19] = enable in IC_ENABLE register
  * @note After enabling, system waits for address to be resolved by the master
- * [HAL] Hardware abstraction layer - direct register access
  */
 static S32 smbusSetSlaveAddr(SmbusDev_s *dev)
 {
@@ -165,10 +132,6 @@ exit:
     return ret;
 }
 
-/* ======================================================================== */
-/*                    HAL Layer - Controller Management                        */
-/* ======================================================================== */
-
 /**
  * @brief Disable SMBus controller
  * @details Safely disables the SMBus controller and waits for the
@@ -180,7 +143,6 @@ exit:
  * @note The function waits up to 1ms for the controller to be disabled
  * @note Clears the STATUS_ACTIVE flag in device status
  * @warning If timeout occurs, a warning is logged but the function continues
- * [HAL] Hardware abstraction layer - direct register access
  */
 static inline void smbusDisable(SmbusDev_s *dev)
 {
@@ -248,7 +210,6 @@ static inline void smbusEnable(SmbusDev_s *dev)
  * @note Handles both master and slave mode configurations
  * @note Configures SMBus-specific interrupts when SMBus mode is enabled
  * @note Clears pending interrupts before configuration
- * [HAL] Hardware abstraction layer - interrupt configuration
  */
 static S32 smbusConfigTransferInterrupts(SmbusDev_s *dev, volatile SmbusRegMap_s *regBase)
 {
@@ -298,474 +259,21 @@ static S32 smbusConfigTransferInterrupts(SmbusDev_s *dev, volatile SmbusRegMap_s
     return EXIT_SUCCESS;
 }
 
-/* ======================================================================== */
-/*                    HAL Layer - ARP Protocol Functions                        */
-/* ======================================================================== */
-
 /**
- * @brief SMBus ARP Reset Device command implementation
- * @details Implements the SMBus ARP Reset Device command according to the
- *          SMBus specification. This function sends the reset command to
- *          the target device at the ARP default address and includes PEC.
- * @param[in] regBase Pointer to the SMBus controller register base
- * @return EXIT_SUCCESS on success, negative error code on failure:
- *         -ETIMEDOUT: TX FIFO timeout
- *         -ENOBUFS: PEC transmission timeout
- *         -ECONNRESET: NACK detected or transmission abort
- *
- * @note Sends reset command to SMBUS_ARP_ADDR (0x61)
- * @note Includes PEC calculation and transmission
- * @note Waits for slave acknowledgment with 1ms timeout
- * @warning This function should only be called in Master mode
- * [HAL] Hardware abstraction layer - ARP protocol operations
- */
-static U32 smbusArpResetDevice(volatile SmbusRegMap_s *regBase)
-{
-    U32 ret = EXIT_SUCCESS;
-    U8 data_buf[1];
-    U8 defaultAddr = SMBUS_ARP_ADDR;
-    U32 arpResetData = 0;
-    U32 pecData = 0;
-    SmbusIcTxAbrtSourceReg_u abrtSource;
-
-    /* Step 1: Send reset device command */
-    arpResetData = ((SMBUS_CMD_GENERAL_RESET_DEVICE) & 0xff) | (0 << 8);
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = -ETIMEDOUT;
-        goto exit;
-    }
-    regBase->icDataCmd.value = arpResetData;
-
-    /* Step 2: Fill PEC */
-    data_buf[0] = SMBUS_CMD_GENERAL_RESET_DEV;
-    pecData = smbusPecPktConstruct(defaultAddr, true, data_buf, 1);
-    pecData = (pecData & 0xff) | (0 << 8) | (1 << 9);
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = ENOBUFS;
-        goto exit;
-    }
-    regBase->icDataCmd.value = pecData;
-
-    /* Wait for Slave ACK or timeout */
-    udelay(1000);
-    abrtSource.value = regBase->icTxAbrtSource.value;
-    if ((abrtSource.value & SMBUS_ARP_ABORT_MASK) != 0) {
-        /* NACK detected */
-        ret = -ECONNRESET;
-    }
-
-exit:
-    return ret;
-}
-
-/**
- * @brief SMBus ARP Address Assign command implementation
- * @details Implements the SMBus ARP Address Assign command according to the
- *          SMBus specification. This function assigns a new address to a device
- *          by sending the UDID and the assigned address to the target device.
- * @param[in] regBase Pointer to the SMBus controller register base
- * @param[in,out] udid_word0 Pointer to UDID data (32-bit word array)
- * @param[in] assign_addr Address to assign to the device
- * @return EXIT_SUCCESS on success, negative error code on failure
- *
- * @note Sends Assign Address command to SMBUS_ARP_ADDR (0x61)
- * @note Transmits 17-byte UDID data plus assigned address
- * @note Includes PEC calculation and transmission
- * @warning This function should only be called in Master mode
- * [HAL] Hardware abstraction layer - ARP protocol operations
- */
-static U32 smbusArpAddressAssign(volatile SmbusRegMap_s *regBase, U32 *udid_word0, U8 assign_addr)
-{
-    U32 ret = EXIT_SUCCESS;
-    U32 i;
-    U8 *buffer = (U8 *)udid_word0;
-    U8 data_buf[19];
-    U8 pec = 0;
-    U8 default_addr = SMBUS_ARP_ADDR;
-    U32 assignAddrCmd = 0;
-    U8 index = 0;
-
-    /* Step 1: Send Assign Address command */
-    assignAddrCmd = ((SMBUS_CMD_GENERAL_ASSIGN_ADDR) & 0xff) | (0 << 8);
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = -ETIMEDOUT;
-        goto exit;
-    }
-    regBase->icDataCmd.value = assignAddrCmd;
-    data_buf[index] = (SMBUS_CMD_GENERAL_ASSIGN_ADDR);
-    index++;
-
-    /* Step 2: Write Byte Count = 17 */
-    assignAddrCmd = ((17) & 0xff) | (0 << 8);
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = -EISCONN;
-        goto exit;
-    }
-    regBase->icDataCmd.value = assignAddrCmd;
-    data_buf[index] = 17;
-    index++;
-
-    /* Step 3: Write UDID data (16 bytes) */
-    for (i = 0; i < 16; i++) {
-        assignAddrCmd = (buffer[i] & 0xff) | (0 << 8);
-        if (smbusCheckTxready(regBase) != 0) {
-            ret = -EIO;
-            goto exit;
-        }
-        regBase->icDataCmd.value = assignAddrCmd;
-        data_buf[index] = buffer[i];
-        index++;
-    }
-
-    /* Step 4: Write Assigned Address */
-    assignAddrCmd = (assign_addr & 0xff) | (0 << 8);
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = -EIO;
-        goto exit;
-    }
-    regBase->icDataCmd.value = assignAddrCmd;
-    data_buf[index] = assign_addr;
-    index++;
-
-    /* Step 5: Calculate and send PEC */
-    pec = smbusPecPktConstruct(default_addr, true, data_buf, 18);
-    pec = (pec & 0xff) | (0 << 8) | (1 << 9);
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = -ENOBUFS;
-        goto exit;
-    }
-    regBase->icDataCmd.value = pec;
-
-exit:
-    return ret;
-}
-
-/**
- * @brief SMBus ARP Get UDID command implementation
- * @details Implements the SMBus ARP Get UDID command according to the
- *          SMBus specification. This function retrieves the UDID from
- *          the target device at the ARP default address.
- * @param[in] regBase Pointer to the SMBus controller register base
- * @param[in,out] udid_word0 Pointer to store UDID data (32-bit word array)
- * @param[in] timeout Timeout for the operation in microseconds
- * @return EXIT_SUCCESS on success, negative error code on failure
- *
- * @note Sends Get UDID command to SMBUS_ARP_ADDR (0x61)
- * @note Reads 16-byte UDID data plus PEC
- * @note Includes PEC verification
- * @warning This function should only be called in Master mode
- * [HAL] Hardware abstraction layer - ARP protocol operations
- */
-static U32 smbusUdidGet(volatile SmbusRegMap_s *regBase, U32 *udid_word0, U32 timeout)
-{
-    U32 ret = EXIT_SUCCESS;
-    U32 i;
-    U8 buffer[19];
-    U8 data_buf[20];
-    U8 pec = 0;
-    U32 data_index = 0;
-    U8 default_addr = SMBUS_ARP_ADDR;
-    U32 udidGetCmd = ((SMBUS_CMD_GENERAL_GET_UDID) & 0xff) | (0 << 8);
-    U32 data;
-
-    /* Initialize buffers */
-    memset(buffer, 0, sizeof(buffer));
-    memset(data_buf, 0, sizeof(data_buf));
-
-    /* Step 1: Send Get UDID command */
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = -EPROTO;
-        goto exit;
-    }
-    regBase->icDataCmd.value = udidGetCmd;
-
-    /* Step 2: Send Byte Count = 0 */
-    udidGetCmd = (0 & 0xff) | (1 << 8) | (1 << 10); /* Read + STOP */
-    if (smbusCheckTxready(regBase) != 0) {
-        ret = -EPROTO;
-        goto exit;
-    }
-    regBase->icDataCmd.value = udidGetCmd;
-
-    /* Step 3: Read UDID data (16 bytes) + Byte Count (1 byte) + PEC (1 byte) = 18 bytes total */
-    data_index = 0;
-
-    /* Read Byte Count first */
-    if (smbusCheckRxready(regBase) != 0) {
-        ret = -ETIMEDOUT;
-        goto exit;
-    }
-    data = regBase->icDataCmd.value;
-    buffer[data_index++] = (U8)(data & 0xFF);
-
-    /* Verify byte count should be 16 */
-    if (buffer[0] != 16) {
-        LOGW("SMBus: Unexpected UDID byte count: %d (expected 16)\n", buffer[0]);
-    }
-
-    /* Read 16-byte UDID data */
-    for (i = 0; i < 16; i++) {
-        if (smbusCheckRxready(regBase) != 0) {
-            ret = -ETIMEDOUT;
-            goto exit;
-        }
-        data = regBase->icDataCmd.value;
-        buffer[data_index++] = (U8)(data & 0xFF);
-        data_buf[data_index] = (U8)(data & 0xFF);
-    }
-
-    /* Read PEC byte */
-    if (smbusCheckRxready(regBase) != 0) {
-        ret = -ETIMEDOUT;
-        goto exit;
-    }
-    data = regBase->icDataCmd.value;
-    pec = (U8)(data & 0xFF);
-    buffer[data_index++] = pec;
-    data_buf[data_index] = pec;
-
-    /* Verify PEC */
-    data_buf[0] = SMBUS_CMD_GENERAL_GET_UDID;  /* Command */
-    data_buf[1] = 0;  /* Byte count = 0 for Get UDID */
-    U8 calculated_pec = smbusPecPktConstruct(default_addr, false, data_buf, 2 + 16);
-
-    if (calculated_pec != pec) {
-        LOGE("SMBus: UDID PEC verification failed: calculated=0x%02X, received=0x%02X\n",
-             calculated_pec, pec);
-        ret = -EIO;
-        goto exit;
-    }
-
-    /* Copy UDID data to output buffer (32-bit word array) */
-    if (udid_word0 != NULL) {
-        U8 *udid_bytes = (U8 *)udid_word0;
-        for (i = 0; i < 16; i++) {
-            udid_bytes[i] = buffer[i + 1];  /* Skip byte count, copy UDID data */
-        }
-
-        LOGD("SMBus: UDID read successfully: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-             udid_bytes[0], udid_bytes[1], udid_bytes[2], udid_bytes[3],
-             udid_bytes[4], udid_bytes[5], udid_bytes[6], udid_bytes[7]);
-        LOGD("SMBus: UDID continued: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-             udid_bytes[8], udid_bytes[9], udid_bytes[10], udid_bytes[11],
-             udid_bytes[12], udid_bytes[13], udid_bytes[14], udid_bytes[15]);
-    }
-
-exit:
-    return ret;
-}
-
-/**
- * @brief Core SMBus device address assignment LOGEc
- * @details Implements the core LOGEc for assigning an address to an SMBus
- *          device using ARP protocol. This function configures the controller
- *          and performs the address assignment sequence.
- * @param[in] regBase Pointer to the SMBus controller register base
- * @param[in] assign_addr Address to assign to the device
- * @return EXIT_SUCCESS on success, negative error code on failure
- *
- * @note Configures controller for 7-bit addressing
- * @note Sets target address to SMBUS_ARP_ADDR
- * @note Calls ARP address assignment protocol
- * @warning This function should only be called in Master mode
- */
-static U32 smbusDevAddrAssignCore(volatile SmbusRegMap_s *regBase, U8 assign_addr)
-{
-    U32 ret = EXIT_SUCCESS;
-    U32 default_addr = SMBUS_ARP_ADDR;
-    U32 udid_word[4] = {0};
-    U32 timeout;
-    SmbusIcConReg_u ic_con;
-
-    /* Step 1: Set IC_TAR as ARP default address */
-    /* Disable controller before configuration */
-    SmbusIcEnableReg_u enable;
-    enable.value = regBase->icEnable.value;
-    enable.fields.enable = 0;
-    regBase->icEnable.value = enable.value;
-
-    /* Configure for 7-bit addressing */
-    ic_con.value = regBase->icCon.value;
-    ic_con.fields.ic10bitaddrMaster = 0;
-    regBase->icCon.value = ic_con.value;
-
-    /* Set TAR to ARP default address */
-    default_addr = default_addr & (0x7F);
-    regBase->icTar.fields.icTar = default_addr;
-
-    /* Re-enable controller for address assignment */
-    enable.fields.enable = 1;
-    regBase->icEnable.value = enable.value;
-
-    /* Wait for controller to be ready */
-    timeout = SMBUS_TX_READY_TIMEOUT_US;
-    while (timeout--) {
-        SmbusIcStatusReg_u status;
-        status.value = regBase->icStatus.value;
-        if (!status.fields.activity) {
-            break;
-        }
-        udelay(1);
-    }
-
-    if (timeout == 0) {
-        LOGE("SMBus: Controller not ready for address assignment\n");
-        ret = -ETIMEDOUT;
-        goto exit;
-    }
-
-    /* Step 2: Send ARP Reset Device command first */
-    ret = smbusArpResetDevice(regBase);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: ARP reset device failed, ret=%d\n", ret);
-        goto exit;
-    }
-
-    /* Wait for reset to complete */
-    udelay(1000);
-
-    /* Step 3: Get UDID from target device */
-    ret = smbusUdidGet(regBase, udid_word, SMBUS_TRANSACTION_TIMEOUT_US);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: Get UDID failed, ret=%d\n", ret);
-        goto exit;
-    }
-
-    /* Step 4: Assign new address to device */
-    ret = smbusArpAddressAssign(regBase, udid_word, assign_addr);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: ARP address assign failed, ret=%d\n", ret);
-        goto exit;
-    }
-
-    /* Wait for address assignment to complete */
-    udelay(2000);
-
-    LOGE("SMBus: Address 0x%02x assigned successfully\n", assign_addr);
-
-exit:
-    /* Disable controller before exit */
-    enable.fields.enable = 0;
-    regBase->icEnable.value = enable.value;
-
-    return ret;
-}
-
-/* ======================================================================== */
-/*                    HAL Layer - I2C Compatible Transfer Functions               */
-/* ======================================================================== */
-
-/**
- * @brief Initialize SMBus transfer based on I2C xfer_init pattern
- * @details This function initializes the SMBus controller for transfer by
- *          configuring addressing mode, target address, and controller settings.
- *          It follows the same pattern as i2c_dw_xfer_init but uses SMBus
- *          register access and configuration.
+ * @brief Initialize SMBus transfer
+ * @details Prepares the SMBus controller for a transfer by configuring
+ *          necessary registers such as IC_CON and IC_TAR. This function
+ *          also sets up interrupts based on the device mode.
  * @param[in] dev Pointer to SMBus device structure
- * @param[in] msgs Array of SMBus messages
- * @param[in] msgIdx Current message index
+ * @param[in] msgs Array of SMBus messages to be transferred
+ * @param[in] msgIdx Index of the current message in the msgs array
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
- * @note Disables controller before reconfiguration
- * @note Supports both 7-bit and 10-bit addressing modes
- * @note Configures controller for master mode operation
+ * @note Configures IC_CON for master mode and addressing mode
+ * @note Sets IC_TAR based on message address and device addressing mode
+ * @note Calls smbusConfigTransferInterrupts to set up interrupts
+ * @note Enables the controller to start the transfer
  */
-# if 0
-static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
-{
-    SmbusIcConReg_u icCon;
-    SmbusIcTarReg_u icTar;
-    S32 ret = EXIT_SUCCESS;
-
-    SMBUS_CHECK_PARAM_RETURN(dev == NULL || dev->regBase == NULL || msgs == NULL,
-                            -EINVAL, "SMBus: Invalid parameters for xfer init");
-    
-    volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)dev->regBase;
-    /* Disable the adapter */
-    smbusDisable(dev);
-
-    /* Check for Quick Command (msg.len == 0) */
-    if (dev->msgsNum == 1 && msgs[0].len == 0) {
-        ret = smbusHandleQuickCommand(dev, &msgs[0]);
-        goto start_config_interrupts;
-    }
-
-    /* Configure control register */
-    icCon.value = regBase->icCon.value;
-
-    /* Set master mode */
-    //icCon.fields.masterMode = 1;
-
-    /* Configure addressing mode based on device address mode */
-    if (dev->addrMode == 1) {
-        icCon.fields.ic10bitaddrMaster = 1;
-        LOGD("SMBus: 10-bit addressing mode enabled in control register\n");
-    } else {
-        icCon.fields.ic10bitaddrMaster = 0;
-        LOGD("SMBus: 7-bit addressing mode in control register\n");
-    }
-
-    /* CRITICAL FIX: Enable Restart for I2C Block Read protocol */
-    /* Block Read requires Restart condition for combined write-read transaction */
-    icCon.fields.icRestartEn = dev->restartEnb ? 1 : 0;
-    LOGD("SMBus: Restart enabled for Block Read protocol:%d\n", dev->restartEnb);
-
-    ///< Don't force slave disable - preserve existing configuration
-    ///< icCon.fields.icSlaveDisable = 1; /* Removed - keep existing setting */
-
-    dev->regBase->icCon.value = icCon.value;
-
-    /* Set target address - support both 7-bit and 10-bit addressing */
-    icTar.value = dev->slaveAddr;
-
-    if (dev->addrMode == 1) {
-        /* 10-bit addressing mode */
-        icTar.fields.icTar = msgs[msgIdx].addr & 0x3FF; /* 10-bit address */
-        icTar.fields.ic10bitaddrMaster = 1;
-        LOGD("SMBus: 10-bit addressing enabled, addr=0x%03X\n", msgs[msgIdx].addr);
-    } else {
-        /* 7-bit addressing mode */
-        icTar.fields.icTar = msgs[msgIdx].addr & 0x7F; /* 7-bit address */
-        icTar.fields.ic10bitaddrMaster = 0;
-        LOGD("SMBus: 7-bit addressing, addr=0x%02X\n", msgs[msgIdx].addr);
-    }
-
-    regBase->icTar.value = icTar.value;
-
-    LOGD("SMBus: Target address set to 0x%02X in IC_TAR register\n", icTar.fields.icTar);
-
-    /* Configure interrupts using dedicated interrupt configuration function */
-    ret = smbusConfigTransferInterrupts(dev, regBase);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: Failed to configure transfer interrupts, ret=%d\n", ret);
-        return ret;
-    }
-
-    /* Enable the adapter */
-    smbusEnable(dev);
-    /* Log current interrupt mask status */
-    U32 currentMask = regBase->icIntrMask.value;
-    LOGD("SMBus: Transfer initialized, addr=0x%02X, mode=%u, intr_mask=0x%08X\n",
-         msgs[msgIdx].addr, dev->addrMode, currentMask);
-
-    /* Debug: Check interrupt status after initialization */
-    U32 enableStatus;
-    enableStatus = regBase->icEnableStatus;
-    LOGD("SMBus: Controller enable status=0x%08X, enabled=%d\n",
-         enableStatus, 1);
-
-    SmbusIcRawIntrStatReg_u rawIntr = {0};
-    rawIntr.value = regBase->icRawIntrStat.value;
-    LOGD("SMBus: Raw interrupt status=0x%08X\n", rawIntr.value);
-
-    SmbusIcIntrStatReg_u maskedIntr = {0};
-    maskedIntr.value = regBase->icIntrStat.value;
-    LOGD("SMBus: Masked interrupt status=0x%08X\n", maskedIntr.value);
-
-    return EXIT_SUCCESS;
-}
-#endif
-
 static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
 {
     SmbusIcConReg_u icCon;
@@ -786,23 +294,7 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
     smbusDisable(dev);
 
     /* ============================================================
-     * 1. Quick Command handling
-     * ============================================================*/
-    if (dev->msgsNum == 1 && msgs[0].len == 0) {
-        LOGD("SMBus: Quick Command detected during xfer init\n");
-
-        ret = smbusHandleQuickCommand(dev, &msgs[0]);
-        if (ret != EXIT_SUCCESS) {
-            LOGE("SMBus: Quick Command failed, ret=%d\n", ret);
-            return ret;
-    }
-
-        /* Still need to configure interrupts for post-processing */
-        return EXIT_SUCCESS;
-    }
-
-    /* ============================================================
-     * 2. Configure IC_CON (master mode, restart, address mode)
+     * 1. Configure IC_CON (master mode, restart, address mode)
      * ============================================================*/
     icCon.value = regBase->icCon.value;
 
@@ -824,7 +316,7 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
     regBase->icCon.value = icCon.value;
 
     /* ============================================================
-     * 3. Set IC_TAR (normal transfer)
+     * 2. Set IC_TAR (normal transfer)
      * ============================================================*/
     icTar.value = 0;
 
@@ -835,13 +327,11 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
         icTar.fields.icTar = msgs[msgIdx].addr & 0x7F;
         icTar.fields.ic10bitaddrMaster = 0;
     }
-
     regBase->icTar.value = icTar.value;
-
-    LOGD("SMBus: IC_TAR set to 0x%X\n", icTar.fields.icTar);
+    LOGD("SMBus: IC_TAR set to 0x%X\n", regBase->icTar.value);
 
     /* ============================================================
-     * 4. Configure interrupts (Polling or IRQ)
+     * 3. Configure interrupts (Polling or IRQ)
      * ============================================================*/
     ret = smbusConfigTransferInterrupts(dev, regBase);
     if (ret != EXIT_SUCCESS) {
@@ -850,7 +340,7 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
     }
 
     /* ============================================================
-     * 5. Enable adapter to start transfer
+     * 4. Enable adapter to start transfer
      * ============================================================*/
     smbusEnable(dev);
 
@@ -870,7 +360,6 @@ static S32 smbusDwXferInit(SmbusDev_s *dev, SmbusMsg_s msgs[], U32 msgIdx)
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
  * @note Checks for abort conditions and FIFO errors
- * [HAL] Hardware abstraction layer - Error checking
  */
 static S32 smbusDwCheckErrors(SmbusDev_s *dev)
 {
@@ -915,7 +404,6 @@ static S32 smbusDwCheckErrors(SmbusDev_s *dev)
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
  * @note Timeout is based on SMBUS_TRANSACTION_TIMEOUT_US
- * [HAL] Hardware abstraction layer - Stop detection
  */
 static S32 smbusDwCheckStopBit(SmbusDev_s *dev)
 {
@@ -966,6 +454,12 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
     SMBUS_CHECK_PARAM(dev == NULL || dev->regBase == NULL || mg == NULL || num == 0,
                       -EINVAL, "SMBus: Invalid parameters for dw xfer");
 
+    /* Check for potential buffer overflow */
+    if (num > (SMBUS_MAX_BLOCK_LEN + 1)) {
+        LOGE("SMBus: Too many messages (%d > %d)\n", num, SMBUS_MAX_BLOCK_LEN + 1);
+        return -EINVAL;
+    }
+
     SmbusMsg_s *msgs = (SmbusMsg_s *)mg;
 
     ///< Polling mode (original implementation)
@@ -974,7 +468,7 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
         return (U32)ret;
     }
 
-    ///< Async interrupt mode - similar to I2C implementation
+    ///< Async interrupt mode
     while(RTEMS_SUCCESSFUL == rtems_semaphore_obtain(dev->semaphoreId, RTEMS_NO_WAIT, 0)) {
         ///< Clear any pending semaphore
         ;
@@ -1031,27 +525,36 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
         LOGE("SMBus: Forcing transfer completion due to semaphore failure\n");
         dev->status &= ~(SMBUS_STATUS_READ_IN_PROGRESS | SMBUS_STATUS_WRITE_IN_PROGRESS);
         dev->rxOutstanding = 0;
-
-        ret = -EIO;
+        ret = -ETIMEDOUT; /* 返回超时错误 */
         goto exit;
     }
 
     LOGD("SMBus: Transfer completed - semaphore released by ISR\n");
 
-    ///< Check if controller is still active (similar to I2C issue)
+    U16 activeRetry = 50000;
+    while (smbusIsControllerActive(dev) && activeRetry > 0) {
+        udelay(1);
+        activeRetry--;
+    }
+
+    /* 只有在重试后仍然 Active，且不是正常的传输完成状态时才报错 */
     if (smbusIsControllerActive(dev)) {
-        LOGE("SMBus: Controller still active after transfer completion\n");
+        ///< 降低日志级别，或者在 ret == SUCCESS 时忽略此错误
+        if (dev->errorType == 0) {
+            LOGW("SMBus: Controller active bit sticky, but transfer seems success. Ignoring.\n");
+        } else {
+            LOGE("SMBus: Controller still active after transfer completion\n");
+            dev->errorType = SMBUS_ERR_TYPE_UNKNOWN; // 或者具体的超时错误
+        }
     }
 
-    ///< Handle transfer completion
-    if (dev->msgErr) {
-        ret = dev->msgErr;
-        LOGE("SMBus: Transfer error: %d\n", ret);
-        goto exit;
-    }
-
-    ///< Check for command errors
-    if (dev->cmdErr) {
+    if (dev->cmdErr || dev->errorType > 0 || dev->msgErr) {
+        if (dev->msgErr) {
+            /* 确保 msgErr 也是负值 */
+            ret = (dev->msgErr < 0) ? dev->msgErr : -EIO;
+            LOGE("SMBus: Message error: %d\n", ret);
+            goto exit;
+        }
         ret = smbusHandleTxAbort(dev);
         ///< Log enhanced error information with device context
         LOGE("SMBus: Transfer failed - Device context:\n");
@@ -1075,11 +578,9 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
         ret = -EFAULT;
         goto exit;
     }
-
     ///< Success - return number of messages transferred
     ret = num;
     LOGD("SMBus: Async dw xfer completed successfully\n");
-
 exit:
     return (U32)ret;
 }
@@ -1094,7 +595,6 @@ exit:
  * @return Number of messages transferred on success, negative error code on failure
  *
  * @note This is the original polling implementation
- * [HAL] Hardware abstraction layer - polling transfer
  */
 static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num)
 {
@@ -1163,12 +663,13 @@ static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num)
                     status = smbusDwCheckErrors(dev);
                     if (status == EXIT_SUCCESS) {
                         break;
-                    } else {
-                        LOGE("SMBus: Error detected in read command: %d\n", status);
-                        return status;
                     }
                     checkErrRetry++;
-                    udelay(10); /* Small delay between retries */
+                    rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(10));
+                }
+                if (status != EXIT_SUCCESS) {
+                    LOGE("SMBus: Error detected in read command: %d\n", status);
+                    return status;
                 }
 
                 /* Wait for data ready */
@@ -1187,12 +688,13 @@ static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num)
                     status = smbusDwCheckErrors(dev);
                     if (status == EXIT_SUCCESS) {
                         break;
-                    } else {
-                        LOGE("SMBus: Error detected after read: %d\n", status);
-                        return status;
                     }
                     checkErrRetry++;
-                    udelay(10); /* Small delay between retries */
+                    rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(10));
+                }
+                if (status != EXIT_SUCCESS) {
+                    LOGE("SMBus: Error detected after read: %d\n", status);
+                    return status;
                 }
 
                 *buf++ = (U8)(val & 0xFF);
@@ -1225,7 +727,7 @@ static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num)
                         return status;
                     }
                     checkErrRetry++;
-                    udelay(10); /* Small delay between retries */
+                    rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(10));
                 }
             }
         }
@@ -1242,6 +744,43 @@ static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num)
     return num;
 }
 
+static S32 smbusPerformHardwareRecovery(volatile SmbusRegMap_s *regBase)
+{
+    U32 timeout;
+    U32 currentVal;
+
+    LOGW("SMBus: Triggering Hardware SDA Stuck Recovery (Bit 3)...\n");
+
+    /* 1. 确保控制器已启用 (ENABLE = 1) 
+     * 硬件需要时钟才能发送恢复脉冲，所以必须先 Enable。
+     */
+    if (!(regBase->icEnable.value & SMBUS_IC_ENABLE_ENABLE_MASK)) {
+        regBase->icEnable.value |= SMBUS_IC_ENABLE_ENABLE_MASK;
+        /* 简单等待启用生效 */
+        rtems_task_wake_after(RTEMS_MICROSECONDS_TO_TICKS(1)); 
+    }
+
+    /* 2. 设置 SDA_STUCK_RECOVERY_ENABLE (Bit 3) */
+    /* 使用读-改-写以保护其他位 */
+    currentVal = regBase->icEnable.value;
+    regBase->icEnable.value = currentVal | SMBUS_IC_ENABLE_RECOVERY_MASK;
+
+    /* 3. 等待硬件自动清除该位 (表示恢复动作完成) */
+    /* 通常需要几个 I2C 周期，给予 1ms 超时绰绰有余 */
+    timeout = 100; 
+    while (timeout--) {
+        if (!(regBase->icEnable.value & SMBUS_IC_ENABLE_RECOVERY_MASK)) {
+            /* Bit 3 已自动清零，恢复动作完成 */
+            LOGI("SMBus: Hardware Recovery sequence finished.\n");
+            return EXIT_SUCCESS;
+        }
+        rtems_task_wake_after(RTEMS_MICROSECONDS_TO_TICKS(1) > 0 ? 1 : 1);
+    }
+
+    LOGE("SMBus: Hardware Recovery TIMEOUT! Controller stuck.\n");
+    return -ETIMEDOUT;
+}
+
 /**
  * @brief Wait for SMBus bus to become not busy
  * @details Checks if the SMBus controller is idle and ready for new transfer.
@@ -1249,30 +788,86 @@ static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num)
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
  * @note This function polls the IC_STATUS register
- * [HAL] Hardware abstraction layer - bus status check
  */
 static inline S32 smbusWaitBusNotBusy(SmbusDev_s *dev)
 {
     U32 timeout = 1000;  ///< 1 second timeout
-    U32 retries = 0;
-    U32 status;
+    S32 ret = EXIT_SUCCESS;
 
     SMBUS_CHECK_PARAM_RETURN(dev == NULL || dev->regBase == NULL, -EINVAL,
                             "SMBus: Invalid parameters for wait bus not busy");
 
     volatile SmbusRegMap_s *regBase = dev->regBase;
 
-    while (retries < timeout) {
-        status = regBase->icStatus.value;
-        if ((status & 0x01) == 0) {  ///< Check ACTIVITY bit
-            return EXIT_SUCCESS;
-        }
-        retries++;
-        udelay(1000);  ///< 1ms delay
+    if (!(regBase->icStatus.value & SMBUS_IC_STATUS_ACTIVITY_MASK)) {
+        return EXIT_SUCCESS;
     }
 
-    LOGE("SMBus: Bus busy timeout\n");
-    return -ETIMEDOUT;
+    /* 给上一笔传输一点收尾时间 (2ms) */
+    timeout = 200;
+    while (timeout--) {
+        if (!(regBase->icStatus.value & SMBUS_IC_STATUS_ACTIVITY_MASK)) {
+            return EXIT_SUCCESS;
+        }
+        rtems_task_wake_after(RTEMS_MICROSECONDS_TO_TICKS(10));
+    }
+
+    LOGW("SMBus: Bus stuck BUSY (Stat=0x%08X), starting recovery procedure...\n", regBase->icStatus.value);
+
+    /* ---------------------------------------------------------
+     * 2. 执行硬件总线恢复 (SDA Stuck Recovery)
+     * --------------------------------------------------------- */
+    ret = smbusPerformHardwareRecovery(regBase);
+    if (ret != EXIT_SUCCESS) {
+        /* 如果硬件恢复都超时了，说明 IP 可能挂死了，只能尝试强行复位 */
+        LOGE("SMBus: Hardware recovery failed, proceeding to force reset.\n");
+    }
+
+    /* ---------------------------------------------------------
+     * 3. 状态机复位流程 (Abort -> Disable -> Enable)
+     * 即使电气上总线已经恢复，IP 内部状态机可能还认为自己在传输中
+     * --------------------------------------------------------- */
+    /* 3.1 尝试发送 ABORT 信号 (终止任何挂起的传输) */
+    /* 只有在 Enable=1 时 Abort 才有效 */
+    if (regBase->icEnable.value & SMBUS_IC_ENABLE_ENABLE_MASK) {
+        regBase->icEnable.value |= SMBUS_IC_ENABLE_ABORT_MASK;
+        
+        /* 等待 ABORT 完成 (TX_ABRT 中断位置位) */
+        timeout = 1000;
+        while (timeout--) {
+            if (regBase->icRawIntrStat.value & SMBUS_INTR_TX_ABRT_MASK) {
+                (void)regBase->icClrTxAbrt; /* 清除中断 */
+                break;
+            }
+            rtems_task_wake_after(RTEMS_MICROSECONDS_TO_TICKS(10));
+        }
+    }
+
+    /* 3.2 强制禁用控制器 (Disable) - 彻底复位状态机 */
+    regBase->icEnable.value = 0;
+    /* 等待 Enable bit 真正清零 */
+    timeout = 2000; /* 20ms */
+    while (timeout--) {
+        if (!(regBase->icEnableStatus & SMBUS_IC_ENABLE_ENABLE_MASK)) {
+            break; 
+        }
+        rtems_task_wake_after(RTEMS_MICROSECONDS_TO_TICKS(10));
+    }
+
+    /* 3.3 重新启用控制器 (Enable) */
+    regBase->icEnable.value = SMBUS_IC_ENABLE_ENABLE_MASK;
+
+    /* ---------------------------------------------------------
+     * 4. 最终状态检查
+     * --------------------------------------------------------- */
+    /* 此时总线应该是空闲的 */
+    if (regBase->icStatus.value & SMBUS_IC_STATUS_ACTIVITY_MASK) {
+        LOGE("SMBus: Critical Failure - Bus still BUSY after HW Recovery & Reset. (Stat=0x%08X)\n", 
+             regBase->icStatus.value);
+        return -EIO;
+    }
+    LOGI("SMBus: Bus recovery SUCCESSFUL. Ready for transfer.\n");
+    return EXIT_SUCCESS;
 }
 
 /**
@@ -1282,7 +877,6 @@ static inline S32 smbusWaitBusNotBusy(SmbusDev_s *dev)
  * @return true if controller is active, false otherwise
  *
  * @note This function checks the IC_STATUS register
- * [HAL] Hardware abstraction layer - controller status check
  */
 static bool smbusIsControllerActive(SmbusDev_s *dev)
 {
@@ -1302,22 +896,14 @@ static bool smbusIsControllerActive(SmbusDev_s *dev)
  * @return Error code based on abort source
  *
  * @note This function reads IC_TX_ABRT_SOURCE register
- * [HAL] Hardware abstraction layer - abort handling
  */
 static S32 smbusHandleTxAbort(SmbusDev_s *dev)
 {
     SMBUS_CHECK_PARAM_RETURN(dev == NULL || dev->regBase == NULL, -EINVAL,
                             "SMBus: Invalid parameters for handle tx abort");
 
-    volatile SmbusRegMap_s *regBase = dev->regBase;
-    U32 abortSource = regBase->icTxAbrtSource.value;
-
     ///< Store abort source and error type in device structure
-    dev->abortSource = abortSource;
-
-    ///< Clear abort status
-    (void)regBase->icClrTxAbrt;
-
+    U32 abortSource = dev->abortSource;
     ///< Classify the specific error type and log detailed information
     if (abortSource & SMBUS_IC_TX_ABRT_SOURCE_ABRT_7B_ADDR_NOACK_MASK) {
         dev->errorType = SMBUS_ERR_TYPE_NACK_7BIT;
@@ -1379,53 +965,57 @@ static S32 smbusHandleQuickCommand(SmbusDev_s *dev, SmbusMsg_s *msg)
     volatile SmbusRegMap_s *regBase = dev->regBase;
     SmbusIcTarReg_u icTar = {0};
     SmbusIcDataCmdReg_u icDataCmd = {0};
-    U32 timeout = 1000;
+    S32 ret;
 
+    dev->isQuick = 1;
+
+    if (msg->addr > 0x7F) return -EINVAL;
     smbusDisable(dev);
-    /* Configure SMBus-specific interrupts if SMBus mode is enabled */
-    if (dev->smbFeatures.quickCmdEnb) {
-        /* Configure SMBus-specific ARP interrupt mask */
-        regBase->icSmbusIntrMask.value |= SMBUS_BUS_PROTOCOL_INT_MASK;
-        LOGD("SMBus: SMBus quick interrupt enabled (mask: 0x%08X)\n", regBase->icSmbusIntrMask.value);
-    }
 
-    if (msg->addr > 0x7F)
-        return -EINVAL;
-
-    /* Configure IC_TAR for Quick Command */
-    icTar.fields.icTar         = msg->addr & 0x7F;
-    icTar.fields.special       = 1;
-    icTar.fields.smbusQuickCmd = 1;
+    /* 2. 配置 IC_TAR (Master 模式目标地址) */
+    icTar.fields.icTar = msg->addr & 0x7F;
+    icTar.fields.special = 1;       ///< 启用特殊命令
+    icTar.fields.smbusQuickCmd = 1; ///< 标记为 Quick Command
     regBase->icTar.value = icTar.value;
 
     smbusEnable(dev);
 
-    /* Wait until TX FIFO not full */
-    while (!regBase->icStatus.fields.tfnf);
+    /* 3. 准备同步机制 */
+    dev->xferStatus = -ETIMEDOUT; ///< 默认状态为超时
+    dev->isQuick = 1;             ///< 告诉 ISR：这是 Quick Command，请处理 STOP 信号
+    
+    /* 清除可能残留的中断状态 */
+    (void)regBase->icClrStopDet;
+    (void)regBase->icClrTxAbrt;
 
-    /* Write Quick Command (cmd = R/W, stop = 1) */
-    icDataCmd.fields.cmd  = (msg->flags & SMBUS_M_RD) ? 1 : 0;
-    icDataCmd.fields.stop = 1;
+    /* 4. 开启中断 (关键！) */
+    /* 必须开启 STOP_DET 和 TX_ABRT，否则 ISR 永远不会触发 */
+    U32 intrMask = regBase->icIntrMask.value;
+    regBase->icIntrMask.value = intrMask | SMBUS_INTR_STOP_DET | SMBUS_INTR_TX_ABRT;
+    U32 intrSmbusMask = regBase->icSmbusIntrMask.value;
+    regBase->icSmbusIntrMask.value = intrSmbusMask | SMBUS_QUICK_CMD_DET_BIT;
+
+    /* 5. 写入命令字，触发硬件传输 */
+    icDataCmd.fields.cmd = (msg->flags & SMBUS_M_RD) ? 1 : 0; ///< 读/写
+    icDataCmd.fields.stop = 1;                                ///< 必须产生 STOP
+    icDataCmd.fields.restart = 0;
     regBase->icDataCmd.value = icDataCmd.value;
 
-    /* Wait until STOP_DET */
-    while (timeout--) {
-        if (regBase->icRawIntrStat.fields.stopDet) {
-            (void)regBase->icClrStopDet; // clear
-            break;
-        }
-        udelay(5);
+    /* 6. 睡眠等待 ISR 唤醒*/
+    if (rtems_semaphore_obtain(dev->semaphoreId, RTEMS_WAIT, dev->transferTimeout) == RTEMS_SUCCESSFUL) {
+         /* 被 ISR 唤醒，返回 ISR 设置的结果 */
+         ret = dev->xferStatus;
+    } else {
+        /* 超时：硬件没有响应 */
+        LOGE("SMBus: Quick Command Timed Out!\n");
+        ret = -ETIMEDOUT;
+        /* 此时需要做清理工作，防止迟到的中断破坏状态 */
+        dev->isQuick = 0;
     }
 
-    /* Restore IC_TAR */
-    SmbusIcTarReg_u restore = {0};
-    restore.fields.icTar = msg->addr & 0x7F;
-    regBase->icTar.value = restore.value;
-
-    if (!timeout)
-        return -ETIMEDOUT;
-
-    return EXIT_SUCCESS;
+    /* 7. 恢复中断掩码 (可选) */
+    regBase->icIntrMask.value = intrMask;
+    return ret;
 }
 
 
@@ -1570,66 +1160,6 @@ void smbusMasterTransferData(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *r
 }
 
 /**
- * @brief Trigger slave event callback
- * @details Triggers appropriate SMBus callback for slave events
- * @param[in] pDrvData Pointer to driver data structure
- * @param[in] eventType Event type to trigger
- * @param[in] data Event data pointer
- * @param[out] len Data length
- * @return void
- */
-void smbusTriggerSlaveEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data, U32 len)
-{
-    DevList_e devId = pDrvData->devId;
-    SmbusEventData_u eventData;
-    
-    // !!! 关键修复：清零联合体，确保内存干净 !!!
-    memset(&eventData, 0, sizeof(SmbusEventData_u));
-    LOGE("SMBus: Triggering slave event DATA[0]:%d\n", ((U8 *)data)[0]);
-    /* Prepare event data based on event type */
-    switch (eventType) {
-        case SMBUS_EVENT_SLAVE_READ_REQ:
-            eventData.slaveReadReq.data = (U8*)data;
-            eventData.slaveReadReq.len = len;
-            break;
-
-        case SMBUS_EVENT_SLAVE_WRITE_REQ:
-            eventData.slaveWriteReq.data = (U8 *)data;
-            eventData.slaveWriteReq.len = len;
-            break;
-
-        case SMBUS_EVENT_SLAVE_DONE:
-            eventData.slaveStop.val = (U8*)data;
-            break;    
-        case SMBUS_EVENT_RX_DONE:
-            eventData.rxDone.val = (U8*)data;
-            eventData.rxDone.len = len;
-            break;  
-        case SMBUS_EVENT_TX_DONE:
-            eventData.txDone.val = (U8*)data;  
-            eventData.txDone.len = len; 
-            break;   
-        case SMBUS_EVENT_PEC_ERROR:
-            eventData.pecError.val = (U8*)data; 
-            break;  
-         case SMBUS_EVENT_SLV_CLK_EXT_TIMEOUT:
-         case SMBUS_EVENT_SLV_CLK_LOW_TIMEOUT:
-            /* No additional data for timeout events */
-            break;  
-        default:
-            LOGW("SMBus: Unknown slave event type %d\n", eventType);
-            return;
-    }
-    LOGE("SMBus: Triggering slave event rxdone[0]:%d\n", eventData.rxDone.val[0]);
-    /* Execute callback with event data */
-    if (pDrvData->callback.cb) {
-        LOGD("SMBus: Callback for event %d\n", eventType);
-        pDrvData->callback.cb(devId, eventType, &eventData);
-    }
-}
-
-
-/**
  * @brief Handle master specific SMBus interrupts
  * @details Processes SMBus-specific interrupts in master mode
  * @param[in] pDrvData Pointer to driver data structure
@@ -1637,101 +1167,25 @@ void smbusTriggerSlaveEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data,
  * @param[in] smbusIntrStat SMBus interrupt status
  * @return void
  *
- * [CORE] Core protocol layer - master SMBus interrupts
  */
 void smbusHandleMasterSpecificInterrupts(SmbusDrvData_s *pDrvData,
                                          volatile SmbusRegMap_s *regBase,
                                          U32 smbusIntrStat)
 {
-    DevList_e devId = pDrvData->devId;
-    SmbusEventData_u eventData;
 
     /* Handle SMBus timeout interrupts */
     if (smbusIntrStat & (SMBUS_MST_CLOCK_EXTND_TIMEOUT_BIT | SMBUS_QUICK_CMD_DET_BIT)) {
         SmbusTimeoutType_e timeoutType = (smbusIntrStat & SMBUS_MST_CLOCK_EXTND_TIMEOUT_BIT) ?
                                        SMBUS_TIMEOUT_TYPE_CLOCK_EXTEND : SMBUS_TIMEOUT_TYPE_CLOCK_LOW;
 
-        /* Handle timeout recovery */
-        smbusHandleMasterTimeoutRecovery(pDrvData, timeoutType);
-
         /* Trigger timeout event callback */
         U32 event = (timeoutType == SMBUS_TIMEOUT_TYPE_CLOCK_EXTEND) ?
-                    SMBUS_EVENT_MST_CLK_EXT_TIMEOUT : SMBUS_EVENT_MST_CLK_LOW_TIMEOUT;
-
-        if (pDrvData->callback.cb) {
-            pDrvData->callback.cb(devId, event, &eventData);
-        }
-
-        LOGW("SMBus Master timeout: type=%d\n", timeoutType);
+                    SMBUS_EVENT_MST_CLK_EXT_TIMEOUT : SMBUS_EVENT_MST_CLK_LOW_TIMEOUT; 
+        LOGW("SMBus Master timeout: type=%d, event=%d\n", timeoutType, event);
     }
 
     /* Clear SMBus interrupts */
     regBase->icClrSmbusIntr = smbusIntrStat;
-}
-
-/**
- * @brief Handle slave specific SMBus interrupts
- * @details Processes SMBus-specific interrupts in slave mode
- * @param[in] pDrvData Pointer to driver data structure
- * @param[in] regBase Register base address
- * @param[in] smbusIntrStat SMBus interrupt status
- * @return void
- *
- * [CORE] Core protocol layer - slave SMBus interrupts
- */
-void smbusHandleSlaveSpecificInterrupts(SmbusDrvData_s *pDrvData,
-                                        volatile SmbusRegMap_s *regBase,
-                                        U32 smbusIntrStat)
-{
-    DevList_e devId = pDrvData->devId;
-    SmbusEventData_u eventData;
-
-    /* Handle Quick Command interrupt */
-    if (smbusIntrStat & SMBUS_QUICK_CMD_DET_BIT) {
-        LOGD("SMBus Slave: r_quick_cmd_det interrupt triggered\n");
-
-        /* Clear the Quick Command interrupt specifically */
-        regBase->icClrSmbusIntr = SMBUS_QUICK_CMD_DET_BIT;
-        LOGD("SMBus Slave: Quick Command interrupt cleared\n");
-    }
-
-    /* Handle ARP-related interrupts */
-    if (smbusIntrStat & SMBUS_ARP_PREPARE_CMD_DET_BIT) {
-        if (smbusIntrStat & SMBUS_ASSIGN_ADDR_CMD_DET_BIT) {
-            smbusSlvArpAssignAddrFinishHandle(pDrvData);
-            LOGD("SMBus Slave: ARP assign address finished\n");
-        }
-
-        /* Handle other ARP events */
-        if (smbusIntrStat & SMBUS_GET_UDID_CMD_DET_BIT) {
-            LOGD("SMBus Slave: ARP get UDID interrupt\n");
-        }
-    }
-
-    /* Handle SMBus timeout interrupts */
-    if (smbusIntrStat & (SMBUS_SLV_CLOCK_EXTND_TIMEOUT_BIT | SMBUS_HOST_NOTIFY_MST_DET_BIT)) {
-        SmbusTimeoutType_e timeoutType = (smbusIntrStat & SMBUS_SLV_CLOCK_EXTND_TIMEOUT_BIT) ?
-                                       SMBUS_TIMEOUT_TYPE_CLOCK_EXTEND : SMBUS_TIMEOUT_TYPE_CLOCK_LOW;
-
-        /* Handle timeout recovery */
-        smbusHandleSlaveTimeoutRecovery(pDrvData, timeoutType);
-
-        /* Trigger timeout event callback */
-        U32 event = (timeoutType == SMBUS_TIMEOUT_TYPE_CLOCK_EXTEND) ?
-                    SMBUS_EVENT_SLV_CLK_EXT_TIMEOUT : SMBUS_EVENT_SLV_CLK_LOW_TIMEOUT;
-
-        if (pDrvData->callback.cb) {
-            pDrvData->callback.cb(devId, event, &eventData);
-        }
-        LOGW("SMBus Slave timeout: type=%d\n", timeoutType);
-    }
-
-    /* Clear remaining SMBus interrupts (excluding Quick Command which was already cleared) */
-    U32 remainingIntrStat = smbusIntrStat & ~SMBUS_QUICK_CMD_DET_BIT;
-    if (remainingIntrStat) {
-        regBase->icClrSmbusIntr = remainingIntrStat;
-        LOGD("SMBus Slave: Remaining interrupts cleared (0x%08X)\n", remainingIntrStat);
-    }
 }
 
 /* ======================================================================== */
@@ -1792,11 +1246,11 @@ S32 smbusCalcFifoSize(SmbusDev_s *dev)
  * @note This is derived from: base_lcnt × correction_factor / 2
  *       where base_lcnt = ic_clk/(2×speed), correction = 6/(5×4) = 0.3
  *       final: 0.3/2 = 0.15
- * [HAL] Hardware abstraction layer - timing calculation
  */
 static void smbusCalcTimingsMaster(SmbusDev_s *dev)
 {
     U32 ic_clk;  /* Internal peripheral clock frequency (12.5MHz) */
+    U32 speedInHz = dev->clkRate;
 
     SMBUS_CHECK_PARAM_VOID(dev == NULL, "SMBus: Invalid device for timings calculation");
     
@@ -1804,15 +1258,13 @@ static void smbusCalcTimingsMaster(SmbusDev_s *dev)
     SMBUS_INIT_TIMING_COUNTERS(dev);
     ic_clk = 12500000;  /* Fixed internal clock frequency for timing calculations */
     LOGW("SMBus: clock rate %u Hz, smbusCalcTimingsMaster\n", dev->clkRate);
-#if 0
-    ic_clk = peripsClockFreqGet(dev->channelNum, &dev->clkRate);  /* Use actual clock rate from device configuration */
 
-    U32 speedInHz = dev->clkRate;
+    peripsClockFreqGet(dev->channelNum, &dev->clkRate);  /* Use actual clock rate from device configuration */
     U32 sclLcnt;
     U32 temp;
     U32 lowDutyPercent = 50; /* Default 50% duty cycle */
     U16 fsSpklen;
-    LOGE("SMBus: Calculating timings for speed %u Hz, ic_clk=%u Hz\n", speedInHz, ic_clk); 
+    
     /* Set spike suppression length based on speed */
     if (speedInHz > SMBUS_HS_MIN_SPEED) {
         fsSpklen = SMBUS_HS_DEFAULT_SPKLEN;  /* 1 */
@@ -1827,8 +1279,8 @@ static void smbusCalcTimingsMaster(SmbusDev_s *dev)
     dev->hsSpklen = (speedInHz > SMBUS_HS_MIN_SPEED) ? SMBUS_HS_DEFAULT_SPKLEN : SMBUS_FS_DEFAULT_SPKLEN;
 
     /* Calculate SCL low count: <lcount> = <internal clock> / <speed, Hz> */
-    sclLcnt = ic_clk / speedInHz;
-
+    sclLcnt = dev->clkRate / speedInHz;
+    LOGE("SMBus: Calculating timings for speed %u Hz, ic_clk=%u, sclhnt=%u Hz\n", speedInHz, ic_clk, sclLcnt); 
     /*
      * IC_CLK_FREQ_OPTIMIZATION = 0
      * SCL_Low_time = [(LCNT + 1) * ic_clk] - SCL_Fall_time + SCL_Rise_time
@@ -1900,46 +1352,6 @@ static void smbusCalcTimingsMaster(SmbusDev_s *dev)
         }
         dev->fsHcnt = temp;
     }
-#endif
-   /* Calculate timing parameters based on clock rate */
-    switch (dev->clkRate) {
-        case SMBUS_MAX_STANDARD_MODE_FREQ:
-            /* Standard mode (100 kHz) */
-            dev->ssHcnt = SMBUS_HW_CLK_H100;
-            dev->ssLcnt = SMBUS_HW_CLK_L100;
-            break;
-            
-        case SMBUS_MAX_FAST_MODE_FREQ:
-            /* Fast mode (400 kHz) */
-            dev->fsHcnt = SMBUS_HW_CLK_H400;
-            dev->fsLcnt = SMBUS_HW_CLK_L400;
-            break;
-            
-        case SMBUS_MAX_FAST_MODE_PLUS_FREQ:
-            /* Fast mode plus (1 MHz) */
-            dev->fpHcnt = SMBUS_HW_CLK_H1000;
-            dev->fpLcnt = SMBUS_HW_CLK_L1000;
-            /* Also configure fast mode as fallback */
-            dev->fsHcnt = SMBUS_HW_CLK_H400;
-            dev->fsLcnt = SMBUS_HW_CLK_L400;
-            break;
-            
-        case SMBUS_MAX_HIGH_SPEED_MODE_FREQ:
-            /* High speed mode (3.4 MHz) */
-            dev->hsHcnt = SMBUS_HW_CLK_H3400;
-            dev->hsLcnt = SMBUS_HW_CLK_L3400;
-            /* Also configure fast mode for compatibility */
-            dev->fsHcnt = SMBUS_HW_CLK_H400;
-            dev->fsLcnt = SMBUS_HW_CLK_L400;
-            break;
-            
-        default:
-            /* Unknown speed, use fast mode as default */
-            dev->fsHcnt = SMBUS_HW_CLK_H400;
-            dev->fsLcnt = SMBUS_HW_CLK_L400;
-            LOGW("SMBus: Unknown clock rate %u Hz, using fast mode timing\n", dev->clkRate);
-            break;
-    }
     /* 
      * Calculate SDA TX hold time using formula:
      * IC_SDA_TX_HOLD = 0.15 × ic_clk / (2 × speed)
@@ -1954,13 +1366,13 @@ static void smbusCalcTimingsMaster(SmbusDev_s *dev)
      * Time = 9 / 12.5MHz = 720ns
      */
     
-    if (ic_clk > 0 && dev->clkRate > 0) {
+    if (speedInHz > 0 && dev->clkRate > 0) {
         /* 
          * Formula: sdaHoldTime = (0.15 × ic_clk) / (2 × speed)
          * Use fixed-point: (15 × ic_clk) / (200 × speed) to avoid float
          * Add rounding: + (100 × speed) before division
          */
-        dev->sdaHoldTime = (15 * ic_clk + 100 * dev->clkRate) / (200 * dev->clkRate);
+        dev->sdaHoldTime = (15 * dev->clkRate + 100 * speedInHz) / (200 * speedInHz);
         
         /* Ensure minimum value of 1 */
         if (dev->sdaHoldTime == 0) {
@@ -1993,7 +1405,6 @@ static void smbusCalcTimingsMaster(SmbusDev_s *dev)
  * @note Sets master mode, disables slave mode, enables restart
  * @note Configures speed based on clock rate setting
  * @note Sets addressing mode (7-bit or 10-bit)
- * [HAL] Hardware abstraction layer - master configuration
  */
 static void smbusConfigureMaster(SmbusDev_s *dev)
 {
@@ -2046,7 +1457,6 @@ static void smbusConfigureMaster(SmbusDev_s *dev)
  * @note Enables slave mode, configures FIFO hold control
  * @note Sets addressing mode and restart support
  * @note Configures stop detection when addressed
- * [HAL] Hardware abstraction layer - slave configuration
  */
 static void smbusConfigureSlave(SmbusDev_s *dev)
 {
@@ -2079,9 +1489,9 @@ static void smbusConfigureSlave(SmbusDev_s *dev)
     /* Configure SMBus features for slave mode */
     slaveCfg |= (1U << SMBUS_IC_CON_RX_FIFO_HOLD_BIT);         /* RX FIFO full hold control */
     slaveCfg |= (1U << SMBUS_IC_CON_STOP_DET_IFADDRESSED_BIT); /* STOP detection when addressed */
-    slaveCfg |= (1U << SMBUS_IC_CON_ARP_ENABLE_BIT);           /* ARP enabled in slave mode */
-    slaveCfg |= (1U << SMBUS_IC_CON_QUICK_CMD_BIT);            /* SMBus slave quick command enable */
 
+    slaveCfg |= (dev->smbFeatures.arpEnb << SMBUS_IC_CON_ARP_ENABLE_BIT);     /* 位18 = 1 (ARP enabled) */
+    slaveCfg |= (dev->smbFeatures.quickCmdEnb << SMBUS_IC_CON_QUICK_CMD_BIT);  /* 位17 = 1 (Quick command enable) */
     /* Store configuration in device structure */
     dev->slaveCfg = slaveCfg;
     dev->mode = SMBUS_MODE_SLAVE;
@@ -2104,7 +1514,6 @@ static void smbusConfigureSlave(SmbusDev_s *dev)
  * @note Sets up interrupt handling for master operations
  * @note Enables controller after configuration
  * @warning This function should only be called in Master mode
- * [HAL] Hardware abstraction layer - master initialization
  */
 S32 smbusProbeMaster(SmbusDev_s *dev)
 {
@@ -2209,7 +1618,6 @@ S32 smbusProbeMaster(SmbusDev_s *dev)
 S32 smbusProbeSlave(SmbusDev_s *dev)
 {
     S32 ret;
-    U32 ic_con;
 
     SMBUS_CHECK_PARAM_RETURN(dev == NULL || dev->regBase == NULL, -EINVAL,
                             "SMBus: Invalid device structure");
@@ -2235,10 +1643,10 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
                            (2U << 1) |                                      /* 位1:2 = 10 (Fast mode 400kHz) */
                            (0U << SMBUS_IC_CON_SLAVE_DISABLE_BIT) |        /* 位6 = 0 (Slave enabled) */
                            (1U << SMBUS_IC_CON_RESTART_EN_BIT) |           /* 位5 = 1 (Restart enable) */
-                           (1U << SMBUS_IC_CON_RX_FIFO_HOLD_BIT) |         /* 位7 = 1 (RX FIFO hold control) */
-                           (1U << SMBUS_IC_CON_STOP_DET_IFADDRESSED_BIT) | /* 位9 = 1 (STOP detection when addressed) */
-                           (1U << SMBUS_IC_CON_ARP_ENABLE_BIT) |           /* 位14 = 1 (ARP enabled) */
-                           (1U << SMBUS_IC_CON_QUICK_CMD_BIT);             /* 位15 = 1 (Quick command enable) */
+                           (1U << SMBUS_IC_CON_RX_FIFO_HOLD_BIT) |         /* 位9 = 1 (RX FIFO hold control) */
+                           (1U << SMBUS_IC_CON_STOP_DET_IFADDRESSED_BIT) | /* 位7 = 1 (STOP detection when addressed) */
+                           (dev->smbFeatures.arpEnb << SMBUS_IC_CON_ARP_ENABLE_BIT) |     /* 位18 = 1 (ARP enabled) */
+                           (dev->smbFeatures.quickCmdEnb << SMBUS_IC_CON_QUICK_CMD_BIT);  /* 位17 = 1 (Quick command enable) */
             LOGD("Applied default slave configuration: slaveCfg = 0x%08X\n", dev->slaveCfg);
         } else {
             LOGD("Using pre-configured slaveCfg = 0x%08X\n", dev->slaveCfg);
@@ -2259,11 +1667,14 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
 
         /* 设置从机地址 - 优先使用动态参数，未设置时使用默认值 */
         if (dev->slaveAddr != 0) {
-            regBase->icSar.fields.icSar = dev->slaveAddr;
-            LOGD("IC_SAR set to dynamic address: 0x%02X\n", regBase->icSar.fields.icSar);
-        } else {
-            regBase->icSar.fields.icSar = SMBUS_SLAVE_DEFAULT_ADDR;  /* 使用默认地址 */
+            regBase->icSar.fields.icSar = dev->slaveAddr; 
+            if (dev->smbFeatures.arpEnb) {
+                regBase->icSar.fields.icSar = SMBUS_SLAVE_DEFAULT_ADDR; 
+            }
             LOGD("IC_SAR set to default address: 0x%02X\n", regBase->icSar.fields.icSar);
+        } else {
+            regBase->icSar.fields.icSar = SMBUS_SLAVE_DEFAULT_ADDR; /* 使用默认地址 */ 
+            LOGD("IC_SAR set to dynamic address: 0x%02X\n", regBase->icSar.fields.icSar);
         }
 
         /* Set TX/RX FIFO thresholds for interrupt generation */
@@ -2272,8 +1683,40 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
         LOGD("FIFO thresholds set: TX_TL=%d, RX_TL=%d\n", regBase->icTxTl, regBase->icRxTl);
 
         /* 配置从机模式中断掩码 - 在使能设备之前配置 */
-        regBase->icIntrMask.value = SMBUS_SLAVE_INTR_MASK;
-        LOGD("✓ Slave interrupt mask configured: 0x%08X (RX_FULL|TX_EMPTY|RD_REQ|TX_ABRT|RX_DONE|STOP_DET)\n",
+        /* TX_EMPTY将在WR_REQ处理过程中根据需要动态启用 */
+        U32 intrMask = SMBUS_SLAVE_INIT_INTR_MASK;
+        regBase->icIntrMask.value = intrMask;
+        U32 smbusIntrMask = 0;
+        if (dev->smbFeatures.arpEnb) {
+            smbusIntrMask |= SMBUS_ARP_INTR_MASK; /* 包含 ARP_DET 等 */
+            regBase->icAckGeneralCall |= SMBUS_DEFAULT_GC_ACK;
+            LOGD("ARP Enabled: Setting SMBus Intr Mask for ARP\n");
+        } 
+        if (dev->smbFeatures.smbAlertEnb) {
+            smbusIntrMask |= SMBUS_ALERT_DET_BIT; 
+        }   
+        if (dev->smbFeatures.hostNotifyEnb) {
+            smbusIntrMask |= SMBUS_HOST_NOTIFY_MST_DET_BIT; 
+        }   
+        if (dev->smbFeatures.quickCmdEnb) {
+            /* Quick Command 通常也是协议中断的一部分 */
+            smbusIntrMask |= SMBUS_QUICK_CMD_DET_BIT; 
+        }    
+        /* 应用 SMBus 特定中断掩码 */
+        if (smbusIntrMask != 0) {
+            regBase->icSmbusIntrMask.value = smbusIntrMask;
+        } else {
+             /* 默认行为，或者保持为0 */
+             regBase->icSmbusIntrMask.value = 0;
+        }
+
+        LOGE("FINAL OVERRIDE: Slave interrupt mask FORCED to 0x%08X (TX_EMPTY initially disabled)\n",
+             regBase->icIntrMask.value);
+        LOGD("Slave mode smbus initialized with TX_EMPTY disabled - will be enabled on demand:%08X\n", 
+              regBase->icSmbusIntrMask.value );
+    
+        if (dev->smbFeatures.arpEnb) regBase->icSmbusIntrMask.value |= SMBUS_ARP_INTR_MASK;
+        LOGD("✓ Slave interrupt mask configured: 0x%08X (WR_REQ|RX_FULL|RD_REQ|TX_ABRT|RX_DONE|STOP_DET)\n",
              regBase->icIntrMask.value);
 
         /* 3. 最后：统一使能设备 */
@@ -2292,35 +1735,10 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
         LOGD("Final IC_SAR    = 0x%02X\n", regBase->icSar.fields.icSar);
         LOGD("Final IC_ENABLE = 0x%08X\n", regBase->icEnable.value);
         LOGD("Final IC_INTR_MASK = 0x%08X\n", regBase->icIntrMask.value);
+        LOGD("Final IC_INTR_SMBUS_MASK = 0x%08X\n", regBase->icSmbusIntrMask.value);
         LOGD("Final IC_TX_TL  = %d\n", regBase->icTxTl);
         LOGD("Final IC_RX_TL  = %d\n", regBase->icRxTl);
-    } else {
-        /* Fallback to original LOGEc for non-slave modes */
-        ic_con = regBase->icCon.value;
-        ic_con &= ~SMBUS_IC_ENABLE_MASK;  /* Master mode disable */
-        ic_con &= ~((1U << SMBUS_IC_CON_SLAVE_DISABLE_BIT));  /* Slave enable */
-        ic_con |= (1U << SMBUS_IC_CON_RESTART_EN_BIT);   /* Restart enable for combined transactions */
-        ic_con |= SMBUS_SPEED_FAST_CFG;   /* Fast mode by default */
-
-        /* Set address mode */
-        if (dev->addrMode == 1) {
-            ic_con |= (1U << SMBUS_IC_CON_10BIT_SLAVE_ADDR_BIT);  /* 10-bit slave addressing */
-        }
-
-        /* Configure SMBus features for slave mode */
-        ic_con |= (1U << SMBUS_IC_CON_ARP_ENABLE_BIT);  /* ARP enabled in slave mode */
-        ic_con |= (1U << SMBUS_IC_CON_QUICK_CMD_BIT);  /* SMBus slave quick command enable */
-
-        regBase->icCon.value = ic_con;
-
-        /* Set TX/RX FIFO thresholds for interrupt generation */
-        regBase->icTxTl = 0;  /* TX threshold: generate interrupt when TX FIFO is empty */
-        regBase->icRxTl = 0;  /* RX threshold: generate interrupt when RX FIFO has 1+ bytes */
     } 
-/*
- * 删除这里原本的 smbusSetSlaveAddr(dev);
- * 因为上面已经设置过 IC_SAR 了，避免重复操作和时序风险。
- */
     LOGD("SMBus: Slave probe completed successfully\n");
     return EXIT_SUCCESS;
 }
@@ -2338,7 +1756,6 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
  * @note Removes interrupt handlers and synchronization objects
  * @note Performs graceful shutdown of master operations
  * @warning This function should only be called in Master mode
- * [HAL] Hardware abstraction layer - master cleanup
  */
 S32 smbusUnprobeMaster(SmbusDev_s *dev)
 {
@@ -2357,7 +1774,6 @@ S32 smbusUnprobeMaster(SmbusDev_s *dev)
     LOGD("SMBus: Master unprobe completed successfully\n");
     return EXIT_SUCCESS;
 }
-
 /**
  * @brief SMBus slave unprobe function for cleanup
  * @details Disables SMBus controller, clears configuration, and removes
@@ -2371,7 +1787,7 @@ S32 smbusUnprobeMaster(SmbusDev_s *dev)
  * @note Removes interrupt handlers and frees slave buffers
  * @note Performs graceful shutdown of slave operations
  * @warning This function should only be called in Slave mode
- * [HAL] Hardware abstraction layer - slave cleanup
+
  */
 S32 smbusUnprobeSlave(SmbusDev_s *dev)
 {
@@ -2388,123 +1804,6 @@ S32 smbusUnprobeSlave(SmbusDev_s *dev)
     LOGD("SMBus: Slave unprobe completed successfully\n");
     return EXIT_SUCCESS;
 }
-
-/* ======================================================================== */
-/*                    HAL Layer - Host Notify Protocol                        */
-/* ======================================================================== */
-
-/**
- * @brief SMBus Host Notify core function
- * @details Implements the SMBus Host Notify protocol at the HAL layer.
- *          This function sends a Host Notify command to notify the host
- *          about device status changes using the SMBus Host Notify protocol.
- * @param[in] regBase Pointer to SMBus register map base address
- * @param[in] data Pointer to Host Notify data structure containing device address and status data
- * @return EXIT_SUCCESS on successful transmission, negative error code on failure:
- *         -EINVAL: Invalid parameters (NULL regBase or data)
- *         -EBUSY: Bus is busy or controller is not ready
- *         -EIO: Transmission failed or timeout occurred
- *         -EPROTO: Protocol error during communication
- *
- * @note Implements SMBus Host Notify protocol according to specification
- * @note Uses SMBus Host Notify fixed address (0x08) for communication
- * @note Sends device address followed by 16-bit status data
- * @note Handles bus idle checking and transmission completion
- * @note Configures controller for Host Notify operation
- * @warning This function should only be called in Master mode
- * @warning Caller must ensure proper device locking before calling this function
- */
-static S32 smbusHostNotifyCore(volatile SmbusRegMap_s *regBase, SmbusHostNotifyData_s *data)
-{
-    S32 ret = EXIT_SUCCESS;
-    SmbusIcEnableReg_u enable;
-    SmbusDev_s tempDev;
-
-    SMBUS_CHECK_PARAM(regBase == NULL || data == NULL, -EINVAL,
-                      "SMBus: Invalid parameters for Host Notify");
-
-    /* Create temporary device structure for utility functions */
-    memset(&tempDev, 0, sizeof(SmbusDev_s));
-    tempDev.regBase = (volatile SmbusRegMap_s *)regBase;
-
-    /* Step 1: Wait for bus to be idle */
-    ret = smbusWaitBusNotBusy(&tempDev);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: Bus busy, Host Notify failed\n");
-        return -EBUSY;
-    }
-
-    /* Step 2: Set target address to SMBus Host Notify fixed address (0x08) */
-    SmbusIcTarReg_u tar;
-    tar.value = 0;
-    tar.fields.icTar = SMBUS_HOST_NOTIFY_ADDR;
-    regBase->icTar.value = tar.value;
-
-    /* Step 3: Enable SMBus controller */
-    enable.value = 0;
-    enable.fields.enable = 1;
-    regBase->icEnable.value = enable.value;
-
-    /* Step 4: Send device address (identify) */
-    SmbusIcDataCmdReg_u dataCmd;
-    dataCmd.value = 0;
-    dataCmd.fields.dat = data->deviceAddr;
-    dataCmd.fields.cmd = 0;  /* Write command */
-    dataCmd.fields.stop = 0; /* Don't send stop yet */
-    dataCmd.fields.restart = 0;
-
-    regBase->icDataCmd.value = dataCmd.value;
-
-    /* Wait for TX ready */
-    ret = smbusCheckTxready(regBase);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: TX ready timeout for device address\n");
-        goto exit;
-    }
-
-    /* Step 5: Send 16-bit status data (low byte first) */
-    /* Send low byte */
-    dataCmd.fields.dat = (data->data & 0xFF);
-    dataCmd.fields.stop = 0; /* Don't send stop yet */
-
-    regBase->icDataCmd.value = dataCmd.value;
-
-    /* Wait for TX ready */
-    ret = smbusCheckTxready(regBase);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: TX ready timeout for status low byte\n");
-        goto exit;
-    }
-
-    /* Send high byte with STOP condition */
-    dataCmd.fields.dat = ((data->data >> 8) & 0xFF);
-    dataCmd.fields.stop = 1; /* Send STOP after this byte */
-
-    regBase->icDataCmd.value = dataCmd.value;
-
-    /* Step 6: Wait for transmission to complete */
-    ret = waitTransmitComplete(regBase);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: Host Notify transmission failed\n");
-        goto exit;
-    }
-
-    LOGD("SMBus: Host Notify sent successfully for device 0x%02X, data 0x%04X\n",
-         data->deviceAddr, data->data);
-    return EXIT_SUCCESS;
-
-exit:
-    /* Error handling: Send stop signal and disable controller */
-    LOGE("SMBus: Host Notify failed, cleaning up\n");
-    enable.value = regBase->icEnable.value;
-    enable.fields.enable = 0;
-    regBase->icEnable.value = enable.value;
-    return ret;
-}
-
-/* ======================================================================== */
-/*                    HAL Layer - Mode Switching                              */
-/* ======================================================================== */
 
 /**
  * @brief SMBus Master/Slave mode switch core function
@@ -2527,7 +1826,6 @@ exit:
  * @warning This function should be called with proper device locking
  * @warning Controller is temporarily disabled during mode switch
  * @warning All ongoing transfers will be aborted during mode switch
- * [HAL] Hardware abstraction layer - mode switching operations
  */
 static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
 {
@@ -2624,7 +1922,6 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
         /* CRITICAL FIX: Ensure RX_FULL is always enabled for read operations */
         U32 masterMask = SMBUS_INTR_TX_ABRT |      /* TX abort */
                            SMBUS_INTR_STOP_DET |     /* Stop detection */
-                           SMBUS_INTR_ACTIVITY |      /* Activity detection */
                            SMBUS_INTR_RX_FULL;       /* RX FIFO Full - CRITICAL FIX */
 
         dev->regBase->icIntrMask.value = masterMask;
@@ -2646,7 +1943,6 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
         LOGD("SMBus: Configured for slave mode, cfg=0x%08X, addr=0x%02X\n",
              dev->slaveCfg, dev->slaveAddr);
         /* Slave mode: Enable only interrupts needed for slave operations */
-        /* Use unified interrupt mask for slave mode (includes TX_EMPTY for timing handling) */
         dev->regBase->icIntrMask.value = SMBUS_SLAVE_INTR_MASK;
 
         LOGE("✓ Slave mode interrupt mask set: 0x%08X (expected: 0x2F4)\n", dev->regBase->icIntrMask.value);
@@ -2664,434 +1960,6 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
 
 exit:
     return ret;
-}
-
-/* ======================================================================== */
-/*                    HAL Layer - I2C Compatibility                           */
-/* ======================================================================== */
-
-/**
- * @brief I2C write operation for SMBus HAL layer
- * @details Implements I2C-compatible write operation at the HAL layer.
- *          This function provides direct I2C write capability without
- *          SMBus protocol overhead, enabling compatibility with I2C devices.
- * @param[in] dev Pointer to SMBus device structure
- * @param[in] slaveAddr 7-bit or 10-bit slave address
- * @param[in] dataBuf Pointer to data buffer to write
- * @param[in] length Number of bytes to write
- * @return EXIT_SUCCESS on successful write, negative error code on failure:
- *         -EINVAL: Invalid parameters (NULL dev or dataBuf, zero length)
- *         -EBUSY: Bus is busy or controller is not ready
- *         -EIO: I/O error during communication (NACK, timeout, bus error)
- *         -ETIMEDOUT: Transfer timeout
- *
- * @note Configures controller for master mode operation
- * @note Handles both 7-bit and 10-bit addressing
- * @note Performs basic I2C write without SMBus protocol overhead
- * @note Waits for bus idle before starting transfer
- * @note Configures appropriate timing based on device settings
- * @warning This function should only be called in Master mode
- * @warning Caller must ensure proper device locking before calling this function
- * [HAL] Hardware abstraction layer - I2C compatibility operations
- */
-static S32 smbusI2cWrite(SmbusDev_s *dev, U16 slaveAddr, const U8 *dataBuf, U32 length)
-{
-    S32 ret = EXIT_SUCCESS;
-    SmbusMsg_s msg;
-    U32 msgCount = 1;
-
-    SMBUS_CHECK_PARAM(dev == NULL || dev->regBase == NULL || dataBuf == NULL,
-                      -EINVAL, "SMBus: Invalid parameters for I2C write");
-
-    SMBUS_CHECK_PARAM(length == 0, -EINVAL, "SMBus: Zero length for I2C write");
-
-    SMBUS_CHECK_PARAM(length > SMBUS_MAX_BLOCK_LEN, -EINVAL,
-                      "SMBus: Length too large for I2C write: %u > %u", length, SMBUS_MAX_BLOCK_LEN);
-
-    /* Check device mode and handle accordingly */
-    if (dev->mode == SMBUS_MODE_MASTER) {
-        /* Master mode implementation */
-        LOGD("SMBus: Master mode I2C write to addr=0x%02X, len=%u\n", slaveAddr, length);
-
-        /* Additional validation: check if semaphore is valid */
-        if (dev->semaphoreId == 0) {
-            LOGE("SMBus: Invalid semaphoreId (0) - device not properly initialized\n");
-            LOGE("SMBus: Device dump - dev=%p, channelNum=%d, workMode=%d, restartEnb=%d\n",
-                 (void*)dev, dev->channelNum, dev->workMode, dev->restartEnb);
-            LOGE("SMBus: Device structure size = %zu bytes\n", sizeof(SmbusDev_s));
-            ret = -EINVAL;
-            goto exit;
-        }
-
-        /* Configure message for I2C write */
-        msg.addr = slaveAddr;
-        msg.flags = 0;  /* Write operation */
-        msg.len = length;
-        msg.buf = (U8 *)dataBuf;  /* Remove const for compatibility */
-
-        /* Wait for bus to be idle */
-        ret = smbusWaitBusNotBusy(dev);
-        if (ret != EXIT_SUCCESS) {
-            LOGE("SMBus: Bus busy, I2C write failed\n");
-            ret = -EBUSY;
-            goto exit;
-        }
-
-        /* Use existing SMBus transfer functionality for I2C compatibility */
-        ret = smbusDwXfer(dev, &msg, msgCount);
-        if (ret < 0) {
-            LOGE("SMBus: I2C write transfer failed, ret=%d\n", ret);
-            ret = -EIO;
-            goto exit;
-        }
-
-        LOGD("SMBus: Master I2C write completed successfully, addr=0x%02X, len=%d\n", slaveAddr, length);
-    } else {
-        /* Slave mode implementation - based on I2C driver pattern */
-        LOGD("SMBus: Slave mode I2C write: addr=0x%02X, len=%u\n", slaveAddr, length);
-
-        if (dev->workMode == 0) { /* Interrupt mode */
-            /* Validate slave buffers are available */
-            if (dev->slaveTxBuf == NULL) {
-                LOGE("SMBus: Slave TX buffer not allocated\n");
-                ret = -EINVAL;
-                goto exit;
-            }
-
-            /* Clear slave TX buffer */
-            memset(dev->slaveTxBuf, 0, SMBUS_MAX_BLOCK_LEN);
-
-            /* Copy data to slave TX buffer */
-            memcpy(dev->slaveTxBuf, (U8 *)dataBuf, length);
-
-            /* Set slave TX parameters */
-            dev->slaveValidTxLen = length;
-
-            LOGD("SMBus: Slave mode configured %u bytes for transmission\n", length);
-
-            ret = 0; /* Return immediately, actual success determined in ISR */
-        } else {
-            LOGE("SMBus: Slave polling mode not implemented\n");
-            ret = -ENOTSUP;
-            goto exit;
-        }
-    }
-
-exit:
-    return ret;
-}
-
-/**
- * @brief I2C read operation for SMBus HAL layer
- * @details Implements I2C-compatible read operation at the HAL layer.
- *          This function provides direct I2C read capability without
- *          SMBus protocol overhead, enabling compatibility with I2C devices.
- * @param[in] dev Pointer to SMBus device structure
- * @param[in] slaveAddr 7-bit or 10-bit slave address
- * @param[in,out] dataBuf Pointer to buffer to store read data
- * @param[in] length Number of bytes to read
- * @return EXIT_SUCCESS on successful read, negative error code on failure:
- *         -EINVAL: Invalid parameters (NULL dev or dataBuf, zero length)
- *         -EBUSY: Bus is busy or controller is not ready
- *         -EIO: I/O error during communication (NACK, timeout, bus error)
- *         -ETIMEDOUT: Transfer timeout
- *
- * @note Configures controller for master mode operation
- * @note Handles both 7-bit and 10-bit addressing
- * @note Performs basic I2C read without SMBus protocol overhead
- * @note Waits for bus idle before starting transfer
- * @note Configures appropriate timing based on device settings
- * @warning This function should only be called in Master mode
- * @warning Caller must ensure proper device locking before calling this function
- * [HAL] Hardware abstraction layer - I2C compatibility operations
- */
-static S32 smbusI2cRead(SmbusDev_s *dev, U16 slaveAddr, U8 *dataBuf, U32 length)
-{
-    S32 ret = EXIT_SUCCESS;
-
-    /* Parameter validation */
-    if (dev == NULL || dev->regBase == NULL || dataBuf == NULL) {
-        LOGE("SMBus: Invalid parameters for I2C read\n");
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    if (length == 0) {
-        LOGE("SMBus: Zero length for I2C read\n");
-        ret = -EINVAL;
-        goto exit;
-    }
-
-    /* ===== Mode-specific handling ===== */
-    if (dev->mode == SMBUS_MODE_MASTER) {
-        /* ===== MASTER MODE IMPLEMENTATION ===== */
-        SmbusMsg_s msg;
-        U32 msgCount = 1;
-
-        /* Additional validation: check if semaphore is valid */
-        if (dev->semaphoreId == 0) {
-            LOGE("SMBus: Invalid semaphoreId (0) - device not properly initialized\n");
-            LOGE("SMBus: Device dump - dev=%p, channelNum=%d, workMode=%d, restartEnb=%d\n",
-                 (void*)dev, dev->channelNum, dev->workMode, dev->restartEnb);
-            LOGE("SMBus: Device structure size = %zu bytes\n", sizeof(SmbusDev_s));
-            ret = -EINVAL;
-            goto exit;
-        }
-
-        /* Configure message for I2C read */
-        msg.addr = slaveAddr;
-        msg.flags = 1;  /* Read operation */
-        msg.len = length;
-        msg.buf = dataBuf;
-
-        /* Wait for bus to be idle */
-        ret = smbusWaitBusNotBusy(dev);
-        if (ret != EXIT_SUCCESS) {
-            LOGE("SMBus: Bus busy, I2C read failed\n");
-            ret = -EBUSY;
-            goto exit;
-        }
-
-        /* Use existing SMBus transfer functionality for I2C compatibility */
-        ret = smbusDwXfer(dev, &msg, msgCount);
-        if (ret < 0) {
-            LOGE("SMBus: I2C read transfer failed, ret=%d\n", ret);
-            ret = -EIO;
-            goto exit;
-        }
-
-        LOGD("SMBus: I2C MASTER read completed successfully, addr=0x%02X, len=%d\n", slaveAddr, length);
-        LOGD("SMBus: I2C MASTER read data: ");
-        for (U32 i = 0; i < length && i < 8; i++) {  /* Log first 8 bytes */
-            LOGD("0x%02X ", dataBuf[i]);
-        }
-        LOGD("\n");
-
-    } else {
-        /* ===== SLAVE MODE IMPLEMENTATION ===== */
-        LOGD("SMBus: I2C SLAVE read operation\n");
-
-        /* Note: In Slave mode, we read from the receive buffer that was filled by ISR */
-        /* Based on I2C driver implementation pattern */
-
-        /* For Slave mode, we need to handle interrupt-based read operations */
-        if (dev->workMode == 0) {  /* Interrupt mode */
-            /* Check if we have valid data in the slave RX buffer */
-            if (dev->slaveValidRxLen == 0) {
-                LOGD("SMBus: SLAVE mode - no data available in RX buffer (scan scenario)\n");
-                ret = 0;  /* Scan scenario - return 0 similar to I2C implementation */
-                goto exit;
-            } else {
-                /* Copy data from slave RX buffer to user buffer */
-                U32 copyLen = (length < dev->slaveValidRxLen) ? length : dev->slaveValidRxLen;
-
-                LOGD("SMBus: SLAVE mode - copying %u bytes from RX buffer (available: %u)\n",
-                     copyLen, dev->slaveValidRxLen);
-
-                /* Safety check: ensure slaveRxBuf is not NULL */
-                if (dev->slaveRxBuf == NULL) {
-                    LOGE("SMBus: SLAVE mode - slaveRxBuf is NULL\n");
-                    ret = -EINVAL;
-                    goto exit;
-                }
-
-                /* Copy data with bounds checking */
-                memcpy(dataBuf, dev->slaveRxBuf, copyLen);
-
-                /* CRITICAL DEBUG: Print slave RX buffer source data */
-                LOGE("SMBus: SLAVE mode - slaveRxBuf source (%u bytes): ", copyLen);
-                for (U32 i = 0; i < copyLen && i < 16; i++) {
-                    LOGE("0x%02X ", dev->slaveRxBuf[i]);
-                }
-                if (copyLen > 16) {
-                    LOGE("... (%u more bytes)", copyLen - 16);
-                }
-                LOGE("\n");
-
-                /* CRITICAL DEBUG: Print dataBuf destination data */
-                LOGE("SMBus: SLAVE mode - dataBuf destination (%u bytes): ", copyLen);
-                for (U32 i = 0; i < copyLen && i < 16; i++) {
-                    LOGE("0x%02X ", dataBuf[i]);
-                }
-                if (copyLen > 16) {
-                    LOGE("... (%u more bytes)", copyLen - 16);
-                }
-                LOGE("\n");
-
-                /* Clear the slave RX buffer after copying */
-                memset(dev->slaveRxBuf, 0, dev->slaveValidRxLen);
-                dev->slaveValidRxLen = 0;
-
-                LOGD("SMBus: SLAVE mode - successfully copied %u bytes, buffer cleared\n", copyLen);
-
-                ret = copyLen;  /* Return actual number of bytes copied */
-                goto exit;
-            }
-        } else {
-            /* Polling mode - not supported in SMBus implementation */
-            LOGE("SMBus: SLAVE polling mode not supported\n");
-            ret = -EPERM;  /* Operation not permitted */
-            goto exit;
-        }
-    }
-
-    ret = EXIT_SUCCESS;
-
-exit:
-    return ret;
-}
-
-/**
- * @brief I2C write-then-read operation for SMBus HAL layer
- * @details Implements I2C-compatible write-then-read operation at the HAL layer.
- *          This function provides direct I2C write-read capability without
- *          SMBus protocol overhead, enabling compatibility with I2C devices.
- * @param[in] dev Pointer to SMBus device structure
- * @param[in] slaveAddr 7-bit or 10-bit slave address
- * @param[in] writeBuf Pointer to data buffer to write
- * @param[in] writeLen Number of bytes to write
- * @param[out] readBuf Pointer to buffer to store read data
- * @param[in] readLen Number of bytes to read
- * @return EXIT_SUCCESS on successful operation, negative error code on failure:
- *         -EINVAL: Invalid parameters (NULL pointers, zero lengths)
- *         -EBUSY: Bus is busy or controller is not ready
- *         -EIO: I/O error during communication (NACK, timeout, bus error)
- *         -ETIMEDOUT: Transfer timeout
- *
- * @note Configures controller for master mode operation
- * @note Handles both 7-bit and 10-bit addressing
- * @note Performs combined write-then-read transaction with repeated start
- * @note Waits for bus idle before starting transfer
- * @note Configures appropriate timing based on device settings
- * @warning This function should only be called in Master mode
- * @warning Caller must ensure proper device locking before calling this function
- */
-static S32 smbusI2cWriteRead(SmbusDev_s *dev, U16 slaveAddr, const U8 *writeBuf, U32 writeLen, U8 *readBuf, U32 readLen)
-{
-    S32 ret = EXIT_SUCCESS;
-    SmbusMsg_s msgs[2];
-    U32 msgCount = 2;
-
-    /* Parameter validation */
-    if (dev == NULL || dev->regBase == NULL || writeBuf == NULL || readBuf == NULL) {
-        LOGE("SMBus: Invalid parameters for I2C write-read\n");
-        return -EINVAL;
-    }
-
-    if (writeLen == 0 || readLen == 0) {
-        LOGE("SMBus: Zero length for I2C write-read\n");
-        return -EINVAL;
-    }
-
-    /* Configure messages for I2C write-then-read */
-    /* First message: Write operation */
-    msgs[0].addr = slaveAddr;
-    msgs[0].flags = 0;  /* Write operation */
-    msgs[0].len = writeLen;
-    msgs[0].buf = (U8 *)writeBuf;  /* Remove const for compatibility */
-
-    /* Second message: Read operation */
-    msgs[1].addr = slaveAddr;
-    msgs[1].flags = 1;  /* Read operation */
-    msgs[1].len = readLen;
-    msgs[1].buf = readBuf;
-
-    /* Wait for bus to be idle */
-    ret = smbusWaitBusNotBusy(dev);
-    if (ret != EXIT_SUCCESS) {
-        LOGE("SMBus: Bus busy, I2C write-read failed\n");
-        return -EBUSY;
-    }
-
-    /* Use existing SMBus transfer functionality for I2C compatibility */
-    ret = smbusDwXfer(dev, msgs, msgCount);
-    if (ret < EXIT_SUCCESS ) {
-        LOGE("SMBus: I2C write-read transfer failed, ret=%d\n", ret);
-        return -EIO;
-    }
-
-    LOGD("SMBus: I2C write-read completed successfully, buf=0x%02X, write=%d, read=%d\n",
-         msgs[1].buf[0], writeLen, readLen);
-    return EXIT_SUCCESS;
-}
-
-/* ======================================================================== */
-/*                    Async Interrupt Handler Functions                     */
-/* ======================================================================== */
-
-/**
- * @brief Read and clear interrupt bits for async SMBus transfers
- * @details Reads the interrupt status register and clears all pending
- *          interrupt bits by reading the appropriate clear registers.
- *          This function is essential for async interrupt operation.
- * @param[in] dev Pointer to SMBus device structure
- * @return Raw interrupt status before clearing
- * @note Based on I2C's i2c_dw_read_clear_intrbits implementation
- * @note Handles all interrupt types: RX_UNDER, RX_OVER, TX_OVER, TX_ABRT, etc.
- * @note Preserves TX abort source information before clearing
- * [ASYNC] Async interrupt support - interrupt status handling
- */
-static inline U32 smbusDwReadClearIntrbits(SmbusDev_s *dev)
-{
-    volatile SmbusRegMap_s *regBase = dev->regBase;
-    U32 stat,dummy;
-
-    if (regBase == NULL) {
-        LOGE("SMBus: Invalid register base in ISR\n");
-        return 0;
-    }
-
-    /*
-     * The IC_INTR_STAT register just indicates "enabled" interrupts.
-     * The unmasked raw version of interrupt status bits is available
-     * in the IC_RAW_INTR_STAT register.
-     *
-     * That is,
-     *   stat = readl(IC_INTR_STAT);
-     * equals to,
-     *   stat = readl(IC_RAW_INTR_STAT) & readl(IC_INTR_MASK);
-     *
-     * The raw version might be useful for debugging purposes.
-     */
-    stat = regBase->icIntrStat.value;
-
-    /*
-     * Do not use the IC_CLR_INTR register to clear interrupts, or
-     * you'll miss some interrupts, triggered during the period from
-     * readl(IC_INTR_STAT) to readl(IC_CLR_INTR).
-     *
-     * Instead, use the separately-prepared IC_CLR_* registers.
-     */
-    if (stat & SMBUS_INTR_RX_UNDER)
-        dummy = regBase->icClrRxUnder;
-    if (stat & SMBUS_INTR_RX_OVER)
-        dummy = regBase->icClrRxOver;
-    if (stat & SMBUS_INTR_TX_OVER)
-        dummy = regBase->icClrTxOver;
-    if (stat & SMBUS_INTR_RD_REQ)
-        dummy = regBase->icClrRdReq;
-    if (stat & SMBUS_INTR_TX_ABRT) {
-        /*
-         * The IC_TX_ABRT_SOURCE register is cleared whenever
-         * the IC_CLR_TX_ABRT is read.  Preserve it beforehand.
-         */
-        dev->abortSource = regBase->icTxAbrtSource.value;
-        dummy = regBase->icClrTxAbrt;
-    }
-    if (stat & SMBUS_INTR_RX_DONE)
-        dummy = regBase->icClrRxDone;
-    if (stat & SMBUS_INTR_ACTIVITY)
-        dummy = regBase->icClrActivity;
-    if ((stat & SMBUS_INTR_STOP_DET) &&
-            ((dev->rxOutstanding == 0) || (stat & SMBUS_INTR_RX_FULL)))
-        dummy = regBase->icClrStopDet;
-    if (stat & SMBUS_INTR_START_DET)
-        dummy = regBase->icClrStartDet;
-    if (stat & SMBUS_INTR_GEN_CALL)
-        dummy = regBase->icClrGenCall;
-    
-    dummy = dummy;
-    return stat;
 }
 
 /**
@@ -3115,11 +1983,15 @@ static U8 smbusDwRecvLen(SmbusDev_s *dev, U8 len)
      * Adjust the buffer length and mask the flag
      * after receiving the first byte.
      */
-    len += (flags & SMBUS_M_PEC) ? 2 : 1;  /* +1 for cmd, +1 for PEC if enabled */
-    dev->masterTxBufLen = len - ((len < dev->rxOutstanding) ? len : dev->rxOutstanding);
+    len += (flags & SMBUS_M_PEC) ? 2 : 1;  ///< +1 for cmd, +1 for PEC if enabled 
+    /* Adjust tx buffer len logic if your driver uses it to trigger reads 
+     * This part depends heavily on how your TX_EMPTY logic uses masterTxBufLen 
+     * Assuming logic: generate 'remaining' number of READ commands 
+     */
+    dev->masterTxBufLen = len - 1;
+
     msgs[dev->msgReadIdx].len = len;
     msgs[dev->msgReadIdx].flags &= ~SMBUS_M_RECV_LEN;
-
     /*
      * Received buffer length, re-enable TX_EMPTY interrupt
      * to resume the SMBus Block Read transaction.
@@ -3128,141 +2000,14 @@ static U8 smbusDwRecvLen(SmbusDev_s *dev, U8 len)
     intrMask = dev->regBase->icIntrMask.value;
     intrMask |= SMBUS_INTR_TX_EMPTY;
     dev->regBase->icIntrMask.value = intrMask;
-
+    
     LOGD("SMBus: Block Read len adjusted to %u, re-enabled TX_EMPTY\n", len);
 
+    LOGD("RecvLen: LenByte=%d, PEC_Flag=%s, FinalTotalLen=%d\n", 
+         len, (flags & SMBUS_M_PEC) ? "SET" : "CLEAR", len);
     return len;
 }
 
-#if 0
-/**
- * @brief SMBus read handler (hardware-driven flow)
- * @details Strictly follows DW I2C Databook flow:
- *          RX_FULL interrupt → drain hardware FIFO → handle I2C_M_RECV_LEN → continue
- * @param[in] dev Pointer to SMBus device structure
- * @return void
- *
- * @note Does NOT use software counters for synchronization
- * @note Relies on hardware flow control via IC_RXFLR register
- * @note Automatically handles Block Read via I2C_M_RECV_LEN flag
- * @note Re-enables TX_EMPTY when length byte is received (critical!)
- * [HAL] Hardware abstraction layer - interrupt-driven read
- */
-static void smbusDwRead(SmbusDrvData_s *pDrvData, void *buf, U32 len)
-{
-    volatile SmbusRegMap_s *regBase;
-    SmbusDev_s *dev;
-    SmbusMsg_s *msgs;
-    U32 rxValid;
-    U32 len;
-    U8 *buf;
-
-    if (pDrvData == NULL) {
-        LOGE("SMBus: Invalid driver data in read ISR\n");
-        return;
-    }
-
-    dev = &pDrvData->pSmbusDev;
-    regBase = dev->regBase;
-    msgs = dev->msgs;
-
-    if (regBase == NULL || msgs == NULL) {
-        LOGE("SMBus: Invalid device or message in read ISR\n");
-        return;
-    }
-
-    /* Iterate through all read messages */
-    for (; dev->msgReadIdx < dev->msgsNum; dev->msgReadIdx++) {
-        U32 tmp;
-        U32 flags;
-
-        LOGD("SMBus: Processing msg[%d], flags=0x%X, status=0x%X\n",
-             dev->msgReadIdx, msgs[dev->msgReadIdx].flags, dev->status);
-
-        /* Skip write messages */
-        if (!(msgs[dev->msgReadIdx].flags & SMBUS_M_RD)) {
-            continue;
-        }
-
-        /* Determine buffer and length based on read state */
-        if (!(dev->status & SMBUS_STATUS_READ_IN_PROGRESS)) {
-            /* Fresh read - use message buffer */
-            len = msgs[dev->msgReadIdx].len;
-            buf = msgs[dev->msgReadIdx].buf;
-        } else {
-            /* Continuation of partial read - use pDrvData->rxBuffer */
-            len = pDrvData->rxLength;
-            memcpy(buf, pDrvData->rxBuffer, len);
-        }
-
-        /* Read actual FIFO level from hardware (KEY: no software counter) */
-        rxValid = regBase->icRxflr;
-        LOGD("SMBus: Hardware FIFO level=%u, remaining len=%u\n", rxValid, len);
-
-        /* Drain FIFO while data is available and buffer has space */
-        for (; len > 0 && rxValid > 0; len--, rxValid--) {
-            flags = msgs[dev->msgReadIdx].flags;
-
-            LOGD("SMBus: Reading byte, len=%u, rxValid=%u, flags=0x%X\n", 
-                 len, rxValid, flags);
-
-            /* Read data from hardware FIFO */
-            tmp = regBase->icDataCmd.value;
-            tmp &= 0xFF;  /* Extract data byte */
-
-            /* Handle Block Read length byte (I2C_M_RECV_LEN) */
-            if (flags & SMBUS_M_RECV_LEN) {
-                /*
-                 * CRITICAL: DW I2C Databook mechanism for Block Read
-                 * 
-                 * If IC_EMPTYFIFO_HOLD_MASTER_EN is set, the controller 
-                 * can be disabled if STOP bit is set. But it is only set
-                 * after receiving block data response length in Block Read.
-                 * That needs to read another byte with STOP bit when the
-                 * block data response length is invalid to complete transaction.
-                 */
-                if (!tmp || tmp > SMBUS_BLOCK_MAXLEN) {
-                    tmp = 1;  /* Minimal valid length to complete transfer */
-                }
-
-                /* Adjust length and re-enable TX_EMPTY (KEY MECHANISM) */
-                len = smbusDwRecvLen(dev, tmp);
-            }
-
-            /* Store received byte */
-            *buf++ = tmp;
-            dev->rxOutstanding--;
-        }
-
-        /* Check if current message is complete */
-        if (len > 0) {
-            /* 
-             * Message not complete - save state and wait for next RX_FULL
-             * This is the hardware flow control mechanism
-             */
-            if (len > pDrvData->rxBufferSize) {
-                LOGE("SMBus: Remaining data size %u exceeds buffer size %u\n", 
-                    len, pDrvData->rxBufferSize);
-                dev->status |= SMBUS_ERR_RX_OVER;
-                return;
-            }
-    
-            /* Copy remaining data from stack buffer to heap buffer */
-            memcpy(pDrvData->rxBuffer, buf, len);
-            pDrvData->rxLength = len;
-            dev->status |= SMBUS_STATUS_READ_IN_PROGRESS;
-            LOGD("SMBus: Read incomplete, %u bytes remaining\n", len);
-            return;
-        } else {
-            /* Message complete - clear read-in-progress flag */
-            dev->status &= ~SMBUS_STATUS_READ_IN_PROGRESS;
-            LOGD("SMBus: Message[%d] read complete\n", dev->msgReadIdx);
-        }
-    }
-
-    LOGD("SMBus: All read messages processed\n");
-}
-#endif
 /**
  * @brief SMBus read handler (hardware-driven flow)
  * @details Strictly follows DW I2C Databook flow:
@@ -3309,7 +2054,7 @@ static void smbusDwRead(SmbusDrvData_s *pDrvData, void *buf, U32 maxLen)
             continue;
         }
 
-        /* * 获取当前 buffer 中已经积累的数据长度。
+        /* 获取当前 buffer 中已经积累的数据长度。
          * 如果是新消息，rxLength 应在处理完上一条后被清零，这里就是 0。
          * 如果是断点续传，这里就是上次中断留下的长度。
          */
@@ -3335,23 +2080,34 @@ static void smbusDwRead(SmbusDrvData_s *pDrvData, void *buf, U32 maxLen)
             /* Read data from hardware FIFO */
             tmp = regBase->icDataCmd.value;
             tmp &= 0xFF;  /* Extract data byte */
-
+            LOGD("ISR Read: Byte[%u] = 0x%02X (MsgIdx=%d, Offset=%u, TotalExpected=%u)\n", 
+                 pDrvData->rxLength, tmp, dev->msgReadIdx, currentRxOffset, msgTotalLen);
             /* Handle Block Read length byte (I2C_M_RECV_LEN) */
             if (flags & SMBUS_M_RECV_LEN) {
                 /*
                  * Logic for Block Read: First byte received is the length.
                  * We need to update the expected message length.
                  */
-                if (!tmp || tmp > SMBUS_BLOCK_MAXLEN) {
-                    tmp = 1;  /* Minimal valid length to complete transfer */
-                }
+                if (currentRxOffset == 0) {
+                    if (!tmp || tmp > SMBUS_BLOCK_MAXLEN) {
+                        tmp = 1;  /* Minimal valid length to complete transfer */
+                    }
 
-                /* Adjust expected length and re-enable TX_EMPTY */
-                /* 注意：这里 smbusDwRecvLen 应该只更新硬件/msg状态，不应重置 rxLength */
-                msgTotalLen = smbusDwRecvLen(dev, tmp);
+                    /* 注意：这里 smbusDwRecvLen 应该只更新硬件/msg状态，不应重置 rxLength */
+                    msgTotalLen = smbusDwRecvLen(dev, tmp);
                 
-                /* 更新消息结构体中的长度，确保后续判断完成条件正确 */
-                msgs[dev->msgReadIdx].len = msgTotalLen;
+                    /* 更新消息结构体中的长度，确保后续判断完成条件正确 */
+                    msgs[dev->msgReadIdx].len = msgTotalLen;
+                    LOGD("ISR RecvLen: New MsgTotalLen = %u\n", msgTotalLen);
+                    /* XferMsg 里停止操作。现在知道了总长度，
+                     * 需要让 TX 逻辑(smbusDwXferMsg)醒过来，把剩余的 (Len-1) 个 CMD 发出去。
+                     */
+                    U32 mask = regBase->icIntrMask.value;
+                    if (!(mask & SMBUS_INTR_TX_EMPTY)) {
+                         regBase->icIntrMask.value = mask | SMBUS_INTR_TX_EMPTY;
+                         LOGD("ISR: Re-enabling TX_EMPTY to queue remaining block bytes\n");
+                    }
+                }
             }
 
             /* Store received byte into the PASSED buffer at current offset */
@@ -3359,7 +2115,7 @@ static void smbusDwRead(SmbusDrvData_s *pDrvData, void *buf, U32 maxLen)
             
             /* Update global tracking */
             pDrvData->rxLength = currentRxOffset;
-            dev->rxOutstanding--; // 减少硬件待接收计数
+            dev->rxOutstanding--; ///< 减少硬件待接收计数
             rxValid--;
             
             /* Check if this specific message is fully received */
@@ -3395,9 +2151,28 @@ static void smbusDwRead(SmbusDrvData_s *pDrvData, void *buf, U32 maxLen)
             return; // Exit ISR, wait for next RX_FULL
         }
     }
-
+    /* 1. 只有当所有软件层面的消息都处理完时，才检查残留 */
+    if (dev->msgReadIdx >= dev->msgsNum) {  
+        /* 2. 再次检查硬件 FIFO 是否为空 */
+        U32 residual = regBase->icRxflr;
+        
+        if (residual > 0) {
+            LOGW("SMBus: Msgs done but FIFO has %u ghost bytes (outstanding=%d) - DRAINING!\n", 
+                 residual, dev->rxOutstanding);        
+            /* 3. 强制排空 FIFO */
+            while (regBase->icRxflr > 0) {
+                volatile U32 dummy = regBase->icDataCmd.value;
+                (void)dummy;      
+                /* 4. 同步修正 rxOutstanding 计数，确保上层 ISR 能正确判断结束条件 */
+                if (dev->rxOutstanding > 0) {
+                    dev->rxOutstanding--;
+                }
+            }
+        }
+    }
     LOGD("SMBus: All read messages processed\n");
 }
+
 /**
  * @brief Initiate and continue low level SMBus master read/write transaction
  * @details This function is called from smbusDwIsr to pump SmbusMsg_s messages
@@ -3408,27 +2183,6 @@ static void smbusDwRead(SmbusDrvData_s *pDrvData, void *buf, U32 maxLen)
  *
  * @note Based on Linux i2c_dw_xfer_msg with SMBus-specific enhancements
  * @note Follows DW_apb_i2c 2.03a databook recommendations
- * [HAL] Hardware abstraction layer - transfer message handling
- */
-/**
- * @brief Initiate and continue low level SMBus master read/write transaction
- * @details This function is called from smbusDwIsr to pump SmbusMsg_s messages
- *          into the TX buffer. Handles messages longer than FIFO depth.
- * @param[in] dev Pointer to SMBus device structure
- * @note Based on Linux i2c_dw_xfer_msg, adapted for your project structure
- * @note Follows DW_apb_i2c 2.03a databook section 7.5
- */
-/**
- * @brief Initiate and continue low level SMBus master read/write transaction
- * @details This function is called from smbusDwIsr to pump SmbusMsg_s messages
- *          into the TX buffer. Handles messages longer than FIFO depth by
- *          processing them in multiple interrupt cycles.
- * @param[in] dev Pointer to SMBus device structure
- * @return void
- *
- * @note Based on Linux i2c_dw_xfer_msg with SMBus-specific enhancements
- * @note Follows DW_apb_i2c 2.03a databook recommendations
- * [HAL] Hardware abstraction layer - transfer message handling
  */
 static void smbusDwXferMsg(SmbusDev_s *dev)
 {
@@ -3451,7 +2205,7 @@ static void smbusDwXferMsg(SmbusDev_s *dev)
 
     regBase = dev->regBase;
     msgs = dev->msgs;
-    
+
     /* Get target address from first message */
     addr = msgs[dev->msgWriteIdx].addr;
 
@@ -3492,6 +2246,18 @@ static void smbusDwXferMsg(SmbusDev_s *dev)
             /* Continue with current buffer position */
             buf = dev->masterTxBuf;
             bufLen = dev->masterTxBufLen;
+            if ((flags & SMBUS_M_RECV_LEN) && (msg->len < SMBUS_MAX_BLOCK_LEN)) {
+                /* * 说明 ISR 已经收到了长度字节，并将 msg->len 修正为真实长度(例如 9)。
+                 * 之前我们发了 1 个 CMD 用于读长度，所以剩余需要发送的 CMD 数量是 len - 1。
+                 * 之前的 masterTxBufLen 保存的是 32 (33-1)，那是错误的，必须覆盖。
+                 */
+                if (msg->len >= 1) {
+                    bufLen = msg->len - 1; 
+                } else {
+                    bufLen = 0;
+                }
+                LOGD("SMBus: Resuming RECV_LEN msg, adjusted remaining cmds to %d\n", bufLen);
+            }
         }
 
         /*
@@ -3511,7 +2277,16 @@ static void smbusDwXferMsg(SmbusDev_s *dev)
         /* Process data while FIFO has space and data remains */
         while (bufLen > 0 && txLimit > 0 && rxLimit > 0) {
             cmd = 0;
-
+            if (flags & SMBUS_M_RECV_LEN) {
+                /* * 如果是 Block Read，且 msg->len 还是初始值(例如 33)，
+                 * 说明我们还没有读到长度字节。
+                 * 此时，严禁发送超过 1 个 Read Command。
+                 */
+                if ((msg->len > SMBUS_MAX_BLOCK_LEN) && (dev->rxOutstanding >= 1)) {
+                    LOGD("SMBus: RECV_LEN phase 1 - waiting for length byte via ISR\n");
+                    break; ///< 跳出 while 循环，停止填充 FIFO
+                }
+            }
             /*
              * Set STOP bit on last byte of last message
              * Exception: I2C_M_RECV_LEN requires dynamic length adjustment
@@ -3550,8 +2325,8 @@ static void smbusDwXferMsg(SmbusDev_s *dev)
                 rxLimit--;
                 dev->rxOutstanding++;
                 
-                LOGD("SMBus: Queued READ cmd=0x%03X, rxOut now=%d\n",
-                     cmd, dev->rxOutstanding);
+                LOGD("SMBus: Queued READ cmd=0x%03X, rxOut now=%d\n", 
+                    cmd, dev->rxOutstanding);
             } else {
                 /* Write data byte to TX FIFO */
                 cmd |= (*buf & 0xFF);
@@ -3578,23 +2353,25 @@ static void smbusDwXferMsg(SmbusDev_s *dev)
         }
 
         /*
-         * Handle SMBus Block Read with dynamic length (first byte is count)
-         * Disable TX_EMPTY interrupt while waiting for length byte
-         * to avoid interrupt flood
-         */
-        if (flags & SMBUS_M_RECV_LEN) {
+        * Handle SMBus Block Read with dynamic length (first byte is count)
+        * Disable TX_EMPTY interrupt while waiting for length byte
+        * to avoid interrupt flood
+        */
+        if (bufLen > 0) {
             dev->status |= SMBUS_STATUS_WRITE_IN_PROGRESS;
-            LOGD("SMBus: RECV_LEN mode, disabling TX_EMPTY\n");
-            break;
-        } else if (bufLen > 0) {
-            /* More bytes to write in current message */
-            dev->status |= SMBUS_STATUS_WRITE_IN_PROGRESS;
-            LOGD("SMBus: %d bytes remaining in current msg\n", bufLen);
+            if (flags & SMBUS_M_RECV_LEN) {
+                LOGD("SMBus: RECV_LEN pause, disabling TX_EMPTY until ISR\n");
+            } else {
+                LOGD("SMBus: %d bytes remaining in current msg\n", bufLen);
+            }
             break;
         } else {
-            /* Current message complete */
             dev->status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS;
-            LOGD("SMBus: Message[%d] queued completely\n", dev->msgWriteIdx);
+            if (flags & SMBUS_M_RECV_LEN) {
+                LOGD("SMBus: Message[%d] queued completely (RECV_LEN)\n", dev->msgWriteIdx);
+            } else {
+                LOGD("SMBus: Message[%d] queued completely\n", dev->msgWriteIdx);
+            }
         }
     }
     
@@ -3607,7 +2384,6 @@ static void smbusDwXferMsg(SmbusDev_s *dev)
         while (timeout-- && regBase->icStatus.fields.tfe == 0) {
         udelay(1);
     }
-
     LOGD("SMBus: All queued, TFE=%d, timeout=%d\n", 
          regBase->icStatus.fields.tfe, timeout);
     }
@@ -3616,218 +2392,8 @@ static void smbusDwXferMsg(SmbusDev_s *dev)
         LOGE("SMBus: Error detected (0x%X), disabling all interrupts\n",
              dev->msgErr);
     }
+
 }
-
-/**
- * @brief SMBus I2C reset function for hardware recovery
- * @details This function implements a comprehensive reset sequence for the SMBus controller
- *          following the I2C reset pattern. It handles both Master and Slave modes,
- *          performs hardware recovery, clock enable/reset, and reinitializes the controller.
- * @param[in] dev Pointer to SMBus device structure
- * @param[in] devId Device identifier for clock/reset operations
- * @return EXIT_SUCCESS on successful reset, negative error code on failure:
- *         -EINVAL: Invalid parameters (NULL dev)
- *         -EIO: Hardware reset or reinitialization failed
- *
- * @note Based on I2C reset pattern from i2c driver
- * @note Handles SDA stuck recovery for Master mode
- * @note Clears SMBus interrupt mask during reset
- * @note Reconfigures controller based on current mode
- * @note Supports both interrupt and polling modes for Slave
- * @warning This function performs hardware reset - ensure bus isolation if needed
- * @warning Controller will be temporarily disabled during reset sequence
- * [HAL] Hardware abstraction layer - I2C compatibility reset operations
- */
-S32 smbusI2cReset(SmbusDev_s *dev, DevList_e devId)
-{
-    S32 ret = EXIT_SUCCESS;
-
-    /* Parameter validation */
-    if (dev == NULL || dev->regBase == NULL) {
-        LOGE("SMBus I2C Reset: Invalid device structure\n");
-        return -EINVAL;
-    }
-
-    LOGD("SMBus I2C Reset: Starting reset for device %d, mode=%s\n",
-         devId, (dev->mode == DW_SMBUS_MODE_MASTER) ? "MASTER" : "SLAVE");
-
-    /* Step 1: Perform mode-specific cleanup (similar to i2c_dw_sda_stuck_recover/unprobe) */
-    if (dev->mode == DW_SMBUS_MODE_MASTER) {
-        /* Master mode: Enable comprehensive SDA stuck recovery and unprobe */
-        LOGD("SMBus I2C Reset: Master mode - performing comprehensive SDA stuck recovery\n");
-
-        /* [Enable comprehensive SDA stuck recovery LOGEc] */
-        SmbusIcEnableReg_u enable;
-        SmbusIcConReg_u conTmp;
-        SmbusIcStatusReg_u statusTmp;
-        SmbusIcTxAbrtSourceReg_u abortTmp;
-        U32 recoveryTimeout;
-
-        /* Step 1: Disable controller */
-        enable.value = dev->regBase->icEnable.value;
-        enable.fields.enable = 0;
-        dev->regBase->icEnable.value = enable.value;
-
-        /* Step 2: Wait for controller to be fully disabled */
-        rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(1));
-
-        /* Step 3: Configure bus clear control in CON register */
-        conTmp.value = dev->regBase->icCon.value;
-        conTmp.value |= SMBUS_IC_CON_BUS_CLEAR_CTRL_MASK;
-        dev->regBase->icCon.value = conTmp.value;
-
-        /* Step 4: Re-enable controller */
-        smbusEnable(dev);
-        /* Step 5: Wait for stabilization */
-        rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(1));
-
-        /* Step 6: Check abort source for SDA stuck condition */
-        abortTmp.value = dev->regBase->icTxAbrtSource.value;
-        if (abortTmp.value & SMBUS_IC_TX_ABRT_SDA_STUCK_AT_LOW_MASK) {
-            LOGD("SMBus I2C Reset: SDA stuck condition detected, starting recovery\n");
-
-            /* Step 7: Start SDA stuck recovery */
-            enable.value = dev->regBase->icEnable.value;
-            enable.fields.sdaStuckRecoveryEnable = 1;
-            dev->regBase->icEnable.value = enable.value;
-
-            /* Step 8: Wait for recovery completion with timeout */
-            recoveryTimeout = SMBUS_SDA_STUCK_RECOVERY_TIMEOUT_MS;
-            while (recoveryTimeout > 0) {
-                rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(1));
-
-                enable.value = dev->regBase->icEnable.value;
-                if (!(enable.value & (1U << 3))) { /* SDA_STUCK_RECOVERY bit is bit 3 */
-                    /* Recovery completed successfully */
-                    LOGD("SMBus I2C Reset: SDA stuck recovery completed successfully\n");
-                    break;
-                }
-                recoveryTimeout--;
-            }
-
-            if (recoveryTimeout == 0) {
-                /* SDA stuck recovery timeout */
-                LOGE("SMBus I2C Reset: SDA stuck recovery timeout\n");
-                return -SMBUS_ERR_TX_ABRT;
-            } else {
-                /* Step 9: Check final recovery status */
-                statusTmp.value = dev->regBase->icStatus.value;
-                if (statusTmp.value & SMBUS_IC_STATUS_SDA_STUCK_NOT_RECOVERED_MASK) {
-                    /* SDA stuck cannot be recovered */
-                    LOGE("SMBus I2C Reset: SDA stuck cannot be recovered\n");
-                    return -SMBUS_ERR_TX_ABRT;
-                }
-            }
-        } else {
-            LOGD("SMBus I2C Reset: No SDA stuck condition detected\n");
-        }
-
-        /* Unprobe master to clean up current state */
-        ret = smbusUnprobeMaster(dev);
-        if (ret != EXIT_SUCCESS) {
-            LOGW("SMBus I2C Reset: Master unprobe failed, continuing with reset: %d\n", ret);
-            /* Continue with reset even if unprobe fails */
-        }
-    } else {
-        /* Slave mode: Unprobe slave to clean up current state */
-        LOGD("SMBus I2C Reset: Slave mode - unprobing slave\n");
-
-        ret = smbusUnprobeSlave(dev);
-        if (ret != EXIT_SUCCESS) {
-            LOGW("SMBus I2C Reset: Slave unprobe failed, continuing with reset: %d\n", ret);
-            /* Continue with reset even if unprobe fails */
-        }
-    }
-
-    /* Step 2: Enable peripheral clock */
-    LOGD("SMBus I2C Reset: Enabling peripheral clock for device %d\n", devId);
-    ret = peripsClockEnable(devId);
-    if (ret != EXIT_SUCCESS && ret != -EINVAL) {
-        LOGE("SMBus I2C Reset: Clock enable failed for device %d: %d\n", devId, ret);
-        ret = -EXIT_FAILURE;
-        goto exit;
-    }
-
-    /* Step 3: Perform peripheral reset */
-    LOGD("SMBus I2C Reset: Performing peripheral reset for device %d\n", devId);
-    if (peripsReset(devId) != EXIT_SUCCESS) {
-        LOGW("SMBus I2C Reset: Peripheral reset failed for device %d\n", devId);
-        /* Continue even if reset fails, similar to I2C implementation */
-    }
-
-    /* Step 4: Clear SMBus interrupt mask (critical for SMBus compatibility) */
-    LOGD("SMBus I2C Reset: Clearing SMBus interrupt mask\n");
-    dev->regBase->icSmbusIntrMask.value = 0;
-
-    /* Step 5: Reconfigure based on current mode */
-    if (dev->mode == DW_SMBUS_MODE_MASTER) {
-        /* Master mode reconfiguration */
-        LOGD("SMBus I2C Reset: Reconfiguring master mode\n");
-
-        smbusConfigureMaster(dev);
-
-        /* Probe master to complete initialization */
-        ret = smbusProbeMaster(dev);
-        if (ret != EXIT_SUCCESS) {
-            LOGE("SMBus I2C Reset: Master probe failed after reset: %d\n", ret);
-            ret = -EXIT_FAILURE;
-            goto exit;
-        }
-
-        LOGD("SMBus I2C Reset: Master mode reinitialization completed\n");
-    } else {
-        /* Slave mode reconfiguration */
-        LOGD("SMBus I2C Reset: Reconfiguring slave mode\n");
-
-        /* Configure slave settings using HAL operations */
-        SmbusHalOps_s *halOps = smbusGetHalOps();
-        if (halOps && halOps->configureSlave) {
-            halOps->configureSlave(dev);
-        }
-
-        /* Check work mode and probe accordingly */
-        if (dev->workMode == 0) { /* Interrupt mode */
-            ret = smbusProbeSlave(dev);
-            if (ret != EXIT_SUCCESS) {
-                LOGE("SMBus I2C Reset: Slave probe failed after reset: %d\n", ret);
-                ret = -EXIT_FAILURE;
-                goto exit;
-            }
-            LOGD("SMBus I2C Reset: Slave interrupt mode reinitialization completed\n");
-        } else {
-            /* Polling mode not supported for SMBus */
-            LOGE("SMBus I2C Reset: Slave polling mode not supported\n");
-            ret = -EXIT_FAILURE;
-            goto exit;
-        }
-    }
-
-    /* Step 6: Final hardware state verification */
-    /* Wait a moment for hardware to settle */
-    udelay(1000);  /* 1ms delay */
-
-    /* Verify controller is accessible */
-    volatile U32 testRead = dev->regBase->icCon.value;
-    if (testRead == 0xFFFFFFFF) {
-        LOGE("SMBus I2C Reset: Hardware not accessible after reset\n");
-        ret = -EXIT_FAILURE;
-        goto exit;
-    }
-
-    LOGD("SMBus I2C Reset: Hardware verification passed (CON=0x%08X)\n", testRead);
-
-    /* Reset completed successfully */
-    LOGE("SMBus I2C Reset: Reset completed successfully for device %d, mode=%s\n",
-         devId, (dev->mode == DW_SMBUS_MODE_MASTER) ? "MASTER" : "SLAVE");
-    ret = EXIT_SUCCESS;
-
-exit:
-    return ret;
-}
-
-/* ======================================================================== */
-/*                    Unified I2C Transfer Implementation                      */
-/* ======================================================================== */
 
 /**
  * @brief Unified I2C Transfer Interface
@@ -3848,23 +2414,98 @@ S32 smbusI2cTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num)
         return -EINVAL;
     }
 
-    /* 2. Lock Driver/Controller */
-    /* Note: Locking should be handled by caller for better control */
-    /* ret = smbusDrvLockAndCheck(dev->id);
-       if (ret != EXIT_SUCCESS) return ret; */
+    /* ============================================================
+     * BRANCH: SLAVE MODE HANDLING
+     * 从机模式：仅仅是操作内存缓冲区 (Producer/Consumer 模型)
+     * 不需要操作硬件寄存器发起传输，也不需要等待总线空闲
+     * ============================================================*/
+    if (dev->mode == SMBUS_MODE_SLAVE) {
+        S32 i;
+        LOGD("SMBus: Processing SLAVE transfer request (%d msgs)\n", num);
 
+        for (i = 0; i < num; i++) {
+            SmbusMsg_s *msg = &msgs[i];
+
+            /* Parameter Check for Buffer */
+            if (msg->len == 0 || msg->buf == NULL) {
+                LOGE("SMBus: Slave msg[%d] invalid len/buf\n", i);
+                return -EINVAL;
+            }
+
+            if (msg->flags & SMBUS_M_RD) {
+                /* * [SLAVE READ] = 用户取走 ISR 接收到的数据
+                 * 逻辑：Copy RX Buffer -> User Buffer -> Clear RX Buffer
+                 */
+                if (dev->slaveValidRxLen > 0) {
+                    U32 copyLen = (msg->len < dev->slaveValidRxLen) ? msg->len : dev->slaveValidRxLen;
+                    
+                    if (dev->slaveRxBuf != NULL) {
+                        memcpy(msg->buf, dev->slaveRxBuf, copyLen);
+                        
+                        /* 清除接收缓冲区状态 */
+                        memset(dev->slaveRxBuf, 0, dev->slaveValidRxLen);
+                        dev->slaveValidRxLen = 0;
+                        /* 这里可以记录实际读取长度，但标准 I2C Msg 结构通常不回填 len */
+                    }
+                } else {
+                    /* 无数据可用 */
+                    /* 在 Slave Read 中，无数据通常不算错误，而是返回 0 长度 */
+                    /* 为了让调用者知道没读到数据，可以将 buffer 清零 */
+                    memset(msg->buf, 0, msg->len);
+                }
+
+            } else {
+                /* * [SLAVE WRITE] = 用户准备数据给 ISR 发送
+                 * 逻辑：User Buffer -> TX Buffer -> Set TX Valid Length
+                 */
+                if (dev->slaveTxBuf != NULL) {
+                    /* 先标记数据无效，防止拷贝过程中被 ISR 误读 */
+                    dev->slaveValidTxLen = 0;
+                    
+                    /* 限制拷贝长度不超过硬件/缓冲区最大限制 */
+                    U32 writeLen = (msg->len > SMBUS_MAX_BLOCK_LEN) ? SMBUS_MAX_BLOCK_LEN : msg->len;
+                    
+                    memset(dev->slaveTxBuf, 0, SMBUS_MAX_BLOCK_LEN);
+                    memcpy(dev->slaveTxBuf, msg->buf, writeLen);
+                    
+                    /* 提交数据：ISR 现在可以看到有效长度了 */
+                    dev->slaveValidTxLen = writeLen;
+                } else {
+                    LOGE("SMBus: Slave TX buffer is NULL\n");
+                    return -EINVAL;
+                }
+            }
+
+        }
+        
+        /* Slave 模式下，直接返回处理的消息数，表示成功 */
+        return num;
+    }
     /* 3. Wait for Bus Idle */
     ret = smbusWaitBusNotBusy(dev);
     if (ret != EXIT_SUCCESS) {
         LOGE("SMBus: Bus busy before transfer\n");
         goto exit;
     }
+    /* ============================================================
+     * 4. Quick Command handling
+     * ============================================================*/
+    if (num == 1 && msgs[0].len == 0 && dev->smbFeatures.quickCmdEnb) {
+        LOGD("SMBus: Quick Command detected during xfer init\n");
 
-    /* 4. Call Low-Level Driver (where Register Ops happen) */
+        ret = smbusHandleQuickCommand(dev, &msgs[0]);
+        if (ret != EXIT_SUCCESS) {
+            LOGE("SMBus: Quick Command failed, ret=%d\n", ret);
+        } else {
+            LOGD("SMBus: Quick Command completed successfully\n");
+        }
+        goto exit;  ///< Quick Command handled, exit early 
+    }
+    /* 5. Call Low-Level Driver (where Register Ops happen) */
     /* This function must handle len=0 logic for QuickCmd */
     ret = smbusDwXfer(dev, msgs, num);
 
-    if (ret != EXIT_SUCCESS) {
+    if (ret < EXIT_SUCCESS) {
         LOGE("SMBus: Transfer failed, ret=%d\n", ret);
         /* Update error statistics if available */
         if (dev) {
@@ -3878,11 +2519,9 @@ S32 smbusI2cTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num)
 exit:
     return ret;
 }
-
 /* ======================================================================== */
 /*                    HAL Layer - Export Functions                            */
 /* ======================================================================== */
-
 /**
  * @brief Get HAL function pointers for external use
  */
@@ -3892,21 +2531,13 @@ SmbusHalOps_s* smbusGetHalOps(void)
         .checkTxReady = smbusCheckTxready,
         .checkRxReady = smbusCheckRxready,
         .setSlaveAddr = smbusSetSlaveAddr,
-        .waitTransmitComplete = waitTransmitComplete,
         .enable = smbusEnable,
         .disable = smbusDisable,
-        .devAddrAssignCore = smbusDevAddrAssignCore,
-        .hostNotifyCore = smbusHostNotifyCore,
         .modeSwitchCore = smbusModeSwitchCore,
-        .i2cWrite = smbusI2cWrite,
-        .i2cRead = smbusI2cRead,
-        .i2cWriteRead = smbusI2cWriteRead,
         .i2cTransfer = smbusI2cTransfer,
-        .i2cReset = smbusI2cReset,
         .smbusDwRead = smbusDwRead,
         .smbusDwXferMsg = smbusDwXferMsg,
         .configureSlave = smbusConfigureSlave,
     };
-
     return &halOps;
 }
