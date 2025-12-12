@@ -1,5 +1,5 @@
-config USING_SOC_CTRL
-    bool "USING SOC_CTRL"
+config DRIVER_SOC_CTRL
+    bool "Enable SoC control driver"
     default y
     help
-      Select this to use soc control
+      Select this to enable SoC control driver support

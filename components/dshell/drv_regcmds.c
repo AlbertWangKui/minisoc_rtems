@@ -496,7 +496,6 @@ void cmdCb(S32 argc, S8 **argv) {
     }
 }
 
-
 void drvRegcmdsInit(void) {
     ushellCmdRegister("md", cmdMd);
     ushellCmdRegister("mm", cmdMm);

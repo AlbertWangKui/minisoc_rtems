@@ -1,5 +1,5 @@
-config USING_OCM_ECC
-    bool "USING OCM_ECC"
+config DRIVER_OCM_ECC
+    bool "Enable OCM ECC driver"
     default y
     help
-      Select this to use OCM ECC driver
+      Select this to enable OCM ECC (Error Correction Code) driver support

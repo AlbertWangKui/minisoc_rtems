@@ -1,5 +1,5 @@
-config USING_SMBUS
-    bool "USING SMBUS"
+config DRIVER_SMBUS
+    bool "Enable DRIVE SMBUS"
     default y
     help
       Select this to use smbus driver

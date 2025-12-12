@@ -101,7 +101,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Build command based on arguments - WAF handles all parameter LOGEc
+# Build command based on arguments - WAF handles all parameter logic
 if [[ -z $COMMAND ]];then
     if [[ -n $PRJ_NAME && -n $PRJ_PLATFORM ]]; then
         # Both required parameters provided - build configure command with all optional parameters
@@ -199,8 +199,7 @@ echo -e "-------------------------------------------"
 echo "Exec command in docker..."
 echo -e "-------------------------------------------"
 
-
-#docker run --rm -it \
+ #docker run --rm -it \
  #    -e DOCKER_IMAGE_NAME=$IMAGE_NAME  \
  #    -e DOCKER_IMAGE_ID=$IMAGE_ID \
  #    --user $(id -u):$(id -g) \
@@ -212,7 +211,7 @@ echo -e "-------------------------------------------"
  #    /bin/bash -c "$COMMAND"
 #docker run --rm -it \
 
-docker run --rm --cpus=2 --memory=4g \
+docker run --rm  \
     -e DOCKER_IMAGE_NAME=$IMAGE_NAME  \
     -e DOCKER_IMAGE_ID=$IMAGE_ID \
     -v $(pwd):$(pwd) \

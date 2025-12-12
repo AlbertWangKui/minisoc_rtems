@@ -13,7 +13,6 @@
  * 2025/12/01   wangkui         refactor and simplify the code as for core function
  *
  */
-
 #ifndef __DRV_SMBUS_API_H__
 #define __DRV_SMBUS_API_H__
 

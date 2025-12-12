@@ -2,7 +2,7 @@
 
 def build(bld):
     # OCM ECC driver
-    if bld.is_defined('CONFIG_USING_OCM_ECC'):
+    if bld.is_defined('CONFIG_DRIVER_OCM_ECC'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/ocm_ecc/drv_ocm_ecc.c'
         ]

@@ -1,5 +1,5 @@
-config USING_WDT
-    bool "USING WATCHDOG"
+config DRIVER_WDT
+    bool "Enable Watchdog driver"
     default y
     help
-      Select this to use Watch Dog driver
+      Select this to enable Watchdog timer driver support

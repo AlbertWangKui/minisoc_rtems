@@ -14,15 +14,16 @@
  */
 
 #include <stdio.h>
-#include "bsp_config.h"
+
 #include "common_defines.h"
+#include "bsp_config.h"
 #include "bsp_api.h"
-#include "log_msg.h"
-#include "drv_gpio_api.h"
-#include "drv_gpio.h"
-#include "osp_interrupt.h"
 #include "bsp_drv_id.h"
 #include "bsp_topcrg.h"
+#include "drv_gpio_api.h"
+#include "drv_gpio.h"
+#include "log_msg.h"
+#include "osp_interrupt.h"
 #if defined(CONFIG_BSP_TIANHE)
 #include "bsp_gpio_hp.h"
 #endif
@@ -31,6 +32,13 @@
 #define PIN_TO_DEV_ID(pin)      (GPIO_CTRL_DEV_ID_BASE + (pin) / GPIO_PIN_COUNT)
 #define PIN_TO_OFFSET(pin)      ((pin) % GPIO_PIN_COUNT)
 
+/**
+ * @brief 获取GPIO设备SBR配置
+ * @param[in] devId 设备ID
+ * @param[out] gpioSbrCfg GPIO SBR配置指针
+ * @return EXIT_SUCCESS 成功
+ * @return -EINVAL 参数错误或配置无效
+ */
 static S32 gpioDevCfgGet(DevList_e devId, SbrGpioCfg_s *gpioSbrCfg)
 {
     S32 ret = EXIT_SUCCESS;
@@ -46,9 +54,9 @@ static S32 gpioDevCfgGet(DevList_e devId, SbrGpioCfg_s *gpioSbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("gpio: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, totalPinCnt:%u, dir:0x%08x, dataOut:0x%08x\r\n",
-         gpioSbrCfg->regAddr, gpioSbrCfg->irqNo, gpioSbrCfg->irqPrio, gpioSbrCfg->totalPinCnt,
-         gpioSbrCfg->dir, gpioSbrCfg->dataOut);
+    LOGI("%s-%d: SBR dump regAddr=%p irqNo=%u irqPrio=%u totalPinCnt=%u dir=0x%08x dataOut=0x%08x",
+         __func__, __LINE__, gpioSbrCfg->regAddr, gpioSbrCfg->irqNo, gpioSbrCfg->irqPrio,
+         gpioSbrCfg->totalPinCnt, gpioSbrCfg->dir, gpioSbrCfg->dataOut);
 #endif
 
     if (gpioSbrCfg->totalPinCnt == 0 || gpioSbrCfg->irqNo == 0 || gpioSbrCfg->irqPrio == 0 || \
@@ -61,6 +69,14 @@ exit:
     return ret;
 }
 
+/**
+ * @brief 获取GPIO控制寄存器指针
+ * @param[in] pin GPIO引脚号
+ * @param[out] pCtrlReg GPIO控制寄存器指针
+ * @return EXIT_SUCCESS 成功
+ * @return -EINVAL 参数错误
+ * @return -EIO 获取驱动失败
+ */
 static S32 getCtrlReg(U32 pin, GpioReg_s **pCtrlReg)
 {
     S32 ret = EXIT_SUCCESS;
@@ -93,62 +109,24 @@ exit:
     return ret;
 }
 
-static S32 gpioDrvLockAndCheck(DevList_e devId)
-{
-    S32 ret = EXIT_SUCCESS;
 
-    /* lock */
-    if (devLockByDriver(devId, GPIO_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("gpio:%u lock failure!\r\n", devId - GPIO_CTRL_DEV_ID_BASE);
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_GPIO)) {
-        LOGE("gpio:%u driver mismatch!\r\n", devId - GPIO_CTRL_DEV_ID_BASE);
-        ret = -ENODEV;
-        goto exit;
-    }
-
-    if(isDrvInit(devId) == false) {
-        ret = -EINVAL;
-        LOGE("gpio:%u is unintialized!\r\n", devId - GPIO_CTRL_DEV_ID_BASE);
-        goto exit;
-    }
-
-exit:
-    return ret;
-}
-
-/**
- * @brief 设置GPIO引脚电平
- * @param [in] pin,GPIO引脚号
- * @param [in] value,GPIO引脚电平值
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 外设或者资源被占用
- *         -EINVAL: 参数错误
-* @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文            
- */
 S32 gpioValueSet(U32 pin, GpioValue_e value)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
     if ((value != GPIO_LOW_LEVEL && value != GPIO_HIGH_LEVEL)) {
-        LOGE("%s: arg error %u %d\r\n", __func__, pin, value);
+        LOGE("%s-%d: arg error pin=%u value=%d", __func__, __LINE__, pin, value);
         ret = -EINVAL;
         goto exit;
     }
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -169,26 +147,17 @@ S32 gpioValueSet(U32 pin, GpioValue_e value)
     }
 
 unlock:
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 获取GPIO引脚电平
- * @param [in] pin,GPIO引脚号
- * @param [out] pVal,GPIO引脚电平值指针
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
-  * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioValueGet(U32 pin, GpioValue_e *pVal)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
 
     if (pVal == NULL) {
@@ -196,11 +165,9 @@ S32 gpioValueGet(U32 pin, GpioValue_e *pVal)
         goto exit;
     }
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -211,42 +178,29 @@ S32 gpioValueGet(U32 pin, GpioValue_e *pVal)
     *pVal = BIT_IS_ONE(pCtrlReg->dataIn, PIN_TO_OFFSET(pin)) ? GPIO_HIGH_LEVEL : GPIO_LOW_LEVEL;
 
 unlock:
-    /* unlock */
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 设置GPIO引脚方向
- * @param [in] pin,GPIO引脚号
- * @param [in] dir,GPIO引脚方向
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioDirSet(U32 pin, GpioDir_e dir)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
     if ((dir != GPIO_DIR_IN && dir != GPIO_DIR_OUT)) {
-        LOGE("%s: arg error %u %d\r\n", __func__, pin, dir);
+        LOGE("%s-%d: arg error pin=%u dir=%d", __func__, __LINE__, pin, dir);
         ret = -EINVAL;
         goto exit;
     }
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -267,26 +221,17 @@ S32 gpioDirSet(U32 pin, GpioDir_e dir)
     }
 
 unlock:
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 获取GPIO引脚方向
- * @param [in] pin,GPIO引脚号
- * @param [out] pdir,GPIO引脚方向指针
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioDirGet(U32 pin, GpioDir_e *pDir)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
@@ -295,11 +240,9 @@ S32 gpioDirGet(U32 pin, GpioDir_e *pDir)
         goto exit;
     }
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -310,35 +253,23 @@ S32 gpioDirGet(U32 pin, GpioDir_e *pDir)
     *pDir = BIT_IS_ONE(pCtrlReg->dir, pinIdx) ? GPIO_DIR_OUT : GPIO_DIR_IN;
 
 unlock:
-    /* unlock */
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 使能GPIO中断
- * @param [in] pin,GPIO引脚号
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioInterruptEnable(U32 pin)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -349,35 +280,23 @@ S32 gpioInterruptEnable(U32 pin)
     SET_BIT(pCtrlReg->irqEn, pinIdx);
 
 unlock:
-    /* unlock */
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 禁用GPIO中断
- * @param [in] pin,GPIO引脚号
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *        -ENODEV: 没有这个外设
- *        -EBUSY: 资源或者外设被占用
- *        -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioInterruptDisable(U32 pin)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -388,8 +307,7 @@ S32 gpioInterruptDisable(U32 pin)
     CLR_BIT(pCtrlReg->irqEn, pinIdx);
 
 unlock:
-    /* unlock */
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -409,14 +327,13 @@ S32 gpioInterruptClear(U32 pin)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -427,13 +344,19 @@ S32 gpioInterruptClear(U32 pin)
     SET_BIT(pCtrlReg->eoi, pinIdx);
 
 unlock:
-    /* unlock */
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
+/**
+ * @brief 设置GPIO中断模式（内部函数，不加锁）
+ * @param[in] pin GPIO引脚号
+ * @param[in] type GPIO中断类型
+ * @return EXIT_SUCCESS 成功
+ * @return -EINVAL 参数错误
+ */
 static S32 __gpioInterruptModeSet(U32 pin, GpioIrqType_e type)
 {
     S32 ret = EXIT_SUCCESS;
@@ -450,7 +373,7 @@ static S32 __gpioInterruptModeSet(U32 pin, GpioIrqType_e type)
         goto exit;
     }
 
-    /* mask intrs(0 - enable intr. 1 - disable intr) */
+    ///< mask intrs(0 - enable intr. 1 - disable intr)
     CLR_BIT(pCtrlReg->irqMask, pinIdx);
     SET_BIT(pCtrlReg->debounce, pinIdx);
     switch (type) {
@@ -487,52 +410,34 @@ exit:
     return ret;
 }
 
-/**
- * @brief 设置GPIO中断模式
- * @param [in] pin,GPIO引脚号
- * @param [in] type,GPIO中断模式
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioInterruptModeSet(U32 pin, GpioIrqType_e type)
 {
     S32 ret = EXIT_SUCCESS;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     ret = __gpioInterruptModeSet(pin, type);
+    if (ret != EXIT_SUCCESS) {
+        goto unlock;
+    }
 
 unlock:
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 获取GPIO中断模式
- * @param [in] pin,GPIO引脚号
- * @param [out] pIrqmode,GPIO中断模式指针
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioInterruptModeGet(U32 pin, GpioIrqType_e *pIrqType)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
@@ -541,11 +446,9 @@ S32 gpioInterruptModeGet(U32 pin, GpioIrqType_e *pIrqType)
         goto exit;
     }
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -575,34 +478,23 @@ S32 gpioInterruptModeGet(U32 pin, GpioIrqType_e *pIrqType)
     }
 
 unlock:
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief 屏蔽GPIO中断
- * @param [in] pin,GPIO引脚号
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioInterruptMask(U32 pin)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -613,8 +505,7 @@ S32 gpioInterruptMask(U32 pin)
     SET_BIT(pCtrlReg->irqMask, pinIdx);
 
 unlock:
-    /* unlock */
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -634,14 +525,13 @@ S32 gpioInterruptUnmask(U32 pin)
 {
     S32 ret = EXIT_SUCCESS;
     GpioReg_s *pCtrlReg = NULL;
+    GpioDrvData_s *pDrvData = NULL;
     DevList_e devId = PIN_TO_DEV_ID(pin);
     U8 pinIdx = PIN_TO_OFFSET(pin);
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
@@ -651,14 +541,17 @@ S32 gpioInterruptUnmask(U32 pin)
 
     CLR_BIT(pCtrlReg->irqMask, pinIdx);
 
-unlock:    
-    /* unlock */
-    devUnlockByDriver(devId);
+unlock:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
+/**
+ * @brief GPIO中断处理函数
+ * @param[in] pDrvData GPIO驱动数据指针
+ */
 static void gpioIrqHandler(GpioDrvData_s *pDrvData)
 {
     U32 pinIdx = 0;
@@ -669,7 +562,7 @@ static void gpioIrqHandler(GpioDrvData_s *pDrvData)
 #endif
 
     if (pDrvData == NULL) {
-        LOGE("%s: pDrvData = NULL\r\n", __func__);
+        LOGE("%s-%d: pDrvData is NULL", __func__, __LINE__);
         return;
     }
 
@@ -687,30 +580,15 @@ static void gpioIrqHandler(GpioDrvData_s *pDrvData)
     }
 #endif
 
-    /* get irqStat which bit set */
+    ///< get irqStat which bit set
     pinIdx = GPIO_MAX_BIT_INDEX_REG - __builtin_clz(stat);
 
-    SET_BIT(((volatile GpioReg_s*)pDrvData->sbrCfg.regAddr)->eoi, pinIdx);/* clear irq */
+    SET_BIT(((volatile GpioReg_s*)pDrvData->sbrCfg.regAddr)->eoi, pinIdx); ///< clear irq
     if (pDrvData->irqCbList[pinIdx].cb != NULL) {
         pDrvData->irqCbList[pinIdx].cb(pDrvData->irqCbList[pinIdx].arg);
     }
 }
 
-/**
- * @brief  注册GPIO中断回调函数
- * @details 驱动内部做中断路由, 并在跳转callback前清除中断, 用户注册的callback
- *          无需判断中断IsPending及调用InterruptClear
- *          注册完中断后用户需如果需要屏蔽中断调用 gpioInterruptMask
- * @param [in] pin ，GPIO引脚号
- * @param [in] type ， 中断类型
- * @param [in] callback ， callback函数指针
- * @param [in] arg  ， callback函数参数指针
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EINVAL: 参数错误
- * @warning 阻塞；可重入; OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioCallbackRegister(U32 pin,
         GpioIrqType_e type, gpioIrqCallBack callback, void *arg)
 {
@@ -727,24 +605,17 @@ S32 gpioCallbackRegister(U32 pin,
     }
 
     if (callback == NULL) {
-        LOGE("%s: callback is NULL\r\n", __func__);
+        LOGE("%s-%d: callback is NULL", __func__, __LINE__);
         ret = -EINVAL;
         goto exit;
     }
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
     }
 
     if (getCtrlReg(pin, &pCtrlReg) != EXIT_SUCCESS) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
         ret = -EINVAL;
         goto unlock;
     }
@@ -760,37 +631,24 @@ S32 gpioCallbackRegister(U32 pin,
     }
 
 unlock:
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
 }
 
-/**
- * @brief GPIO模块初始化
- * @param [in] devId,GPIO外设ID
- *             DEVICE_GPIO0 -> init gpio 0 ~ 31
- *             DEVICE_GPIO1 -> init gpio 32 ~ 63
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -ENOMEM: 堆内存不足
- *         -EIO: I/O 错误
- * @warning 阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioInit(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
     GpioDrvData_s *pDrvData = NULL;
 
-    /* lock */
+    ///< lock
     if (devLockByDriver(devId, GPIO_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
         ret = -EBUSY;
         goto exit;
     }
 
-    /* Check driver match */
+    ///< Check driver match
     if (!isDrvMatch(devId, DRV_ID_STARS_GPIO)) {
         ret = -ENODEV;
         goto unlock;
@@ -803,13 +661,13 @@ S32 gpioInit(DevList_e devId)
 
     pDrvData = (GpioDrvData_s*)calloc(1, sizeof(GpioDrvData_s));
     if(pDrvData == NULL) {
-        LOGE("%s: alloc memory failed\r\n", __func__);
+        LOGE("%s-%d: alloc memory failed", __func__, __LINE__);
         ret = -ENOMEM;
         goto unlock;
     }
 
     if (gpioDevCfgGet(devId, &pDrvData->sbrCfg) != EXIT_SUCCESS) {
-        LOGE("%s: get sbr failed\r\n", __func__);
+        LOGE("%s-%d: get sbr failed", __func__, __LINE__);
         ret = -EIO;
         goto freeMem;
     }
@@ -818,36 +676,36 @@ S32 gpioInit(DevList_e devId)
     ret = ospInterruptHandlerInstall(pDrvData->sbrCfg.irqNo, "gpio", OSP_INTERRUPT_UNIQUE,
         (OspInterruptHandler)gpioIrqHandler, pDrvData);
     if (ret == OSP_RESOURCE_IN_USE) {
-        LOGW("%s: irq handler already installed\r\n", __func__);
+        LOGW("%s-%d: irq handler already installed", __func__, __LINE__);
     } else if (ret == OSP_SUCCESSFUL) {
         ospInterruptVectorEnable((pDrvData->sbrCfg.irqNo));
     } else {
-        LOGE("%s: irq handler install failed\r\n", __func__);
+        LOGE("%s-%d: irq handler install failed", __func__, __LINE__);
         ret = -EXIT_FAILURE;
         goto freeMem;
     }
 
-    /* set dir and dataOut */
+    ///< set dir and dataOut
     ((volatile GpioReg_s*)pDrvData->sbrCfg.regAddr)->dir = pDrvData->sbrCfg.dir;
     ((volatile GpioReg_s*)pDrvData->sbrCfg.regAddr)->dataOut = pDrvData->sbrCfg.dataOut;
 
     if(drvInstall(devId, pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: drv install failed\r\n", __func__);
+        LOGE("%s-%d: drv install failed", __func__, __LINE__);
         ret = -EIO;
         goto freeMem;
     }
 
     ret = peripsReset(devId);
     if (ret != EXIT_SUCCESS && ret != -ENXIO)  {
-        LOGE("%s: reset failed\r\n", __func__);
+        LOGE("%s-%d: reset failed", __func__, __LINE__);
         ret = -EIO;
         goto unInstall;
     }
 
-    /* 有些项目gpio没有时钟开关，如果没有，则peripsClockEnable返回-ENXIO */
+    ///< 有些项目gpio没有时钟开关，如果没有，则peripsClockEnable返回-ENXIO
     ret = peripsClockEnable(devId);
     if (ret != EXIT_SUCCESS && ret != -ENXIO)  {
-        LOGE("%s: clock enable failed\r\n", __func__);
+        LOGE("%s-%d: clock enable failed", __func__, __LINE__);
         ret = -EIO;
         goto unInstall;
     }
@@ -859,7 +717,7 @@ unInstall:
     if (isDrvInit(devId)) {
         ///< 如果驱动已注册，则调用drvUninstall来清理（包括释放sgpioDrvData）
         if (drvUninstall(devId) != EXIT_SUCCESS) {
-            LOGE("%s: drvUninstall failed during cleanup\n", __func__);
+            LOGE("%s-%d: drvUninstall failed during cleanup", __func__, __LINE__);
         }
     }
 
@@ -876,63 +734,43 @@ exit:
     return ret;
 }
 
-/**
- * @brief 注销GPIO初始化
- * @param [in] devId,GPIO外设ID
- *             DEVICE_GPIO0 -> init gpio 0 ~ 31
- *             DEVICE_GPIO1 -> init gpio 32 ~ 63
- * @param [out] none
- * @return EXIT_SUCCESS: 0
- *         -ENODEV: 没有这个外设
- *         -EBUSY: 资源或者外设被占用
- *         -EIO: I/O 错误
- * @warning 阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
- */
 S32 gpioDeInit(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
     GpioDrvData_s *pDrvData = NULL;
 
-    ret = gpioDrvLockAndCheck(devId);
-    if (-EBUSY == ret) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_GPIO, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    } else if (EXIT_SUCCESS != ret) {
-        goto unlock;
-    }
-
-    if(getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get driver failed\r\n", __func__);
-        ret = -EIO;
-        goto unlock;
     }
 
     ospInterruptVectorDisable((pDrvData->sbrCfg.irqNo));
     ret = ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo, (OspInterruptHandler)gpioIrqHandler,
         pDrvData);
     if (ret != OSP_SUCCESSFUL) {
-        LOGE("%s: irq handler remove failed: %d\r\n", __func__, ret);
+        LOGE("%s-%d: irq handler remove failed ret=%d", __func__, __LINE__, ret);
         goto unlock;
     }
-    
+
     ret = peripsReset(devId);
     if (ret != EXIT_SUCCESS && ret != -ENXIO)  {
-        LOGE("%s: reset failed\r\n", __func__);
+        LOGE("%s-%d: reset failed", __func__, __LINE__);
         ret = -EIO;
     }
 
     ret = peripsClockDisable(devId);
     if (ret != EXIT_SUCCESS && ret != -ENXIO)  {
-        LOGE("%s: clock enable failed\r\n", __func__);
+        LOGE("%s-%d: clock disable failed", __func__, __LINE__);
         ret = -EIO;
     }
 
     ret = drvUninstall(devId);
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: Devid:%u Deinit failed\r\n", __func__, devId);
+        LOGE("%s-%d: Devid=%u Deinit failed", __func__, __LINE__, devId);
     }
 
 unlock:
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 
 exit:
     return ret;

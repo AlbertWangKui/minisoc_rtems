@@ -43,7 +43,7 @@ static S32 timerDevCfgGet(DevList_e devId, SbrTimerCfg_s *cfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("timer: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, intervalMs:%u, reserved:0x%08x\r\n",
+    LOGI("timer: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, intervalMs:%u, reserved:0x%08x\r\n",
          cfg->regAddr, cfg->irqNo, cfg->irqPrio, cfg->intervalMs, cfg->reserved);
 #endif
 

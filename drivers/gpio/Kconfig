@@ -1,11 +1,11 @@
-config USING_GPIO
-    bool "USING GPIO"
+config DRIVER_GPIO
+    bool "Enable GPIO driver"
     default y
     help
-      Select this to use GPIO driver
-config USING_GPIO_API_TEST
+      Select this to enable GPIO driver support
+config DRIVER_GPIO_API_TEST
     bool "Enable GPIO API test"
     default n
-    depends on USING_GPIO
+    depends on DRIVER_GPIO
     help
-      Select this to use gpio API Input Validation Testing
+      Select this to enable GPIO API input validation testing

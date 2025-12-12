@@ -28,33 +28,25 @@ __attribute__((weak)) void mpuInit(void)
     memRegionNumSet(i++);
     memRegionBaseSet(0x00000000);
     memAccessAttributeSet(MPU_REGION_EXECUTE_NEVER |
-        MPU_REGION_TYPE_NORMAL_WRITE_BACK_NO_WRITE_ALLOC |
-        MPU_REGION_TYPE_NORMAL_NSHARED |
-        MPU_REGION_AP_NO_ACCESS);
+        MPU_REGION_TYPE_NORMAL_WRITE_BACK_NO_WRITE_ALLOC | MPU_REGION_AP_NO_ACCESS);
     memRegionSizeSetAndEnable(MPU_REGION_SIZE_4G | MPU_REGION_ENABLE);
 
     /* sram */
     memRegionNumSet(i++);
     memRegionBaseSet((U32)bsp_sram_os_used_begin);
-    memAccessAttributeSet(MPU_REGION_TYPE_NORMAL_WRITE_BACK_WRITE_ALLOC |
-        MPU_REGION_TYPE_NORMAL_NSHARED |
-        MPU_REGION_AP_FULL_ACCESS);
+    memAccessAttributeSet(MPU_REGION_TYPE_NORMAL_WRITE_BACK_WRITE_ALLOC | MPU_REGION_AP_FULL_ACCESS);
     memRegionSizeSetAndEnable(MPU_REGION_SIZE_8M | MPU_REGION_ENABLE);
 
     /* sram non-cache */
     memRegionNumSet(i++);
     memRegionBaseSet((U32)bsp_sram_user_sbr_nocache_begin);
-    memAccessAttributeSet(MPU_REGION_TYPE_NORMAL_NON_CACHEBLE |
-        MPU_REGION_TYPE_NORMAL_NSHARED |
-        MPU_REGION_AP_FULL_ACCESS);
+    memAccessAttributeSet(MPU_REGION_TYPE_NORMAL_NON_CACHEBLE | MPU_REGION_AP_FULL_ACCESS);
     memRegionSizeSetAndEnable(MPU_REGION_SIZE_64K | MPU_REGION_ENABLE);
 
     /* rom */
     memRegionNumSet(i++);
     memRegionBaseSet(SYS_ROM_BASE_ADDR);
-    memAccessAttributeSet(MPU_REGION_TYPE_NORMAL_NON_CACHEBLE |
-        MPU_REGION_TYPE_NORMAL_NSHARED |
-        MPU_REGION_AP_READ_ONLY);
+    memAccessAttributeSet(MPU_REGION_TYPE_NORMAL_WRITE_BACK_WRITE_ALLOC | MPU_REGION_AP_READ_ONLY);
     memRegionSizeSetAndEnable(MPU_REGION_SIZE_64K | MPU_REGION_ENABLE);
 
     /* flash */
@@ -76,8 +68,7 @@ __attribute__((weak)) void mpuInit(void)
     /* boot */
     memRegionNumSet(i++);
     memRegionBaseSet(0xFFFF0000);
-    memAccessAttributeSet(MPU_REGION_TYPE_DEVICE_NSHARED |
-        MPU_REGION_TYPE_NORMAL_WRITE_BACK_WRITE_ALLOC |
+    memAccessAttributeSet(MPU_REGION_TYPE_NORMAL_WRITE_BACK_WRITE_ALLOC |
         MPU_REGION_AP_READ_ONLY);
     memRegionSizeSetAndEnable(MPU_REGION_SIZE_64K | MPU_REGION_ENABLE);
 

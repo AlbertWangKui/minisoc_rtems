@@ -1,6 +1,12 @@
-config USING_I2C
-    bool "USING I2C"
+config DRIVER_I2C
+    bool "Enable I2C driver"
+    default y
+    help
+      Select this to enable I2C driver support
+
+config DRIVER_SMBUS
+    depends on DRIVER_I2C
+    bool "Enable SMBUS driver"
     default n
     help
-      Select this to use I2C driver
-
+      Select this to enable SMBUS driver support

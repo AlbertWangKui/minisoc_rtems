@@ -2,7 +2,7 @@
 
 def build(bld):
     # Timer driver
-    if bld.is_defined('CONFIG_USING_TIMER'):
+    if bld.is_defined('CONFIG_DRIVER_TIMER'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/timer/drv_timer.c'
         ]

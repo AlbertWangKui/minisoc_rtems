@@ -1,54 +1,59 @@
 menu "security"
 
-config USING_EFUSE
-    bool "USING efuse"
+config DRIVER_EFUSE
+    bool "Enable efuse driver"
     default y
     help
-      Select this to use efuse driver
+      Select this to enable efuse driver support
 
 choice
     prompt "efuse driver select"
-    depends on USING_EFUSE
+    depends on DRIVER_EFUSE
 
-    config USING_EFUSE_V1
-        bool "USING EFUSE_V1"
-    config USING_EFUSE_V2
-        bool "USING EFUSE_V2"
+    config DRIVER_EFUSE_V1
+        bool "efuse v1 driver"
+    config DRIVER_EFUSE_V2
+        bool "efuse v2 driver"
 endchoice
 
 
-config USING_TRNG
-    bool "USING TRNG"
+config DRIVER_TRNG
+    bool "Enable TRNG driver"
     default y
     help
-      Select this to use trng(true random number generator) driver
+      Select this to enable TRNG (True Random Number Generator) driver support
 
 choice
     prompt "trng driver select"
-    depends on USING_TRNG
+    depends on DRIVER_TRNG
 
-    config USING_DW_TRNG
-        bool "USING DW_TRNG"
-    config USING_HG_TRNG
-        bool "USING HG_TRNG"
+    config DRIVER_TRNG_DW
+        bool "DesignWare TRNG driver"
+    config DRIVER_TRNG_TH
+        bool "TH TRNG driver"
 endchoice
 
-config USING_TRNG_API_TEST
-    bool "Enable trng API test"
+config DRIVER_TRNG_API_TEST
+    bool "Enable TRNG API test"
     default n
-    depends on USING_TRNG
+    depends on DRIVER_TRNG
     help
-        Select this to use trng API test
+        Select this to enable TRNG API test
 
-config USING_SM3
-    bool "USING SM3"
+config DRIVER_SM3
+    bool "Enable SM3 driver"
     default y
     help
-      Select this to use sm3(hash calc) driver
+      Select this to enable SM3 hash calculation driver support
 
-config USING_SM2
-    bool "USING SM2"
+config DRIVER_SM2
+    bool "Enable SM2 driver"
     default y
     help
-      Select this to use sm2 driver
+      Select this to enable SM2 driver support
+config USING_SM4
+    bool "USING SM4"
+    default y
+    help
+      Select this to enable SM4 driver support
 endmenu

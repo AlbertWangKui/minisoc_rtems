@@ -16,7 +16,7 @@
 #include "cli_core_api.h"
 #include "cli_porting.h"
 
-#define CLI_UART_LOGEN_TIMEOUT 300000   ///<  UART登录超时时间
+#define CLI_UART_LOGIN_TIMEOUT 300000   ///<  UART登录超时时间
 #define COMMAND_COUNT 128   ///< 最大命令个数
 
 typedef S32(*CliCmdCallFunc) (Command_s *pCmd);
@@ -66,7 +66,7 @@ typedef struct CliSessionObj CliSessionObj_s;
  * @return
  * @note
  */
-typedef S32 (*CliSessionLOGEnFunc)(CliSessionObj_s *pSession);
+typedef S32 (*CliSessionLoginFunc)(CliSessionObj_s *pSession);
 
 ///< session信息
 typedef struct CliSessionDevInfo{
@@ -75,7 +75,7 @@ typedef struct CliSessionDevInfo{
     CliSessionPutCharFunc        putCharFunc;
     CliSessionGetCharFunc        getCharFunc;
     CliSessionFinishHandleFunc   finshHandleFunc;
-    CliSessionLOGEnFunc          LOGEnFunc;
+    CliSessionLoginFunc          loginFunc;
     CliSessionType_e type;
     Bool isCmdFinish;
 } CliSessionDevIo_s;
@@ -163,8 +163,8 @@ struct CliSessionObj {
     OspID sessionSem;                            ///< 信号量
     Node_s *pPrintParent;                           ///< 输出父节点
     ULong  inputMsgAddr;                            ///< 输入的字符串及信息的地址,会取CliInputMsg_s的地址
-    Bool   isOpenLOGEn;                             ///< 该session是否开启用户登录功能
-    U64    LOGEnStamp;                              ///< 最近登录时间戳
+    Bool   isOpenLogin;                             ///< 该session是否开启用户登录功能
+    U64    loginStamp;                              ///< 最近登录时间戳
 };
 
 ///< 用于和用户交互获取字符串的结构体

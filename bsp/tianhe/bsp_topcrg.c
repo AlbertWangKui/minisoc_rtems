@@ -70,7 +70,7 @@ const U8 *getHwPlatformType(void)
             break;
     }
 
-    LOGE("hw platform %s\r\n", hwName);
+    LOGI("hw platform %s\r\n", hwName);
 
     return (const U8 *)hwName;
 }
@@ -93,7 +93,7 @@ U32 getHwPlatformVersion(U8 *strBuffer, U32 strLen)
     verStr[3] = ((ver ) & 0x0F) + '0';
     verStr[4] = 0;
 
-    LOGE("hw platform version %s\r\n", verStr);
+    LOGI("hw platform version %s\r\n", verStr);
 
     if(strLen > sizeof(verStr))
     {

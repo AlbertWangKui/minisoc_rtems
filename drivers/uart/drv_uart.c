@@ -112,10 +112,10 @@ static S32 uartDevCfgGet(DevList_e devId, SbrUartCfg_s *sbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("uart: SBR config loaded - regAddr:%p, irq:%u, prio:%u, baud:%u, bits:%u:%u:%u\r\n",
+    LOGI("uart: SBR config loaded - regAddr:%p, irq:%u, prio:%u, baud:%u, bits:%u:%u:%u\r\n",
          sbrCfg->regAddr, sbrCfg->irqNo, sbrCfg->irqPrio, sbrCfg->baudRate,
          sbrCfg->dataBits, sbrCfg->stopBits, sbrCfg->parity);
-    LOGE("uart: SBR dump - console:%u, txIntEn:%u, rxIntEn:%u, reserved:%u\r\n",
+    LOGI("uart: SBR dump - console:%u, txIntEn:%u, rxIntEn:%u, reserved:%u\r\n",
          sbrCfg->console, sbrCfg->txIntEn, sbrCfg->rxIntEn, sbrCfg->reserved);
 #endif
 

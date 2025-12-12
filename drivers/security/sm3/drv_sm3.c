@@ -26,15 +26,11 @@
 
 /**
  * @brief 获取SM3设备配置信息
- *
- * 从SBR中读取SM3设备的配置信息，
- * 包括寄存器基地址、中断号和中断优先级等信息。
- *
+ * @details 从SBR中读取SM3设备的配置信息，包括寄存器基地址、中断号和中断优先级等信息
  * @param[in] devId 设备ID
  * @param[out] cfg 指向SbrSm3Cfg_s结构体的指针，用于存储读取到的配置信息
- * @return S32 返回执行结果
- *         - EXIT_SUCCESS: 成功获取配置信息
- *         - -EINVAL: 参数错误或寄存器地址为空
+ * @return EXIT_SUCCESS 成功获取配置信息
+ * @return -EINVAL 参数错误或寄存器地址为空
  */
 static S32 sm3DevCfgGet(DevList_e devId, SbrSm3Cfg_s *cfg)
 {
@@ -51,7 +47,7 @@ static S32 sm3DevCfgGet(DevList_e devId, SbrSm3Cfg_s *cfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("sm3: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u\r\n",
+    LOGI("%s-%d: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u", __func__, __LINE__,
          cfg->regAddr, cfg->irqNo, cfg->irqPrio);
 #endif
 
@@ -66,19 +62,14 @@ out:
 
 /**
  * @brief SM3中断服务程序
- *
- * 处理SM3硬件完成计算后的中断事件，清除中断标志，
- * 并执行注册的回调函数（如果存在）。
- *
+ * @details 处理SM3硬件完成计算后的中断事件，清除中断标志，并执行注册的回调函数（如果存在）
+ * @param[in] arg 指向Sm3DrvData_s结构体的指针，包含设备数据和回调信息
  * @note 回调函数在ISR上下文中执行，必须遵循以下要求：
  *       1. 不得执行任何阻塞操作
  *       2. 应尽快执行完毕
  *       3. 不得使用任何睡眠或延迟函数
  *       4. 应避免复杂计算
  *       5. 如需复杂处理，应将其推迟到任务/线程中执行
- *
- * @param[in] arg 指向Sm3DrvData_s结构体的指针，包含设备数据和回调信息
- * @return void 无返回值
  */
 static void sm3Isr(void *arg)
 {
@@ -101,12 +92,8 @@ static void sm3Isr(void *arg)
 
 /**
  * @brief 模块内部复位
- *
- * 执行SM3硬件模块的软件复位操作，通过设置复位寄存器位来
- * 复位整个SM3计算单元，并执行几个NOP指令以确保复位完成。
- *
+ * @details 执行SM3硬件模块的软件复位操作，通过设置复位寄存器位来复位整个SM3计算单元，并执行几个NOP指令以确保复位完成
  * @param[in] sm3Drv 指向Sm3DrvData_s结构体的指针，包含设备寄存器地址
- * @return void 无返回值
  */
 static void sm3InnerReset(Sm3DrvData_s *sm3Drv)
 {
@@ -127,16 +114,12 @@ static void sm3InnerReset(Sm3DrvData_s *sm3Drv)
 
 /**
  * @brief 等待SM3模块进入IDLE状态
- *
- * 轮询检查SM3模块的状态寄存器，等待模块进入空闲状态(IDLE)。
- * 如果在指定超时时间内仍未进入空闲状态，则返回错误。
- *
+ * @details 轮询检查SM3模块的状态寄存器，等待模块进入空闲状态(IDLE)。如果在指定超时时间内仍未进入空闲状态，则返回错误
  * @param[in] sm3Drv 指向Sm3DrvData_s结构体的指针，包含设备寄存器地址
  * @param[in] timeoutMs 超时时间(毫秒)
- * @return S32 返回执行结果
- *         - EXIT_SUCCESS: 模块成功进入空闲状态
- *         - -EINVAL: 参数错误
- *         - -EIO: 超时未能进入空闲状态
+ * @return EXIT_SUCCESS 模块成功进入空闲状态
+ * @return -EINVAL 参数错误
+ * @return -EIO 超时未能进入空闲状态
  */
 static S32 sm3IdlePoll(Sm3DrvData_s *sm3Drv, U32 timeoutMs)
 {
@@ -173,16 +156,12 @@ static S32 sm3IdlePoll(Sm3DrvData_s *sm3Drv, U32 timeoutMs)
 
 /**
  * @brief 等待SM3计算完成
- *
- * 轮询检查SM3模块的完成标志位，等待计算完成。
- * 如果在指定超时时间内计算仍未完成，则返回错误。
- *
+ * @details 轮询检查SM3模块的完成标志位，等待计算完成。如果在指定超时时间内计算仍未完成，则返回错误
  * @param[in] sm3Drv 指向Sm3DrvData_s结构体的指针，包含设备寄存器地址
  * @param[in] timeoutMs 超时时间(毫秒)
- * @return S32 返回执行结果
- *         - EXIT_SUCCESS: 计算成功完成
- *         - -EINVAL: 参数错误
- *         - -EIO: 超时未能完成计算
+ * @return EXIT_SUCCESS 计算成功完成
+ * @return -EINVAL 参数错误
+ * @return -EIO 超时未能完成计算
  */
 static S32 sm3FinishPoll(Sm3DrvData_s *sm3Drv, U32 timeoutMs)
 {
@@ -258,7 +237,7 @@ S32 sm3Init(DevList_e devId)
 
     ret = ospInterruptHandlerInstall(drv->sbrCfg.irqNo, "sm3", OSP_INTERRUPT_UNIQUE, sm3Isr, drv);
     if (ret != OSP_SUCCESSFUL) {
-        LOGE("%s: irq handler install failed\r\n", __func__);
+        LOGE("%s-%d: irq handler install failed", __func__, __LINE__);
         ret = -EIO;
         goto free_mem;
     }
@@ -276,8 +255,8 @@ S32 sm3Init(DevList_e devId)
 
     sm3InnerReset(drv);
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
-    reg->ctrl.fields.logicEn = SM3_MODE_HW; /* default HW mode */
-    reg->irqEnable.fields.enable = 0; /* Disable interrupt */
+    reg->ctrl.fields.logicEn = SM3_MODE_HW; ///< default HW mode
+    reg->irqEnable.fields.enable = 0; ///< Disable interrupt
 
     ret = EXIT_SUCCESS;
     goto unlock;
@@ -302,36 +281,19 @@ S32 sm3HashCalc(DevList_e devId, U32 *dataIn, U32 len, U32 *hashBuf)
     Sm3Reg_s *reg = NULL;
     Sm3DrvData_s *drv = NULL;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
     if (dataIn == NULL || hashBuf == NULL) {
-        return -EINVAL;
+        ret = -EINVAL;
+        goto cleanup;
     }
 
     if (len == 0 || (len % SM3_DATA_STD_SIZE) != 0) {
-        return -EINVAL;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
+        ret = -EINVAL;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
@@ -339,29 +301,28 @@ S32 sm3HashCalc(DevList_e devId, U32 *dataIn, U32 len, U32 *hashBuf)
         ///< HW calc
         ret = sm3HwModeCalcStart(devId, dataIn, len, SM3_HW_CALC_TIMEOUT_MS);
         if (ret != EXIT_SUCCESS) {
-            goto unlock;
+            goto cleanup;
         }
         ret = sm3HwResultGet(devId, hashBuf, SM3_HW_CALC_TIMEOUT_MS);
         if (ret != EXIT_SUCCESS) {
-            goto unlock;
+            goto cleanup;
         }
     } else if (reg->ctrl.fields.logicEn == SM3_MODE_SW) {
         ///< SW calc
-        ret = sm3SoftModeLoopCalcStart(devId, dataIn, len, SM3_SW_CALC_TIMEOUT_MS);
+        ret = sm3SoftModeCalcStart(devId, dataIn, len, SM3_SW_CALC_TIMEOUT_MS);
         if (ret != EXIT_SUCCESS) {
-            goto unlock;
+            goto cleanup;
         }
         ret = sm3SoftResultGet(devId, hashBuf, SM3_SW_CALC_TIMEOUT_MS);
         if (ret != EXIT_SUCCESS) {
-            goto unlock;
+            goto cleanup;
         }
     }
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 
@@ -372,29 +333,16 @@ Sm3State_e sm3StateGet(DevList_e devId)
     Sm3State_e state = SM3_STATE_ERROR;
     U32 busyFlag = 0;
     U32 finishFlag = 0;
+    S32 ret;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return SM3_STATE_ERROR;
-    }
-
-    if (isDrvInit(devId) == false) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
     }
 
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        goto unlock;
-    }
     if (drv->sbrCfg.regAddr == NULL) {
-        LOGE("%s: Invalid register address\r\n", __func__);
-        goto unlock;
+        LOGE("%s-%d: Invalid register address", __func__, __LINE__);
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
@@ -414,8 +362,8 @@ Sm3State_e sm3StateGet(DevList_e devId)
         state = SM3_STATE_IDLE;
     }
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 exit:
     return state;
 }
@@ -426,54 +374,35 @@ S32 sm3ModeSelect(DevList_e devId, Sm3Mode_e mode)
     Sm3DrvData_s *drv = NULL;
     Sm3Reg_s *reg = NULL;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
     if (mode < SM3_MODE_SW || mode > SM3_MODE_HW) {
-        LOGE("%s: arg error %d\r\n", __func__, mode);
+        LOGE("%s-%d: arg error %d", __func__, __LINE__, mode);
         ret = -EINVAL;
-        goto exit;
+        goto cleanup;
     }
 
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
     if (drv->sbrCfg.regAddr == NULL) {
-        LOGE("%s: Invalid register address\r\n", __func__);
+        LOGE("%s-%d: Invalid register address", __func__, __LINE__);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
     if (reg->status.fields.state != SM3_STATE_IDLE) {
-        LOGE("%s: Module is not idle\r\n", __func__);
+        LOGE("%s-%d: Module is not idle", __func__, __LINE__);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     reg->ctrl.fields.logicEn = mode;
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 
@@ -483,37 +412,19 @@ S32 sm3SoftResultGet(DevList_e devId, U32 *hashBuf, U32 timeout)
     Sm3DrvData_s *drv = NULL;
     Sm3Reg_s *reg = NULL;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
     if (hashBuf == NULL) {
-        return -EINVAL;
+        ret = -EINVAL;
+        goto cleanup;
     }
 
-    if (isDrvInit(devId) == false) {
+    if (sm3IdlePoll(drv, timeout) != EXIT_SUCCESS) {
         ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if(sm3IdlePoll(drv, timeout) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
@@ -525,9 +436,8 @@ S32 sm3SoftResultGet(DevList_e devId, U32 *hashBuf, U32 timeout)
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 
@@ -537,38 +447,20 @@ S32 sm3HwResultGet(DevList_e devId, U32 *hashBuf, U32 timeout)
     Sm3DrvData_s *drv = NULL;
     Sm3Reg_s *reg = NULL;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
     if (hashBuf == NULL) {
-        return -EINVAL;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
+        ret = -EINVAL;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
     if (sm3FinishPoll(drv, timeout) != EXIT_SUCCESS) {
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     reg->stateClr.fields.irqClr = 1;
     reg->stateClr.fields.stateClr = 1;
@@ -578,9 +470,8 @@ S32 sm3HwResultGet(DevList_e devId, U32 *hashBuf, U32 timeout)
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 
@@ -591,52 +482,33 @@ S32 sm3GroupSet(DevList_e devId, U32 grpNum)
     Sm3Reg_s *reg = NULL;
 
     if (grpNum == 0) {
-        LOGE("%s: arg error %d\r\n", __func__, grpNum);
+        LOGE("%s-%d: arg error %d", __func__, __LINE__, grpNum);
         return -EINVAL;
     }
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
     if (drv->sbrCfg.regAddr == NULL) {
-        LOGE("%s: Invalid register address\r\n", __func__);
+        LOGE("%s-%d: Invalid register address", __func__, __LINE__);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
     if (reg->status.fields.state != SM3_STATE_IDLE) {
-        LOGE("%s: Module is not idle\r\n", __func__);
+        LOGE("%s-%d: Module is not idle", __func__, __LINE__);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     reg->grpCounts = grpNum;
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 
@@ -646,48 +518,29 @@ S32 sm3ChgivSet(DevList_e devId)
     Sm3DrvData_s *drv = NULL;
     Sm3Reg_s *reg = NULL;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
     if (drv->sbrCfg.regAddr == NULL) {
-        LOGE("%s: Invalid register address\r\n", __func__);
+        LOGE("%s-%d: Invalid register address", __func__, __LINE__);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
     if (reg->status.fields.state != SM3_STATE_IDLE) {
-        LOGE("%s: Module is not idle\r\n", __func__);
+        LOGE("%s-%d: Module is not idle", __func__, __LINE__);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     reg->chgiv = 1;
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 
@@ -699,66 +552,50 @@ S32 sm3HwModeCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout)
     uintptr_t startAddr = 0;
     uintptr_t endAddr = 0;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
     if (dataIn == NULL) {
-        return -EINVAL;
+        ret = -EINVAL;
+        goto cleanup;
     }
 
     if (len == 0 || (len % SM3_DATA_STD_SIZE) != 0) {
-        return -EINVAL;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-    if (drv->sbrCfg.regAddr == NULL) {
-        LOGE("%s: Invalid register address\r\n", __func__);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
+    }
+
+    if (drv->sbrCfg.regAddr == NULL) {
+        LOGE("%s-%d: Invalid register address", __func__, __LINE__);
+        ret = -EINVAL;
+        goto cleanup;
     }
 
     if (!IS_ALIGN((uintptr_t)dataIn, 4)) {
-        LOGE("%s: dataIn must be 4-byte aligned\r\n", __func__);
+        LOGE("%s-%d: dataIn must be 4-byte aligned", __func__, __LINE__);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
     startAddr = (uintptr_t)dataIn;
     endAddr = (uintptr_t)((U8*)dataIn + len - 4);
     if (endAddr > 0xFFFFFFFFUL) {
-        LOGE("%s: address out of range for 32-bit hardware\r\n", __func__);
+        LOGE("%s-%d: address out of range for 32-bit hardware", __func__, __LINE__);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
     sm3InnerReset(drv);
     if (sm3IdlePoll(drv, timeout) != EXIT_SUCCESS) {
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     if (peripsReset(devId) != EXIT_SUCCESS) {
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     reg->ctrl.fields.logicEn = SM3_MODE_HW;
     reg->grpCounts = len * BYTE_BITS / SM3_NUM_BITS_PER_GRP;
@@ -769,54 +606,37 @@ S32 sm3HwModeCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout)
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 
-S32 sm3SoftModeLoopCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout)
+S32 sm3SoftModeCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout)
 {
     S32 ret = EXIT_SUCCESS;
     Sm3Reg_s *reg = NULL;
     Sm3DrvData_s *drv = NULL;
     U32 grpCount;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_SM3)) {
-        return -EINVAL;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_SM3, (void **)&drv);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
     }
 
     if (dataIn == NULL) {
-        return -EINVAL;
+        ret = -EINVAL;
+        goto cleanup;
     }
 
     if (len == 0 || (len % SM3_DATA_STD_SIZE) != 0) {
-        return -EINVAL;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto exit;
-    }
-
-    if (devLockByDriver(devId, SM3_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto exit;
-    }
-
-    if (getDevDriver(devId, (void **)&drv) != EXIT_SUCCESS) {
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (drv == NULL) {
-        ret = -EIO;
-        goto unlock;
-    }
-    if (drv->sbrCfg.regAddr == NULL) {
-        LOGE("%s: Invalid register address\r\n", __func__);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
+    }
+
+    if (drv->sbrCfg.regAddr == NULL) {
+        LOGE("%s-%d: Invalid register address", __func__, __LINE__);
+        ret = -EINVAL;
+        goto cleanup;
     }
 
     reg = (Sm3Reg_s *)drv->sbrCfg.regAddr;
@@ -825,11 +645,11 @@ S32 sm3SoftModeLoopCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout)
     sm3InnerReset(drv);
     if (sm3IdlePoll(drv, timeout) != EXIT_SUCCESS) {
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     if (peripsReset(devId) != EXIT_SUCCESS) {
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
     reg->ctrl.fields.logicEn = SM3_MODE_SW;
     reg->chgiv = 1;
@@ -842,16 +662,15 @@ S32 sm3SoftModeLoopCalcStart(DevList_e devId, U32 *dataIn, U32 len, U32 timeout)
         }
         if (sm3IdlePoll(drv, timeout) != EXIT_SUCCESS) {
             ret = -EIO;
-            goto unlock;
+            goto cleanup;
         }
         grpCount--;
     } while (grpCount > 0);
 
     ret = EXIT_SUCCESS;
 
-unlock:
-    devUnlockByDriver(devId);
-exit:
+cleanup:
+    funcRunEndHelper(devId);
     return ret;
 }
 

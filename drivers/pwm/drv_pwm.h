@@ -6,7 +6,7 @@
  * @date 2025/10/22
  * @version 1.0
  * @brief  PWM driver header file for Minisoc platform
- * 
+ *
  * This file contains the register definitions, data structures and macros
  * for the PWM (Pulse Width Modulation) driver on the Minisoc platform.
  * It defines the hardware register layout, control structures and constants
@@ -32,19 +32,33 @@
 #include "sbr_api.h"
 
 /* PWM Configuration Constants */
-#define PWM_DUTY_CYCLE_MAX          (100)                    ///< Maximum duty cycle value (100%)
-#define PWM_INTR_STAT_ALL           (0x9e)                   ///< Bit mask for all PWM interrupt status bits
-#define PWM_MAX_PRESCALER           (0xffff)                 ///< Maximum prescaler value for PWM frequency division
-#define PWM_MAX_PRELOAD             (0xffff)                 ///< Maximum preload value for PWM counter
-#define PWM_LOCK_TIMEOUT_MS         (1000)                   ///< Timeout in milliseconds for device lock acquisition
-#define PWM_CHANNEL_MAX             (4)                      ///< Maximum number of PWM channels supported
-#define PWM_DUTY_MAX                (100)                    ///< Maximum duty cycle percentage
-#define PWM_DUTY_COMPARE_MAX_VAL    (0xffff)                 ///< Maximum value for PWM duty compare register
-#define PWM_CNT_FREQ                (1000000)                ///< PWM counter base frequency in Hz (1MHz)
+#define PWM_DUTY_CYCLE_MAX          (100)        ///< Maximum duty cycle value (100%)
+#define PWM_INTR_STAT_ALL           (0x9e)       ///< Bit mask for all PWM interrupt status bits
+#define PWM_MAX_PRESCALER           (0xffff)     ///< Maximum prescaler value for PWM frequency division
+#define PWM_MAX_PRELOAD             (0xffff)     ///< Maximum preload value for PWM counter
+#define PWM_LOCK_TIMEOUT_MS         (1000)       ///< Timeout in milliseconds for device lock acquisition
+#define PWM_CHANNEL_MAX             (4)          ///< Maximum number of PWM channels supported
+#define PWM_DUTY_MAX                (99)         ///< Maximum duty cycle percentage
+#define PWM_DUTY_COMPARE_MAX_VAL    (0xffff)     ///< Maximum value for PWM duty compare register
+#define PWM_CNT_FREQ                (1000000)    ///< PWM counter base frequency in Hz (1MHz)
 
 /* PWM Calculation Macros */
 #define PWM_GET_PRELOAD_CNT(pwmFreq)     ((U32)PWM_CNT_FREQ / pwmFreq)  ///< Calculate preload value: clk / psc / pwmFreq
 #define PWM_GET_DUTY_CMPARE_VAL(preloadCnt, duty)  (((U32)(preloadCnt) * (duty)) / 100 + 1)  ///< Calculate duty compare value using integer arithmetic
+
+/**
+ * pwm output compare mode
+ */
+typedef enum {
+    PWM_OUTPUTCOMPARE_DIS = 0,  ///< 冻结。输出比较寄存器与计数器间的比较对通道输出电平不起作用;
+    PWM_OUTPUTCOMPARE_HIGH,     ///< 匹配时设置通道为有效电平。当计数器的值与捕获比较寄存器1相同时，强制输出为高。
+    PWM_OUTPUTCOMPARE_LOW,      ///< 匹配时设置通道为无效电平。当计数器的值与捕获比较寄存器1相同时，强制输出为低。
+    PWM_OUTPUTCOMPARE_REVERSE,  ///< 翻转。当计数器的值与捕获比较寄存器1相同时，翻转通道输出的电平。
+    PWM_OUTPUTCOMPARE_INV_LOW,  ///< 强制为无效电平，强制通道输出电平为低。
+    PWM_OUTPUTCOMPARE_INV_HIGH, ///< 强制为有效电平，强制通道输出电平为高。
+    PWM_OUTPUTCOMPARE_MODE1,    ///< PWM模式1——在向上计数时，一旦计数值小于比较寄存器时通道1为有效电平，否则为无效电平；在向下计数时，一旦计数值大于比较寄存器时通道1为无效电平，否则为有效电平。
+    PWM_OUTPUTCOMPARE_MODE2,    ///< PWM模式2——在向上计数时，一旦计数值小于比较寄存器时通道1为无效电平，否则为有效电平；在向下计数时，一旦计数值大于比较寄存器时通道1为有效电平，否则为无效电平。
+} PwmOcMode_e;
 
 /**
  * pwm control register
@@ -86,12 +100,12 @@ typedef union PwmIntrCtrl {
 typedef union PwmIntrStat {
     struct __attribute__((aligned(4))) {
         U32 rsvd1 : 1;     ///< bit 0: Reserved bit
-        U32 chan1Intr : 1; ///< bit 1: Read channel 1 interrupt status, write 1 to clear
-        U32 chan2Intr : 1; ///< bit 2: Read channel 2 interrupt status, write 1 to clear
-        U32 chan3Intr : 1; ///< bit 3: Read channel 3 interrupt status, write 1 to clear
-        U32 chan4Intr : 1; ///< bit 4: Read channel 4 interrupt status, write 1 to clear
+        U32 chan1Intr : 1; ///< bit 1: Read channel 1 interrupt status, write 0 to clear
+        U32 chan2Intr : 1; ///< bit 2: Read channel 2 interrupt status, write 0 to clear
+        U32 chan3Intr : 1; ///< bit 3: Read channel 3 interrupt status, write 0 to clear
+        U32 chan4Intr : 1; ///< bit 4: Read channel 4 interrupt status, write 0 to clear
         U32 rsvd2 : 2;     ///< bits 5-6: Reserved bits
-        U32 brakeIntr : 1; ///< bit 7: Read brake interrupt status, write 1 to clear
+        U32 brakeIntr : 1; ///< bit 7: Read brake interrupt status, write 0 to clear
         U32 rsvd3 : 24;    ///< bits 8-31: Reserved bits
     };
     U32 dword;             ///< Full 32-bit register access
@@ -143,6 +157,9 @@ typedef union PwmOutCompare {
     U32 dword;                   ///< Full 32-bit register access
 } PwmOutCompare_s;
 
+/**
+ * pwm input/output control Register
+ */
 typedef union pwmInOutCtrl {
     PwmInCapture_s    pwmInCapture;   ///< Input capture configuration
     PwmOutCompare_s   pwmOutCompare;  ///< Output compare configuration
@@ -226,7 +243,7 @@ typedef union PwmCaptureData {
         U32 dataCount : 16; ///< bits 0-15: Capture/compare value for channel 1/2/3/4
         U32 rsvd1 : 16;     ///< bits 16-31: Reserved bits
     };
-    U32 dword;             ///< Full 32-bit register access
+    U32 dword;              ///< Full 32-bit register access
 } PwmCaptureData_s;
 
 /**
@@ -240,28 +257,27 @@ typedef union PwmBrakeCtrl {
         U32 brakePolarity : 1; ///< bit 13: Brake polarity signal (0 or 1)
         U32 rsvd2 : 18;        ///< bits 14-31: Reserved bits
     };
-    U32 dword;                ///< Full 32-bit register access
+    U32 dword;                 ///< Full 32-bit register access
 } PwmBrakeCtrl_s;
 
-/* 
+/*
 * PWM registers
 */
-
 typedef struct PwmReg {
-    volatile PwmCtrl_s pwmRegCtrl;           ///< 0x00: PWM control register
-    volatile U32 reserved0[2];               ///< 0x04-0x08: Reserved space
-    volatile PwmIntrCtrl_s pwmIntrCtrl;      ///< 0x0C: PWM interrupt enable register
-    volatile PwmIntrStat_s pwmIntrStat;      ///< 0x10: PWM interrupt status register
-    volatile PwmInternalFlush_s pwmInterFlush; ///< 0x14: PWM internal flush register
-    volatile PwmInOutCtrl_u ch12InOutCtrl;   ///< 0x18: Channel 1&2 input/output control
-    volatile PwmInOutCtrl_u ch34InOutCtrl;   ///< 0x1C: Channel 3&4 input/output control
-    volatile PwmCapCmpCtrl_s pwmCapCmpCtrl;   ///< 0x20: PWM capture/compare control register
-    volatile PwmMainCount_s pwmMainCnt;      ///< 0x24: PWM main count register
-    volatile PwmPreDivClk_s pwmPreDivClk;    ///< 0x28: PWM prescaler clock register
-    volatile PwmPreLoad_s pwmPreLoad;        ///< 0x2C: PWM preload register
-    volatile PwmRepeatCnt_s pwmRepeatCnt;    ///< 0x30: PWM repeat counter register
+    volatile PwmCtrl_s pwmRegCtrl;               ///< 0x00: PWM control register
+    volatile U32 reserved0[2];                   ///< 0x04-0x08: Reserved space
+    volatile PwmIntrCtrl_s pwmIntrCtrl;          ///< 0x0C: PWM interrupt enable register
+    volatile PwmIntrStat_s pwmIntrStat;          ///< 0x10: PWM interrupt status register
+    volatile PwmInternalFlush_s pwmInterFlush;   ///< 0x14: PWM internal flush register
+    volatile PwmInOutCtrl_u ch12InOutCtrl;       ///< 0x18: Channel 1&2 input/output control
+    volatile PwmInOutCtrl_u ch34InOutCtrl;       ///< 0x1C: Channel 3&4 input/output control
+    volatile PwmCapCmpCtrl_s pwmCapCmpCtrl;      ///< 0x20: PWM capture/compare control register
+    volatile PwmMainCount_s pwmMainCnt;          ///< 0x24: PWM main count register
+    volatile PwmPreDivClk_s pwmPreDivClk;        ///< 0x28: PWM prescaler clock register
+    volatile PwmPreLoad_s pwmPreLoad;            ///< 0x2C: PWM preload register
+    volatile PwmRepeatCnt_s pwmRepeatCnt;        ///< 0x30: PWM repeat counter register
     volatile PwmCaptureData_s pwmCaptureData[4]; ///< 0x34-0x40: PWM capture/compare data for channels 1-4
-    volatile PwmBrakeCtrl_s pwmBrakeCtrl;    ///< 0x44: PWM brake control register
+    volatile PwmBrakeCtrl_s pwmBrakeCtrl;        ///< 0x44: PWM brake control register
 } __attribute__((packed, aligned(4))) PwmReg_s;
 
 typedef struct {
@@ -270,9 +286,9 @@ typedef struct {
 } PwmIrqCbItem_s;
 
 typedef struct {
-    PwmIrqCbItem_s irqCb;  ///< Interrupt callback information
-    SbrPwmCfg_s sbrCfg;    ///< SBR configuration data
-    U32 preloadRegCnt;     ///< Preload register counter value
+    PwmIrqCbItem_s irqCb; ///< Interrupt callback information
+    SbrPwmCfg_s sbrCfg;   ///< SBR configuration data
+    U32 preloadRegCnt;    ///< Preload register counter value
 } PwmDrvData_s;
 
 #ifdef __cplusplus

@@ -3,8 +3,8 @@
 def build(bld):
     # Build all driver subdirectories
     driver_dirs = [
-        'timer', 'uart', 'soc_ctrl', 'gpio', 'wdt', 'smbus',
-        'sgpio', 'pwm', 'qspi', 'security',
+        'timer', 'uart', 'soc_ctrl', 'gpio', 'wdt', 'tach',
+        'sgpio', 'pwm', 'qspi', 'security', 'smbus',
         'pvt', 'qspi_ctrl', 'brd_init', 'ocm_ecc'
     ]
     

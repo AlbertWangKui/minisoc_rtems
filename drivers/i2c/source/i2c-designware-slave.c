@@ -555,7 +555,6 @@ static inline void dwI2cDisable(struct dw_i2c_dev *dev)
     dw_reg_write(dev,DW_IC_ENABLE,tmp);
 }
 
-#if 0
 int smbusSarEnable(struct dw_i2c_dev *dev, int sarNum)
 {
     U32 tmp = 0;
@@ -564,6 +563,7 @@ int smbusSarEnable(struct dw_i2c_dev *dev, int sarNum)
     {
         return 0;
     }
+
 
     dwI2cDisable(dev);
     dw_reg_read(dev,DW_IC_ENABLE,&tmp);
@@ -692,8 +692,7 @@ S32 smbusArpUdidGet(struct dw_i2c_dev *dev, U32 idx, DwSmbusArpUdid_t *udidInfo)
 
     return 0;
 }
-#endif
-#if 0
+
 S32 smbusArpAddrResolvedGetStatus(struct dw_i2c_dev *dev, U32 sarNum)
 {
     U32 ic_status;
@@ -734,4 +733,4 @@ S32 smbusArpAddrValidGetStatus(struct dw_i2c_dev *dev, U32 sarNum)
 
     return -EXIT_FAILURE;
 }
-#endif
+

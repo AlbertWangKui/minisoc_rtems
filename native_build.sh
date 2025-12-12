@@ -57,7 +57,7 @@ for arg in "$@"; do
     esac
 done
 
-# --- Main build LOGEc ---
+# --- Main build logic ---
 echo "Starting native build..."
 echo "Arguments passed to waf configure: ${WAF_CONFIGURE_ARGS}"
 echo "Parallel jobs: ${JOBS}"

@@ -1,10 +1,10 @@
 /**
- * copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
- * @file drv_ocm_ecc_api.h
- * @author zhangxin3@starsmicrosystem.com
- * @date 2025/09/22
- * @brief eccapi定义
+ * @file    drv_ocm_ecc_api.h
+ * @author  zhangxin3@starsmicrosystem.com
+ * @date    2025/09/22
+ * @brief   OCM ECC driver API definitions
  */
 
 #ifndef __DRV_OCM_ECC_API_H__
@@ -14,72 +14,121 @@
 #include "bsp_device.h"
 
 typedef enum ocmEccErrType {
-    OCM_ECC_SEC = 0, ///< 单bit
-    OCM_ECC_DED = 1, ///< 多bit
+    OCM_ECC_SEC = 0, ///< Single-bit error
+    OCM_ECC_DED = 1, ///< Double-bit error
     OCM_ECC_ETYPE_MAX,
 } ocmEccErrType_e;
 
 /**
- * ECC 错误回调函数类型，参数为本次错误的信息
- * errType 错误类型
- * errAddr 错误地址
- * errData 错误数据
+ * @brief ECC error callback function type
+ * @details This callback is invoked when an ECC error is detected
+ * @param [in] errType Error type (OCM_ECC_SEC or OCM_ECC_DED)
+ * @param [in] errAddr Error address
+ * @param [in] errData Error data
  */
 typedef void (*pOcmEccCallback)(U8 errType, U32 errAddr, U64 errData);
 
 /**
- * @brief 初始化
- * @param [in] devId 设备ID
- * @return 0表示成功，<0表示错误
+ * @brief Initialize OCM ECC driver
+ * @details This function initializes the OCM ECC driver for the specified device.
+ *          It allocates driver private data, reads device configuration from SBR,
+ *          installs interrupt handler, and enables interrupts.
+ * @param [in] devId Device ID
+ * @return EXIT_SUCCESS on success
+ * @return -EINVAL Invalid parameter (device not match or already initialized)
+ * @return -EIO I/O error (failed to get device config, install drv, irq priority)
+ * @return -EBUSY Device busy (device lock failed)
+ * @return -ENOMEM Out of memory (failed to allocate driver data)
  */
 S32 ocmEccInit(DevList_e devId);
 
 /**
- * @brief 去初始化
- * @param [in] devId 设备ID
- * @return 0表示成功，<0表示错误
+ * @brief Deinitialize OCM ECC driver
+ * @details This function deinitializes the OCM ECC driver for the specified device.
+ *          It disables interrupts, removes interrupt handler, and uninstalls the driver.
+ * @param [in] devId Device ID
+ * @return EXIT_SUCCESS on success
+ * @return -EINVAL Invalid parameter (device not match, not initialized)
+ * @return -EIO I/O error (failed to get device driver, drv data is null, or uninstall driver)
+ * @return -EBUSY Device busy (device lock failed)
  */
-S32 ocmEccDeinit(DevList_e devId);
+S32 ocmEccDeInit(DevList_e devId);
 
 /**
- * @brief 注册中断回调
- * @param [in] devId 设备ID
- * @param [in] func中断回调
- * @return 0表示成功，<0表示参数错误
+ * @brief Register interrupt callback function
+ * @details This function registers a callback function to be called when an ECC error
+ *          interrupt occurs. The callback is invoked with error type, address, and data.
+ * @param [in] devId Device ID
+ * @param [in] func Interrupt callback function pointer
+ * @return EXIT_SUCCESS on success
+ * @return -EINVAL Invalid parameter (param error, device not match, not initialized)
+ * @return -EIO I/O error (failed to get device driver, drv data is null)
+ * @return -EBUSY Device busy (device lock failed)
  */
 S32 ocmEccIrqCbRegister(DevList_e devId, pOcmEccCallback func);
 
 /**
- * @brief 注销中断回调
- * @param [in] devId 设备ID
- * @return 0表示成功，<0表示参数错误
+ * @brief Deregister interrupt callback function
+ * @details This function removes the previously registered interrupt callback function.
+ * @param [in] devId Device ID
+ * @return EXIT_SUCCESS on success
+ * @return -EINVAL Invalid parameter (param error, device not match, not initialized)
+ * @return -EIO I/O error (failed to get device driver, drv data is null)
+ * @return -EBUSY Device busy (device lock failed)
  */
-S32 ocmEccIrqCbDeregister(DevList_e devId);
+S32 ocmEccIrqCbUnregister(DevList_e devId);
 
 /**
- * @brief 获取错误计数
- * @param [in] devId 设备ID
- * @param [in] eType表示单bit/多bit
- * @return >= 0表示错误计数个数，<0表示参数错误
+ * @brief Get ECC error count
+ * @details This function retrieves the error count for the specified error type
+ *          (single-bit or double-bit errors).
+ * @param [in] devId Device ID
+ * @param [in] eType Error type (OCM_ECC_SEC for single-bit, OCM_ECC_DED for double-bit)
+ * @return >= 0 Error count on success
+ * @return -EINVAL Invalid parameter (param error, device not match, not initialized)
+ * @return -EIO I/O error (failed to get device driver, drv data is null)
+ * @return -EBUSY Device busy (device lock failed)
  */
 S32 ocmEccErrCntGet(DevList_e devId, ocmEccErrType_e eType);
 
 /**
- * @brief 清除错误计数
- * @param [in] devId 设备ID
- * @param [in] eType表示单bit/多bit
- * @return 0表示成功，<0表示参数错误
+ * @brief Clear ECC error count
+ * @details This function clears the error count for the specified error type.
+ * @param [in] devId Device ID
+ * @param [in] eType Error type (OCM_ECC_SEC for single-bit, OCM_ECC_DED for double-bit)
+ * @return EXIT_SUCCESS on success
+ * @return -EINVAL Invalid parameter (param error, device not match, not initialized)
+ * @return -EIO I/O error (failed to get device driver, drv data is null)
+ * @return -EBUSY Device busy (device lock failed)
  */
 S32 ocmEccErrCntClear(DevList_e devId, ocmEccErrType_e eType);
 
 /**
- * @brief 获取最近的错误数据和地址
- * @param [in] devId 设备ID
- * @param [in] eType表示单bit/多bit
- * @param [out] pErrAddr返回错误数据的地址
- * @param [out] pErrData返回错误数据
- * @return 0表示成功，<0表示参数错误
+ * @brief Get last error address and data
+ * @details This function retrieves the address and data of the last detected error
+ *          for the specified error type.
+ * @param [in] devId Device ID
+ * @param [in] eType Error type (OCM_ECC_SEC for single-bit, OCM_ECC_DED for double-bit)
+ * @param [out] pErrAddr Pointer to store the error address
+ * @param [out] pErrData Pointer to store the error data
+ * @return EXIT_SUCCESS on success
+ * @return -EINVAL Invalid parameter (param error, device not match, not initialized)
+ * @return -EIO I/O error (failed to get device driver, drv data is null)
+ * @return -EBUSY Device busy (device lock failed)
  */
 S32 ocmEccLastErrGet(DevList_e devId, ocmEccErrType_e eType, U32 *pErrAddr, U64 *pErrData);
 
-#endif
+/**
+ * @brief Software trigger ECC error interrupt
+ * @details This function software-triggers a single-bit or double-bit error interrupt
+ *          for testing purposes.
+ * @param [in] devId Device ID
+ * @param [in] eType Error type (OCM_ECC_SEC for single-bit, OCM_ECC_DED for double-bit)
+ * @return EXIT_SUCCESS on success
+ * @return -EINVAL Invalid parameter (param error, device not match, not initialized)
+ * @return -EIO I/O error (failed to get device driver, drv data is null)
+ * @return -EBUSY Device busy (device lock failed)
+ */
+S32 ocmEccErrIrqTrigger(DevList_e devId, ocmEccErrType_e eType);
+
+#endif /* __DRV_OCM_ECC_API_H__ */

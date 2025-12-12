@@ -2,7 +2,7 @@
 
 def build(bld):
     # WDT driver
-    if bld.is_defined('CONFIG_USING_WDT'):
+    if bld.is_defined('CONFIG_DRIVER_WDT'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/wdt/drv_wdt.c'
         ]

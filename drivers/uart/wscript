@@ -2,7 +2,7 @@
 
 def build(bld):
     # UART driver
-    if bld.is_defined('CONFIG_USING_UART'):
+    if bld.is_defined('CONFIG_DRIVER_UART'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
                 'drivers/uart/drv_uart.c',
             ]

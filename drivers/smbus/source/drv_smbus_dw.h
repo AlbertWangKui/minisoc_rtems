@@ -10,6 +10,7 @@
  * Date         Author          Description
  * 2025/10/20   wangkui         Initial version
  * 2025/12/01   wangkui         refactor and simplify the code as for core function
+ * 2025/12/11   wangkui         correct the issue in AI review
  */
 
 #ifndef __DRV_SMBUS_DW_H__
@@ -31,16 +32,6 @@
 #include "log_msg.h"
 
 #define TEST_SUITS_1
-#ifndef TEST_SUITS_1
-    #define I2C_TESTSUITE_SLAVE_ADDR (0x21) /* test slave address 0x21 == 33 */
-    #define TEST_SMBUS_DEVICE_ID     (DEVICE_SMBUS0)
-    #define TEST_I2C_DEVICE_ID       (DEVICE_SMBUS0) /* I2C bus 0 */
-    #define SYS_INT_NUM_SMBUS        (55)
-    #define SYS_INT_PRIORITY_SMBUS   (127)
-    #define SMBUS_BASE_OFFSET        (0x1000)
-    #define SMBUS_BASE_ADDR          (0xBE620000)
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -71,16 +62,18 @@ typedef struct SmbusHalOps SmbusHalOps_s;
 /* ======================================================================== */
 
 /* SMBus Block Transfer Constants */
-#define SMBUS_BLOCK_MAX                (32)      /**< Maximum SMBus block size */
-#define SMBUS_PEC_LEN                  (1)       /**< PEC (Packet Error Code) length */
-#define SMBUS_CMD_LEN                  (1)       /**< Command length */
-#define SMBUS_LEN_BYTE                 (1)       /**< Length byte size */
-#define SMBUS_ADDR_LEN                 (1)       /**< Address byte size */
+#define SMBUS_BLOCK_MAX                (32)                      /**< Maximum SMBus block size */
+#define SMBUS_STACK_BUF_SIZE           (SMBUS_BLOCK_MAXLEN + 8)  /* 32 + 8 = 40 bytes, safe for headers */
+#define SMBUS_PEC_BUF_SIZE             (80)                      /* Safe size for Write history + Read data */
+#define SMBUS_PEC_LEN                  (1)                       /**< PEC (Packet Error Code) length */
+#define SMBUS_CMD_LEN                  (1)                       /**< Command length */
+#define SMBUS_LEN_BYTE                 (1)                       /**< Length byte size */
+#define SMBUS_ADDR_LEN                 (1)                       /**< Address byte size */
 
 /* I2C Message Flags */
-#define I2C_M_RD                       0x0001    /**< I2C read direction flag */
-#define I2C_M_TEN                      0x0010    /**< Ten-bit chip address */
-#define I2C_M_DMA_SAFE                 0x0200    /**< DMA safe flag */
+#define I2C_M_RD                       (0x0001)    /**< I2C read direction flag */
+#define I2C_M_TEN                      (0x0010)    /**< Ten-bit chip address */
+#define I2C_M_DMA_SAFE                 (0x0200)    /**< DMA safe flag */
 
 /* Maximum Transfer Sizes */
 #define SMBUS_MAX_WRITE_BLOCK_SIZE     (SMBUS_CMD_LEN + SMBUS_LEN_BYTE + SMBUS_BLOCK_MAX + SMBUS_PEC_LEN)  /**< Max write block: Cmd + Len + Data + PEC */
@@ -273,18 +266,14 @@ typedef enum SmbusTransferState {
         SMBUS_ARP_PREPARE_CMD_DET_BIT | \
         SMBUS_ARP_RST_CMD_DET_BIT | \
         SMBUS_ASSIGN_ADDR_CMD_DET_BIT )
-#if 0
-        SMBUS_ARP_RST_CMD_DET_BIT | \
-        SMBUS_GET_UDID_CMD_DET_BIT | \
-        SMBUS_ASSIGN_ADDR_CMD_DET_BIT | \
-        SMBUS_QUICK_CMD_DET_BIT )
-
-#endif
 /* ===== Grouped Interrupt Masks ===== */
+/* CRITICAL: Do NOT enable TX_EMPTY (Bit 4) for Slave initially.
+* Only enable RX_FULL, RD_REQ, STOP_DET, TX_ABRT, etc.
+* TX_EMPTY should only be enabled inside ISR when RD_REQ is received.
+*/
 #define SMBUS_SLAVE_INTR_MASK ( \
         SMBUS_INTR_WR_REQ | \
         SMBUS_INTR_RX_FULL | \
-        SMBUS_INTR_TX_EMPTY | \
         SMBUS_INTR_RD_REQ | \
         SMBUS_INTR_TX_ABRT | \
         SMBUS_INTR_RX_DONE | \
@@ -390,12 +379,12 @@ typedef enum SmbusTransferState {
 #define SMBUS_ERR_TYPE_UNKNOWN            (8)  /**< Unknown abort source */
 
 #define SMBUS_ARP_ERR_NONE                (0)
-#define SMBUS_ARP_ERR_BUSY                (-EBUSY)
-#define SMBUS_ARP_ERR_IO                  (-EIO)
-#define SMBUS_ARP_ERR_NACK                (-ENXIO)   /* 对应 Address NACK */
-#define SMBUS_ARP_ERR_ARB_LOST            (-EAGAIN)  /* 对应 Arbitration Lost */
-#define SMBUS_ARP_ERR_TIMEOUT             (-ETIMEDOUT)
-#define SMBUS_ARP_ERR_PROTO               (-EPROTO)
+#define SMBUS_ARP_ERR_BUSY                (-EBUSY)    /* 资源正忙或被锁定 */
+#define SMBUS_ARP_ERR_IO                  (-EIO)      /* 通用I/O错误 */
+#define SMBUS_ARP_ERR_NACK                (-ENXIO)    /* 地址无应答(NACK) */
+#define SMBUS_ARP_ERR_ARB_LOST            (-EAGAIN)   /* 总线仲裁失败 */
+#define SMBUS_ARP_ERR_TIMEOUT             (-ETIMEDOUT)/* 操作超时 */
+#define SMBUS_ARP_ERR_PROTO               (-EPROTO)   /* 协议错误 */
 
 /* SDA Stuck Recovery Abort and Status Masks */
 #define SMBUS_IC_TX_ABRT_SDA_STUCK_AT_LOW_MASK (1U << 17) /**< SDA stuck at low abort mask */
@@ -905,10 +894,6 @@ typedef struct dw_i2c_dev dwI2cDev_s;
  */
 void smbusSlvArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData);
 
-/* ======================================================================== */
-/*                    Core Protocol - PEC and Utility Functions               */
-/* ======================================================================== */
-
 /**
  * @brief Calculate CRC-8 for one byte of data
  * @details Calculates CRC-8 checksum for a single byte using the SMBus
@@ -932,26 +917,22 @@ static inline U8 smbusCrc8CalcOne(U8 crc, U8 data)
     }
     return crc;
 }
-
 /**
- * @brief Calculate SMBus PEC (Packet Error Code) for buffer
- * @details Calculates SMBus PEC (CRC-8) for a buffer of data. PEC is used
- *          to verify data integrity in SMBus communications.
- * @param[in] pec Initial PEC value (typically 0)
- * @param[in] buf Pointer to data buffer
- * @param[in] len Length of data buffer
- * @return Calculated PEC value
+ * @brief Convert I2C 7-bit address to read/write address byte
+ * @details Converts a 7-bit I2C address to an 8-bit address byte with the
+ *          appropriate read/write bit set.
+ * @param[in] addrIn 7-bit I2C address (0-127)
+ * @param[in] isWrite True for write operation, false for read operation
+ * @return 8-bit address with R/W bit set
  *
- * @note Uses CRC-8 with polynomial 0x07
- * @note Processes entire buffer sequentially
+ * @note Left-shifts address by 1 and adds R/W bit
+ * @note Write operation: R/W bit = 0, Read operation: R/W bit = 1
  */
-static inline U8 smbusCalcPEC(U8 pec, const U8 *buf, U32 len)
+static inline const U8 i2cAddrConvert(U8 addrIn, bool isWrite)
 {
-    for (U32 i = 0; i < len; ++i) {
-        pec = smbusCrc8CalcOne(pec, buf[i]);
-    }
-    return pec;
+    return (addrIn << 1) | (isWrite ? 0 : 1);
 }
+
 
 /**
  * @brief Master read data from RX FIFO
@@ -1078,9 +1059,8 @@ static inline Bool smbusArpIsAddrUsed(SmbusArpMaster_s *master, U8 address)
  */
 static inline void parseAssignPacket(const U8 *payload, SmbusUdid_s *targetUdid, U8 *newAddr)
 {
-    if (payload == NULL || targetUdid == NULL || newAddr == NULL) {
-        return;
-    }
+    SMBUS_CHECK_PARAM_VOID(payload == NULL || targetUdid == NULL || newAddr == NULL,
+                      "payload, targetUdid or newAddr is NULL");
 
     /* * 1. 填充 UDID 字段
      * 您的结构体是 packed 的，且前 10 个字节字段(nextAvailAddr 到 subsystemVendorId)
@@ -1096,8 +1076,8 @@ static inline void parseAssignPacket(const U8 *payload, SmbusUdid_s *targetUdid,
      * 格式为: [Addr 7-bit] | [Reserved(0)]。即地址左移了1位。
      */
     U8 rawAddrByte = payload[16];
-    
-    // 右移1位提取 7-bit 实际地址
+
+    ///< 右移1位提取 7-bit 实际地址
     *newAddr = (rawAddrByte >> 1) & 0x7F;
 }
 
@@ -1259,47 +1239,6 @@ static inline S32 smbusExecuteTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 nu
  * @return EXIT_SUCCESS on success, negative error code on failure
  */
 S32 getSmbusReg(DevList_e devId, SmbusRegMap_s **pCtrlReg);
-
-/**
- * @brief SMBus驱动锁定并检查状态函数
- * @details 对指定的SMBus设备执行锁定操作，并进行驱动状态验证。
- *          此函数集成了设备锁定、驱动初始化状态检查和驱动类型匹配验证，
- *          是所有SMBus操作前的标准安全检查流程。
- * @param[in] devId SMBus设备标识符，来自DevList_e枚举
- * @return EXIT_SUCCESS 锁定成功且所有检查通过
- * @return -EBUSY 设备锁定失败或驱动未初始化
- * @return -EINVAL 驱动类型不匹配（非DW_I2C驱动）
- *
- * @note 此函数会尝试获取设备锁，超时时间为SMBUS_LOCK_TIMEOUT_MS
- * @note 成功获取锁后，会检查驱动是否已正确初始化
- * @note 验证驱动ID是否匹配DRV_ID_DW_I2C
- * @note 此函数是线程安全的，使用设备级互斥锁
- *
- * @par 执行流程：
- * 1. 尝试获取设备锁，超时返回-EBUSY
- * 2. 检查驱动初始化状态，未初始化返回-EBUSY
- * 3. 验证驱动类型匹配，不匹配返回-EINVAL
- * 4. 所有检查通过返回EXIT_SUCCESS
- *
- * @warning 调用此函数后，调用者负责在操作完成后释放设备锁
- * @warning 设备锁具有超时机制，超时后函数返回错误
- * @warning 此函数不检查devId参数的有效性，调用者需确保devId有效
- *
- * @par 使用场景：
- * - SMBus主机操作前的安全检查
- * - SMBus从机操作前的状态验证
- * - 设备寄存器访问前的准备工作
- *
- * @par 相关常量：
- * - SMBUS_LOCK_TIMEOUT_MS: 设备锁定超时时间
- * - DRV_ID_DW_I2C: DesignWare I2C驱动标识符
- *
- * @par 依赖函数：
- * - devLockByDriver: 获取设备锁
- * - isDrvInit: 检查驱动初始化状态
- * - isDrvMatch: 验证驱动类型匹配
- */
-S32 smbusDrvLockAndCheck(DevList_e devId);
 
 #ifdef __cplusplus
 }

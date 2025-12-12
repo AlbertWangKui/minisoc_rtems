@@ -41,10 +41,10 @@ static S32 i2cDevCfgGet(DevList_e devId, SbrI2cSmbusCfg_s *i2cSbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("i2c: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, masterMode:%u, interruptMode:%u, speed:%u, addrMode:%u\r\n",
+    LOGI("i2c: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, masterMode:%u, interruptMode:%u, speed:%u, addrMode:%u\r\n",
          i2cSbrCfg->regAddr, i2cSbrCfg->irqNo, i2cSbrCfg->irqPrio, i2cSbrCfg->masterMode,
          i2cSbrCfg->interruptMode, i2cSbrCfg->speed, i2cSbrCfg->addrMode);
-    LOGE("i2c: SBR dump - slaveAddrHigh:%u, slaveAddrLow:%u, enSmbus:%u, reserved:%u\r\n",
+    LOGI("i2c: SBR dump - slaveAddrHigh:%u, slaveAddrLow:%u, enSmbus:%u, reserved:%u\r\n",
          i2cSbrCfg->slaveAddrHigh, i2cSbrCfg->slaveAddrLow, i2cSbrCfg->enSmbus, i2cSbrCfg->reserved);
 #endif
 
@@ -633,7 +633,7 @@ S32 i2cControl(DevList_e i2cDevId, U32 ctrlCmd, void *param)
         case I2C_CMD_RESET:
             /* i2cReset(i2cDevId); */
             /* 不实现这个命令，不然会导致递归调用devLockByDriver(),虽然这个函数可以递归调用 */
-            LOGE("i2cReset(i2cDevId) not implemented, please use i2cFree() instead.\n");
+            LOGI("i2cReset(i2cDevId) not implemented, please use i2cFree() instead.\n");
             break;
         case I2C_CMD_FLUSH_TX:
         case I2C_CMD_FLUSH_RX:
@@ -951,7 +951,6 @@ exit:
     return;
 }
 
-#if 0
 S32 i2cSmbusDevAddrAssign(U32 i2cDevId,uint8_t assign_addr)
 {
     struct dw_i2c_dev *dev = NULL;
@@ -1172,8 +1171,7 @@ exit:
 
     return ret;
 }
-#endif
-#if 0
+
 S32 i2cSmbusArpAddrResolvedGetStatus(U32 i2cDevId, U32 sarNum)
 {
     struct dw_i2c_dev *dev = NULL;
@@ -1206,7 +1204,6 @@ exit:
 
     return ret;
 }
-
 
 S32 i2cSmbusArpAddrValidGetStatus(U32 i2cDevId, U32 sarNum)
 {
@@ -1270,7 +1267,7 @@ unlock:
 exit:
     return ret;
 }
-#endif
+
 S32 i2cSwitchMode(U32 i2cDevId, DwI2cMode_t i2cMode)
 {
     struct dw_i2c_dev *dev = NULL;
@@ -1294,7 +1291,7 @@ S32 i2cSwitchMode(U32 i2cDevId, DwI2cMode_t i2cMode)
         goto exit;
     }
 
-    //ret = smbusMasterSlaveModeSwitch(dev,i2cMode);
+    ret = smbusMasterSlaveModeSwitch(dev,i2cMode);
     if (devUnlockByDriver(i2cDevId) != EXIT_SUCCESS) {
         ret = -EXIT_FAILURE;
     }

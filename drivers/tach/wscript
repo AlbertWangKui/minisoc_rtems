@@ -2,7 +2,7 @@
 
 def build(bld):
     # TACH driver
-    if bld.is_defined('CONFIG_USING_TACH'):
+    if bld.is_defined('CONFIG_DRIVER_TACH'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/tach/drv_tach.c'
         ]

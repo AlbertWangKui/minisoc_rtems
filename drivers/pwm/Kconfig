@@ -1,5 +1,5 @@
-config USING_PWM
-    bool "USING PWM"
+config DRIVER_PWM
+    bool "Enable PWM driver"
     default n
     help
-      Select this to use PWM driver
+      Select this to enable PWM (Pulse Width Modulation) driver support

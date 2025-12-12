@@ -20,9 +20,9 @@ static S32 devCfgGet(DevList_e devID, SbrBrdCfg_s *cfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("brd_init: SBR dump - cfgNum:%u\r\n", cfg->cfgNum);
+    LOGI("brd_init: SBR dump - cfgNum:%u\r\n", cfg->cfgNum);
     for (int i = 0; i < cfg->cfgNum && i < 16; i++) {
-        LOGE("brd_init: SBR dump - brdCfg[%d] addr:0x%08x, val:0x%08x\r\n",
+        LOGI("brd_init: SBR dump - brdCfg[%d] addr:0x%08x, val:0x%08x\r\n",
              i, cfg->brdCfg[i].addr, cfg->brdCfg[i].val);
     }
 #endif

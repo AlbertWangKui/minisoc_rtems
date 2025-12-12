@@ -2,7 +2,7 @@
 
 def build(bld):
     # QSPI_CTRL driver
-    if bld.is_defined('CONFIG_USING_QSPI_CTRL'):
+    if bld.is_defined('CONFIG_DRIVER_QSPI_CTRL'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/qspi_ctrl/qspi_ctrl.c'
         ]

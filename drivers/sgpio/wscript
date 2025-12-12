@@ -2,15 +2,15 @@
 
 def build(bld):
     # SGPIO driver
-    if bld.is_defined('CONFIG_USING_SGPIO_V2_0'):
+    if bld.is_defined('CONFIG_DRIVER_SGPIO_V2_0'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/sgpio/drv_sgpio_v2.0.c'
         ]
-    if bld.is_defined('CONFIG_USING_SGPIO_V1_1'):
+    if bld.is_defined('CONFIG_DRIVER_SGPIO_V1_1'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/sgpio/drv_sgpio_v1.1.c'
         ]
-    if bld.is_defined('CONFIG_USING_SGPIO_V1_0'):
+    if bld.is_defined('CONFIG_DRIVER_SGPIO_V1_0'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/sgpio/drv_sgpio_v1.0.c'
         ]

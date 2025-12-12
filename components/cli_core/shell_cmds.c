@@ -284,7 +284,7 @@ S32 clishellInit(void)
         goto lEnd;
     }
 
-    cliLOGEnStatSet(false);
+    cliLoginStatSet(false);
     if (cliUartSessionCreate() != CLI_ERRNO_OK) {
         CLI_LOG_ERROR("cliUartSessionCreate failed\r\n");
         ret = -EXIT_FAILURE;

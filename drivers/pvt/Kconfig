@@ -1,15 +1,15 @@
-config USING_PVT
-    bool "USING PVT"
+config DRIVER_PVT
+    bool "Enable PVT driver"
     default n
     help
-      Select this to use pvt driver
+      Select this to enable PVT (Process, Voltage, Temperature) driver support
 
 choice
     prompt "pvt driver select"
-    depends on USING_PVT
+    depends on DRIVER_PVT
 
-    config USING_HG_PVT
-        bool "USING HG_PVT"
-    config USING_TIANQIN_PVT
-        bool "USING TIANQIN_PVT"
+    config DRIVER_HG_PVT
+        bool "HG PVT driver"
+    config DRIVER_TIANQIN_PVT
+        bool "TianQin PVT driver"
 endchoice

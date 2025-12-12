@@ -16,7 +16,7 @@
 #include "bsp_api.h"
 #include "osp_interrupt.h"
 #include "log_msg.h"
-#include "drv_efuse.h"
+#include "drv_efuse_v1.h"
 #include "drv_efuse_api.h"
 
 static inline S32 efuseGetEldLen(EfuseEldNum_e eldNum)
@@ -248,7 +248,7 @@ static S32 isEfuseEldProgamed(DevList_e devId, EfuseEldNum_e eldNum,U32 offset,U
     U32 key[16];
     S32 ret = 0;
 
-    if (efuseEldGet(devId,eldNum,offset,16,key) != 0) {
+    if (efuseEldRead(devId,eldNum,offset,16,key) != 0) {
         ret = -EXIT_FAILURE;
         goto exit;
     }
@@ -279,7 +279,7 @@ static S32 efuseDevCfgGet(DevList_e devId, SbrEfuseCfg_s *pEfuseCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("efuse: SBR dump - regAddr:0x%08x, reserved:0x%08x\r\n",
+    LOGI("efuse: SBR dump - regAddr:0x%08x, reserved:0x%08x\r\n",
          pEfuseCfg->regAddr, pEfuseCfg->reserved);
 #endif
 
@@ -414,7 +414,7 @@ exit:
  * @return   EXIT_SUCCESS 成功
  *           -EXIT_FAILURE 失败
  */
-S32  efuseEldSet(DevList_e devId, EfuseEldNum_e eldNum, U32 offset, U32 len, U32 *pSrc)
+S32 efuseEldProgram(DevList_e devId, EfuseEldNum_e eldNum, U32 offset, U32 len, U32 *pSrc)
 {
     S32 ret = EXIT_SUCCESS;
     U32 setLast;
@@ -512,7 +512,7 @@ exit:
  * @note     原流程，eld2的bit127被置1后，不只eld写会失败，eld读也会失败，
  *           与硬件核对操作流程后删除了不需要opcode、start等操作（PR2517）
  */
-S32 efuseEldGet(DevList_e devId,EfuseEldNum_e eldNum, U32 offset, U32 len, U32 *pDest)
+S32 efuseEldRead(DevList_e devId,EfuseEldNum_e eldNum, U32 offset, U32 len, U32 *pDest)
 {
     S32 ret = EXIT_SUCCESS;
     U32 getLast;
@@ -599,22 +599,22 @@ S32 efuseWriteSm2Key(DevList_e devId, U8 *buf)
     }
 
     if (isEfuseEldProgamed(devId,EFUSE_ELD_8,0,16) == 0) {
-        ret = efuseEldSet(devId,EFUSE_ELD_8,0,16,(U32*)buf);
+        ret = efuseEldProgram(devId,EFUSE_ELD_8,0,16,(U32*)buf);
         goto exit;
     }
 
     if (isEfuseEldProgamed(devId,EFUSE_ELD_11,0,16) == 0) {
-        ret = efuseEldSet(devId,EFUSE_ELD_11,0,16,(U32*)buf);
+        ret = efuseEldProgram(devId,EFUSE_ELD_11,0,16,(U32*)buf);
         goto exit;
     }
 
     if (isEfuseEldProgamed(devId,EFUSE_ELD_10,0,16) == 0) {
-        ret = efuseEldSet(devId,EFUSE_ELD_10,0,16,(U32*)buf);
+        ret = efuseEldProgram(devId,EFUSE_ELD_10,0,16,(U32*)buf);
         goto exit;
     }
 
     if (isEfuseEldProgamed(devId,EFUSE_ELD_9,0,16) == 0) {
-        ret = efuseEldSet(devId,EFUSE_ELD_9,0,16,(U32*)buf);
+        ret = efuseEldProgram(devId,EFUSE_ELD_9,0,16,(U32*)buf);
         goto exit;
     }
 
@@ -639,17 +639,17 @@ S32 efuseWriteSm4Key(DevList_e devId, U8 *buf)
     }
 
     if (isEfuseEldProgamed(devId,EFUSE_ELD_12,0,4) == 0) {
-        ret = efuseEldSet(devId,EFUSE_ELD_12,0,4,(U32*)buf);
+        ret = efuseEldProgram(devId,EFUSE_ELD_12,0,4,(U32*)buf);
         goto exit;
     }
 
     if (isEfuseEldProgamed(devId,EFUSE_ELD_12,4,4) == 0) {
-        ret = efuseEldSet(devId,EFUSE_ELD_12,4,4,(U32*)buf);
+        ret = efuseEldProgram(devId,EFUSE_ELD_12,4,4,(U32*)buf);
         goto exit;
     }
 
     if (isEfuseEldProgamed(devId,EFUSE_ELD_12,8,4) == 0) {
-        ret = efuseEldSet(devId,EFUSE_ELD_12,8,4,(U32*)buf);
+        ret = efuseEldProgram(devId,EFUSE_ELD_12,8,4,(U32*)buf);
         goto exit;
     }
 

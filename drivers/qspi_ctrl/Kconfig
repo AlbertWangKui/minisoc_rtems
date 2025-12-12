@@ -1,5 +1,5 @@
-config USING_QSPI_CTRL
-    bool "USING QSPI_CTRL"
+config DRIVER_QSPI_CTRL
+    bool "Enable QSPI controller driver"
     default y
     help
-      Select this to use qspi control
+      Select this to enable QSPI controller driver support

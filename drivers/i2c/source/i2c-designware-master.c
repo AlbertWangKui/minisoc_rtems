@@ -968,7 +968,7 @@ int i2c_dw_unprobe_master(struct dw_i2c_dev *dev)
     }
     return 0;
 }
-#if 0
+
 static uint8_t crc8(uint16_t data)
 {
     int32_t i;
@@ -998,7 +998,6 @@ static uint8_t i2cAddrConvert(uint8_t addrIn, bool isWrite)
     return (addrIn << 1) | (isWrite ? 0 : 1);
 }
 
-
 static uint8_t smbusPecPktConstruct(uint8_t addr7bitIn, bool isWrite, uint8_t *pData, uint32_t count)
 {
     uint8_t addr = i2cAddrConvert(addr7bitIn, isWrite);
@@ -1006,7 +1005,7 @@ static uint8_t smbusPecPktConstruct(uint8_t addr7bitIn, bool isWrite, uint8_t *p
 
     return smbusPecCalc(addrWithPec, pData, count);
 }
-#endif
+
 
 static inline void dwI2cDisable(struct dw_i2c_dev *dev)
 {
@@ -1016,7 +1015,7 @@ static inline void dwI2cDisable(struct dw_i2c_dev *dev)
     tmp &= ~(1);
     dw_reg_write(dev,DW_IC_ENABLE,tmp);
 }
-#if 0
+
 static int32_t smbusArpPrepare(struct dw_i2c_dev *dev)
 {
     int32_t ret = EXIT_SUCCESS;
@@ -1237,8 +1236,7 @@ static int32_t smbusArpAddressAssign(struct dw_i2c_dev *dev,uint32_t *udid_word0
 exit:
     return ret;
 }
-#endif
-#if 0
+
 int32_t smbusDevAddrAssign(struct dw_i2c_dev *dev, uint8_t assign_addr)
 {
     int32_t ret = EXIT_SUCCESS;
@@ -1298,8 +1296,6 @@ exit:
     return ret;
 }
 
-#endif
-#if 0
 ///<  DEV改配为master or slave后必须重新配置设备，例如中断
 S32 smbusMasterSlaveModeSwitch(struct dw_i2c_dev *dev, DwI2cMode_t i2cMode)
 {
@@ -1407,4 +1403,3 @@ S32 smbusMasterSlaveModeSwitch(struct dw_i2c_dev *dev, DwI2cMode_t i2cMode)
     return 0;
 }
 
-#endif

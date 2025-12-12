@@ -1,15 +1,9 @@
 /**
  * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
- *
- * @file drv_tach.c
- * @author yangkl (yangkl@starsmicrosystem.com)
- * @date 2025
- * @brief  tach driver implementation
- *
- * @par ChangeLog:
- *
- * Date         Author          Description
- * 2024         tach_driver     Created initial version
+ * @file    drv_tach.c
+ * @author  yangkl@starsmicrosystem.com
+ * @date    2025/01/01
+ * @brief   Tach driver implementation
  */
 
 #include <stdio.h>
@@ -23,28 +17,38 @@
 #include "bsp_drv_id.h"
 #include "udelay.h"
 
+static S32 tachDevCfgGet(DevList_e devId, SbrTachCfg_s *tachSbrCfg);
+static S32 tachSetCapCfg(TachDrvData_s *pDrvData, U32 clk);
+static void tachIrqHandler(TachDrvData_s *pDrvData);
+
+/**
+ * @brief   获取设备配置
+ * @param[in]  devId  设备ID
+ * @param[out] tachSbrCfg  SBR配置结构体指针
+ * @return  EXIT_SUCCESS成功 / -EINVAL参数错误 / -EIO硬件错误
+ */
 static S32 tachDevCfgGet(DevList_e devId, SbrTachCfg_s *tachSbrCfg)
 {
     S32 ret = EXIT_SUCCESS;
 
     if (tachSbrCfg == NULL) {
-        LOGE("%s: tachSbrCfg is NULL\r\n", __func__);
+        LOGE("%s-%d: tachSbrCfg is NULL", __func__, __LINE__);
         ret = -EINVAL;
         goto exit;
     }
 
     if (devSbrRead(devId, tachSbrCfg, 0, sizeof(SbrTachCfg_s)) != sizeof(SbrTachCfg_s)) {
-        LOGE("%s: devSbrRead failed, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: devSbrRead failed, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
         goto exit;
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("%s: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u\r\n", __func__,
+    LOGI("%s-%d: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u", __func__, __LINE__,
          tachSbrCfg->regAddr, tachSbrCfg->irqNo, tachSbrCfg->irqPrio);
 #endif
 
-    if (tachSbrCfg->irqNo == 0 || tachSbrCfg->irqPrio == 0 || tachSbrCfg->regAddr == NULL || \
+    if (tachSbrCfg->irqNo == 0 || tachSbrCfg->irqPrio == 0 || tachSbrCfg->regAddr == NULL ||
         tachSbrCfg->polarity >= TACH_POLARITY_MAX) {
         ret = -EINVAL;
         goto exit;
@@ -54,6 +58,12 @@ exit:
     return ret;
 }
 
+/**
+ * @brief   设置捕获配置
+ * @param[in]  pDrvData  驱动数据结构体指针
+ * @param[in]  clk  时钟频率
+ * @return  EXIT_SUCCESS成功 / -EINVAL参数错误
+ */
 static S32 tachSetCapCfg(TachDrvData_s *pDrvData, U32 clk)
 {
     S32 ret = EXIT_SUCCESS;
@@ -61,21 +71,20 @@ static S32 tachSetCapCfg(TachDrvData_s *pDrvData, U32 clk)
     U64 capTimeWidth = 0;
 
     if (pDrvData == NULL) {
-        LOGE("%s: invalid parameter, pDrvData: %p\r\n", __func__, pDrvData);
+        LOGE("%s-%d: invalid parameter, pDrvData: %p", __func__, __LINE__, pDrvData);
         ret = -EINVAL;
         goto exit;
     }
 
-    /* Check for integer overflow before calculation - security improvement */
     if (clk > TACH_MAX_TIMEOUT_REG_VALUE / TACH_DEFAULT_MEASURE_TIME_S) {
-        LOGE("%s: clock frequency causes overflow, clk: %u\r\n", __func__, clk);
+        LOGE("%s-%d: clock frequency causes overflow, clk: %u", __func__, __LINE__, clk);
         ret = -EINVAL;
         goto exit;
     }
 
     capTimeWidth = (U64)clk * TACH_DEFAULT_MEASURE_TIME_S;
     if (capTimeWidth > TACH_MAX_TIMEOUT_REG_VALUE) {
-        LOGE("%s: measure time reg value is greater than max: %u\r\n", __func__, TACH_MAX_TIMEOUT_REG_VALUE);
+        LOGE("%s-%d: measure time reg value is greater than max: %u", __func__, __LINE__, TACH_MAX_TIMEOUT_REG_VALUE);
         ret = -EINVAL;
         goto exit;
     }
@@ -88,29 +97,30 @@ exit:
     return ret;
 }
 
+/**
+ * @brief   中断处理函数
+ * @param[in]  pDrvData  驱动数据结构体指针
+ */
 static void tachIrqHandler(TachDrvData_s *pDrvData)
 {
     TachReg_s *pReg = NULL;
 
     if (pDrvData == NULL) {
-        LOGE("%s: pDrvData = NULL\r\n", __func__);
+        LOGE("%s-%d: pDrvData is NULL", __func__, __LINE__);
         return;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: pReg is NULL\r\n", __func__);
+        LOGE("%s-%d: pReg is NULL", __func__, __LINE__);
         return;
     }
 
-    /* Clear interrupt status */
     pReg->intRaw.bit.tachIrqRaw = 1;
 
     if (pDrvData->callback != NULL) {
         pDrvData->callback(pDrvData->arg);
     }
-
-    return;
 }
 
 S32 tachCallbackRegister(DevList_e devId, tachIrqCallBack callback, void *arg)
@@ -120,67 +130,40 @@ S32 tachCallbackRegister(DevList_e devId, tachIrqCallBack callback, void *arg)
     TachReg_s *pReg = NULL;
     U32 intEn = 0;
 
-    /* Validate callback function pointer - critical security check */
     if (callback == NULL) {
-        LOGE("%s: callback is NULL\r\n", __func__);
+        LOGE("%s-%d: callback is NULL", __func__, __LINE__);
         ret = -EINVAL;
         goto exit;
     }
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
     }
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: getDevDriver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: failed to get driver data, devId: %d\r\n", __func__, devId);
-        ret = -ENOMEM;
-        goto unlock;
-    }
-
-    /* Check if callback function has already been registered */
     if (pDrvData->callback != NULL) {
-        LOGE("%s: callback already registered, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: callback already registered, devId: %d", __func__, __LINE__, devId);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
-    intEn = pReg->intEn.bit.tachIrqEn; ///< get interrupt enable status
-    pReg->intEn.bit.tachIrqEn = 0; ///< disable interrupt
+    intEn = pReg->intEn.bit.tachIrqEn;
+    pReg->intEn.bit.tachIrqEn = 0;
 
     pDrvData->callback = callback;
     pDrvData->arg = arg;
 
-    pReg->intEn.bit.tachIrqEn = intEn; ///< restore interrupt enable status
+    pReg->intEn.bit.tachIrqEn = intEn;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -193,54 +176,28 @@ S32 tachCallbackUnRegister(DevList_e devId)
     TachReg_s *pReg = NULL;
     U32 intEn = 0;
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: getDevDriver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: failed to get driver data, devId: %d\r\n", __func__, devId);
-        ret = -ENOMEM;
-        goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
-    intEn = pReg->intEn.bit.tachIrqEn;   ///< get interrupt enable status
-    pReg->intEn.bit.tachIrqEn = 0; ///< disable interrupt
+    intEn = pReg->intEn.bit.tachIrqEn;
+    pReg->intEn.bit.tachIrqEn = 0;
 
-    /* Clear callback and argument */
     pDrvData->callback = NULL;
     pDrvData->arg = NULL;
 
-    pReg->intEn.bit.tachIrqEn = intEn; ///< restore interrupt enable status
+    pReg->intEn.bit.tachIrqEn = intEn;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -252,47 +209,22 @@ S32 tachSetTrigger(DevList_e devId, TachPolarity_e polarity)
     TachDrvData_s *pDrvData = NULL;
     TachReg_s *pReg = NULL;
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: invalid parameter, pDrvData: %p\r\n", __func__, pDrvData);
-        ret = -EINVAL;
-        goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
     pReg->ctrl.bit.polaritySel = (TACH_POSITIVE_EDGE == polarity) ? 0 : 1;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -304,47 +236,22 @@ S32 tachIrqEnable(DevList_e devId)
     TachDrvData_s *pDrvData = NULL;
     TachReg_s *pReg = NULL;
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: invalid parameter, pDrvData: %p\r\n", __func__, pDrvData);
-        ret = -EINVAL;
-        goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
     pReg->intEn.bit.tachIrqEn = 1;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -356,47 +263,22 @@ S32 tachIrqDisable(DevList_e devId)
     TachDrvData_s *pDrvData = NULL;
     TachReg_s *pReg = NULL;
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: invalid parameter, pDrvData: %p\r\n", __func__, pDrvData);
-        ret = -EINVAL;
-        goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
     pReg->intEn.bit.tachIrqEn = 0;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -411,98 +293,97 @@ S32 tachInit(DevList_e devId)
     U32 clk = 0;
 
     if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: device lock failed, devId: %d", __func__, __LINE__, devId);
         ret = -EBUSY;
         goto exit;
     }
 
     if (isDrvInit(devId)) {
-        LOGE("%s: device already initialized, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: device already initialized, devId: %d", __func__, __LINE__, devId);
         ret = -EBUSY;
         goto unlock;
     }
 
     if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: device not match, devId: %d", __func__, __LINE__, devId);
         ret = -EINVAL;
         goto unlock;
     }
 
     if (peripsReset(devId) != EXIT_SUCCESS) {
-        LOGE("%s: failed to reset peripheral, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to reset peripheral, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
         goto unlock;
     }
 
     if (peripsClockEnable(devId) != EXIT_SUCCESS) {
-        LOGE("%s: failed to enable peripheral clock, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to enable peripheral clock, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
         goto unlock;
     }
 
     if (peripsClockFreqGet(devId, &clk) != EXIT_SUCCESS) {
-        LOGE("%s: failed to get peripheral clock frequency, devId=%d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to get peripheral clock frequency, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
         goto unlock;
     }
 
-    pDrvData = (TachDrvData_s*)calloc(1, sizeof(TachDrvData_s));
+    pDrvData = (TachDrvData_s *)calloc(1, sizeof(TachDrvData_s));
     if (pDrvData == NULL) {
-        LOGE("%s: failed to allocate memory for driver data, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to allocate memory for driver data, devId: %d", __func__, __LINE__, devId);
         ret = -ENOMEM;
         goto unlock;
     }
 
     if (tachDevCfgGet(devId, &pDrvData->sbrCfg) != EXIT_SUCCESS) {
-        LOGE("%s: failed to get device configuration, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to get device configuration, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
         goto freeMem;
     }
 
-    /* Initialize tach driver data */
     pDrvData->clk = clk;
     pDrvData->busy = 0;
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
         goto freeMem;
     }
 
-    pReg->intEn.bit.tachIrqEn = 0;  ///< Disable interrupt enable
+    pReg->intEn.bit.tachIrqEn = 0;
     pReg->ctrl.bit.polaritySel = pDrvData->sbrCfg.polarity & 0x01;
 
     ret = ospInterruptHandlerInstall(pDrvData->sbrCfg.irqNo, "tach",
-                                    OSP_INTERRUPT_UNIQUE,
-                                    (OspInterruptHandler)tachIrqHandler,
-                                    pDrvData);
+                                     OSP_INTERRUPT_UNIQUE,
+                                     (OspInterruptHandler)tachIrqHandler,
+                                     pDrvData);
     if (ret == OSP_RESOURCE_IN_USE) {
-        LOGW("%s: IRQ handler already installed\r\n", __func__);
+        LOGW("%s-%d: IRQ handler already installed", __func__, __LINE__);
         irqInstalled = true;
-        ret = EXIT_SUCCESS; ///< Correctly handle OSP_RESOURCE_IN_USE error
+        ret = EXIT_SUCCESS;
     } else if (ret == OSP_SUCCESSFUL) {
         ospInterruptSetPriority(pDrvData->sbrCfg.irqNo, pDrvData->sbrCfg.irqPrio);
         ospInterruptVectorEnable(pDrvData->sbrCfg.irqNo);
         irqInstalled = true;
-        LOGW("%s: IRQ handler installed successfully\r\n", __func__);
+        LOGW("%s-%d: IRQ handler installed successfully", __func__, __LINE__);
     } else {
-        LOGE("%s: failed to install IRQ handler, ret=%d\r\n", __func__, ret);
+        LOGE("%s-%d: failed to install IRQ handler, ret: %d", __func__, __LINE__, ret);
         ret = -EIO;
         goto freeMem;
     }
 
     ret = tachSetCapCfg(pDrvData, clk);
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s: failed to set cap cfg, ret=%d\r\n", __func__, ret);
+        LOGE("%s-%d: failed to set cap cfg, ret: %d", __func__, __LINE__, ret);
         ret = -EIO;
         goto removeIrq;
     }
 
     if (drvInstall(devId, pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: driver install failed, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: driver install failed, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto removeIrq;  ///< Clean up installed IRQ handler
+        goto removeIrq;
     }
 
     ret = EXIT_SUCCESS;
@@ -512,8 +393,8 @@ removeIrq:
     if (irqInstalled) {
         ospInterruptVectorDisable(pDrvData->sbrCfg.irqNo);
         ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo,
-                                   (OspInterruptHandler)tachIrqHandler,
-                                   pDrvData);
+                                  (OspInterruptHandler)tachIrqHandler,
+                                  pDrvData);
     }
 
 freeMem:
@@ -533,39 +414,20 @@ S32 tachDeInit(DevList_e devId)
     TachDrvData_s *pDrvData = NULL;
     TachReg_s *pReg = NULL;
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
     }
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
+    if (isDrvInit(devId) == false) {
+        LOGE("%s-%d: device not initialized, devId: %d", __func__, __LINE__, devId);
         ret = -EINVAL;
-        goto unlock;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: driver data is NULL, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
         goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
         goto unlock;
     }
@@ -576,34 +438,37 @@ S32 tachDeInit(DevList_e devId)
     if (pDrvData->sbrCfg.irqNo) {
         ospInterruptVectorDisable(pDrvData->sbrCfg.irqNo);
         ret = ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo,
-                                         (OspInterruptHandler)tachIrqHandler,
-                                         pDrvData);
+                                        (OspInterruptHandler)tachIrqHandler,
+                                        pDrvData);
         if (ret != OSP_SUCCESSFUL) {
-            LOGE("%s: failed to remove IRQ handler, ret=%d\r\n", __func__, ret);
+            LOGE("%s-%d: failed to remove IRQ handler, ret: %d", __func__, __LINE__, ret);
         }
     }
 
+unlock:
+    funcRunEndHelper(devId);
+
+    if (ret != EXIT_SUCCESS) {
+        goto exit;
+    }
+
     if (drvUninstall(devId) != EXIT_SUCCESS) {
-        LOGE("%s: failed to uninstall driver, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to uninstall driver, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto exit;
     }
 
     if (peripsReset(devId) != EXIT_SUCCESS) {
-        LOGE("%s: failed to reset peripheral, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to reset peripheral, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto exit;
     }
 
-    /* Disable peripheral clock to save power */
     if (peripsClockDisable(devId) != EXIT_SUCCESS) {
-        LOGE("%s: failed to disable peripheral clock, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: failed to disable peripheral clock, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto exit;
     }
-
-unlock:
-    devUnlockByDriver(devId);
 
 exit:
     return ret;
@@ -615,53 +480,28 @@ S32 tachEnable(DevList_e devId)
     TachDrvData_s *pDrvData = NULL;
     TachReg_s *pReg = NULL;
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: failed to get driver data, devId: %d\r\n", __func__, devId);
-        ret = -ENOMEM;
-        goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
     if (pReg->ctrl.bit.capEn == 1) {
-        LOGE("%s: tach already enabled, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: tach already enabled, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
-    pReg->ctrl.bit.capEn = 1;    ///< Start capture
+    pReg->ctrl.bit.capEn = 1;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -673,57 +513,30 @@ S32 tachDisable(DevList_e devId)
     TachDrvData_s *pDrvData = NULL;
     TachReg_s *pReg = NULL;
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if(isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: failed to get driver data, devId: %d\r\n", __func__, devId);
-        ret = -ENOMEM;
-        goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
-    /* Check device state and perform idempotent disable operation */
     if (pReg->ctrl.bit.capEn == 0) {
-        LOGW("%s: device already disabled (idempotent operation), devId: %d\r\n", __func__, devId);
+        LOGW("%s-%d: device already disabled (idempotent operation), devId: %d", __func__, __LINE__, devId);
         pDrvData->busy = 0;
         ret = EXIT_SUCCESS;
-        goto unlock;
+        goto cleanup;
     }
 
-    /* Stop capture */
     pReg->ctrl.bit.capEn = 0;
     pDrvData->busy = 0;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;
@@ -739,68 +552,40 @@ S32 tachGetFreq(DevList_e devId, U32 timeoutSec, U32 *freqBuf)
     U32 tachCnt = 0;
 
     if (freqBuf == NULL) {
-        LOGE("%s: freqBuf is NULL\r\n", __func__);
+        LOGE("%s-%d: freqBuf is NULL", __func__, __LINE__);
         ret = -EINVAL;
         goto exit;
     }
 
     if ((timeoutSec == 0) || (timeoutSec > TACH_MAX_TIMEOUT_VALUE_S)) {
-        LOGE("%s: timeoutSec (%us) must be between 1s and %us\r\n",
-             __func__, timeoutSec, TACH_MAX_TIMEOUT_VALUE_S);
+        LOGE("%s-%d: timeoutSec (%u) must be between 1s and %us", __func__, __LINE__, timeoutSec, TACH_MAX_TIMEOUT_VALUE_S);
         ret = -EINVAL;
         goto exit;
     }
 
-    if (devLockByDriver(devId, TACH_LOCK_TIMEOUT_MS) != EXIT_SUCCESS) {
-        LOGE("%s: device lock failed, devId: %d\r\n", __func__, devId);
-        ret = -EBUSY;
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_TACH, (void **)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
         goto exit;
-    }
-
-    if (isDrvInit(devId) == false) {
-        LOGE("%s: device not initialized, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_TACH)) {
-        LOGE("%s: device not match, devId: %d\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    if (getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        LOGE("%s: get device driver failed, devId: %d\r\n", __func__, devId);
-        ret = -EIO;
-        goto unlock;
-    }
-
-    if (pDrvData == NULL) {
-        LOGE("%s: failed to get driver data, devId: %d\r\n", __func__, devId);
-        ret = -ENOMEM;
-        goto unlock;
     }
 
     pReg = (TachReg_s *)pDrvData->sbrCfg.regAddr;
     if (pReg == NULL) {
-        LOGE("%s: invalid reg, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: invalid reg, devId: %d", __func__, __LINE__, devId);
         ret = -EIO;
-        goto unlock;
+        goto cleanup;
     }
 
-    /* Check if device is enabled */
     if (pReg->ctrl.bit.capEn == 0) {
-        LOGE("%s: device not enabled, devId: %d\r\n", __func__, devId);
-        pDrvData->busy = 0;  /* Reset busy flag on error */
+        LOGE("%s-%d: device not enabled, devId: %d", __func__, __LINE__, devId);
+        pDrvData->busy = 0;
         ret = -EINVAL;
-        goto unlock;
+        goto cleanup;
     }
 
-    /* Prevent calling tachGetFreq again before the first measurement is complete */
     if (pDrvData->busy == 1) {
-        LOGE("%s: device is busy, devId: %d\r\n", __func__, devId);
+        LOGE("%s-%d: device is busy, devId: %d", __func__, __LINE__, devId);
         ret = -EBUSY;
-        goto unlock;
+        goto cleanup;
     }
 
     pDrvData->busy = 1;
@@ -814,22 +599,20 @@ S32 tachGetFreq(DevList_e devId, U32 timeoutSec, U32 *freqBuf)
     }
 
     if (waitCount >= maxWaitCount) {
-        LOGE("%s: frequency measurement timeout, devId: %d, timeout: %us\r\n",
-             __func__, devId, timeoutSec);
-        pDrvData->busy = 0;  /* Reset busy flag */
+        LOGE("%s-%d: frequency measurement timeout, devId: %d, timeout: %us", __func__, __LINE__, devId, timeoutSec);
+        pDrvData->busy = 0;
         ret = -ETIMEDOUT;
-        goto unlock;
+        goto cleanup;
     }
 
     tachCnt = pReg->state.bit.tachCnt;
     *freqBuf = (tachCnt / TACH_DEFAULT_MEASURE_TIME_S);
 
-    /* Clear capEn bit after measurement is complete, need to set capEn bit again before next measurement */
     pReg->ctrl.bit.capEn = 0;
     pDrvData->busy = 0;
 
-unlock:
-    devUnlockByDriver(devId);
+cleanup:
+    funcRunEndHelper(devId);
 
 exit:
     return ret;

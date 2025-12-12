@@ -95,10 +95,10 @@ const char* getDriverVersionStr()
 
 void socShowVersionInfo(void)
 {
-    LOGE("\r\n-------------------------------------------\r\n");
-    LOGE("Soc Versions:\n");
-    LOGE("RTEMS:  %s\n", getOsVersionStr());
-    LOGE("BSP:    %s\n", getBspVersionStr());
-    LOGE("Driver: %s (%s)\n", getDriverVersionStr(), MINISOC_GIT_VERSION);
-    LOGE("----------------------------------------------\r\n");
+    LOGI("\r\n-------------------------------------------\r\n");
+    LOGI("Soc Versions:\n");
+    LOGI("RTEMS:  %s\n", getOsVersionStr());
+    LOGI("BSP:    %s\n", getBspVersionStr());
+    LOGI("Driver: %s (%s)\n", getDriverVersionStr(), MINISOC_GIT_VERSION);
+    LOGI("----------------------------------------------\r\n");
 }

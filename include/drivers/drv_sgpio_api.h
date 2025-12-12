@@ -24,7 +24,7 @@ extern "C" {
 #include "common_defines.h"
 #include "bsp_device.h"
 
-#ifdef USING_SGPIO_V2_0 // sheshou
+#ifdef CONFIG_DRIVER_SGPIO_V2_0 // sheshou
 typedef enum {
     SGPIO_MODE_NORMAL = 0,
     SGPIO_MODE_GP,
@@ -160,10 +160,10 @@ S32 sgpioGetLedState(DevList_e devId, U8 portNum, SgpioState_e *pLink);
  * @warning 阻塞；可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
  */
 S32 sgpioGetLedLinkState(DevList_e dev_id, U8 portNum, U8 *pLinkState);
-#elif defined(CONFIG_USING_SGPIO_V1_0)
+#elif defined(CONFIG_DRIVER_SGPIO_V1_0)
 /**
  * SGPIO与PHY指示灯映射关系示意图：
- * 
+ *
  * ┌─────────────────────────────────────────────────────────┐
  * │              PHY 集合 (最多288个) 4x72                    │
  * └─────────────────────────────────────────────────────────┘
@@ -187,7 +187,7 @@ S32 sgpioGetLedLinkState(DevList_e dev_id, U8 portNum, U8 *pLinkState);
  *        │  Locate   ◉   │         │  Locate   ◉   │
  *        │  Error    ◉   │         │  Error    ◉   │
  *        └───────────────┘         └───────────────┘
- * 
+ *
  * 系统架构说明：
  *   1. 系统包含4组SGPIO控制器(SGPIO_0 ~ SGPIO_3)，每个SGPIO组可提供4-64个驱动(driver)
  *   2. 用于控制PHY的指示灯(Activity/Locate/Error)。
@@ -195,12 +195,12 @@ S32 sgpioGetLedLinkState(DevList_e dev_id, U8 portNum, U8 *pLinkState);
  *   1. 从PHY集合中选择4-64个PHY进行映射（通过pinmux配置)
  *   2. 每个SGPIO组最多驱动64个PHY，最少驱动4个PHY（通过软件配置）
  *   3. 通过pinmux配置具体的映射关系
- * 
+ *
  * 指示灯控制方式：
  *   ◉ Activity: 硬件自动闪烁(信号：nvme_activity) + 软件可配置频率
  *   ◉ Locate:   完全由软件控制
  *   ◉ Error:    完全由软件控制
- * 
+ *
  * 规格总结：
  *   +───────────────┬──────────────┬──────────────┐
  *   │  SGPIO组数量   │  驱动范围     │   总计PHY数   │
@@ -390,16 +390,16 @@ S32 sgpioSetPcieActivityMapping(DevList_e devId, U32 phyNum, U8 sgpioActivitySel
 
 /**
  * @brief 打印SGPIO控制器中PCIe活动映射表（驱动器到PHY的映射）
- * 
+ *
  * @param devId 设备ID，必须是有效的SGPIO设备ID
- * 
+ *
  * @return 执行状态：
  *         - EXIT_SUCCESS: 成功
  *         - -EBUSY: 设备忙，获取锁失败
  *         - -ENODEV: 设备未初始化
  *         - -EINVAL: 无效的设备ID
  *         - -EIO: 获取驱动器数量失败
- * 
+ *
  * @note 函数会打印出SGPIO控制器中所有驱动器到PHY的映射关系表，
  *       格式为"Driver\tPHY"，最多显示64个驱动器。
  */

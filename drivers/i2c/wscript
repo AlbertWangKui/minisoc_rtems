@@ -2,7 +2,7 @@
 
 def build(bld):
     # I2C driver
-    if bld.is_defined('CONFIG_USING_I2C'):
+    if bld.is_defined('CONFIG_DRIVER_I2C'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/i2c/source/drv_i2c_intf.c',
             'drivers/i2c/source/i2c-designware-common.c',

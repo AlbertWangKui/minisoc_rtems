@@ -1,14 +1,14 @@
 /**
- * copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
- * @file drv_ocm_ecc.h
- * @author zhangxin3@starsmicrosystem.com
- * @date 2025/09/22
- * @brief ecc drver header
+ * @file    drv_ocm_ecc.h
+ * @author  zhangxin3@starsmicrosystem.com
+ * @date    2025/09/22
+ * @brief   OCM ECC driver header file
  */
 
-#ifndef _DRV_OCM_ECC_H
-#define _DRV_OCM_ECC_H
+#ifndef __DRV_OCM_ECC_H__
+#define __DRV_OCM_ECC_H__
 
 #include "bsp_config.h"
 #include "common_defines.h"
@@ -19,7 +19,6 @@
 #include "log_msg.h"
 #include "osp_interrupt.h"
 #include "drv_ocm_ecc_api.h"
-#include "common_defines.h"
 
 #define ECC_SEC1_IRQ_MASK (0x1 << 0)
 #define ECC_DED1_IRQ_MASK (0x1 << 1)
@@ -300,7 +299,7 @@ typedef union softEccErr {
     U32 dword;
 } softEccErr_u;
 
-/* sram ecc寄存器列表 */
+///< OCM ECC register structure
 typedef volatile struct ocmEccReg {
     ocmCtrl_u ocmCtrl; // 0x00
     intEn_u intEn; // 0x04
@@ -343,12 +342,12 @@ typedef volatile struct ocmEccReg {
 } ocmEccReg_s;
 
 typedef struct OcmEccDrvPrivateData {
-    SbrOcmEccCfg_s   sbrCfg; ///< ecc设备配置
-    pOcmEccCallback  callback;  ///< 中断回调
-    ocmEccReg_s *eccReg;
-    U32 lastSecAddr;
-    U64 lastSecData;
-    U32 lastDedAddr;
-    U64 lastDedData;
+    SbrOcmEccCfg_s   sbrCfg; ///< ECC device configuration from SBR
+    pOcmEccCallback  callback; ///< Interrupt callback function
+    ocmEccReg_s *eccReg; ///< Pointer to ECC register structure
+    U32 lastSecAddr; ///< Last single-bit error address
+    U64 lastSecData; ///< Last single-bit error data
+    U32 lastDedAddr; ///< Last double-bit error address
+    U64 lastDedData; ///< Last double-bit error data
 } ocmEccDrvPrivateData_s;
-#endif
+#endif /* __DRV_OCM_ECC_H__ */

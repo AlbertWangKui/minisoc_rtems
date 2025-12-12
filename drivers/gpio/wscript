@@ -2,7 +2,7 @@
 
 def build(bld):
     # GPIO driver
-    if bld.is_defined('CONFIG_USING_GPIO'):
+    if bld.is_defined('CONFIG_DRIVER_GPIO'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
                 'drivers/gpio/drv_gpio.c',
             ]

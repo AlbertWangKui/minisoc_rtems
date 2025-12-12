@@ -15,6 +15,7 @@
  *                              Removed unused variable declarations to fix compilation warnings
  *                              Improved performance by eliminating redundant function calls
  * 2025/12/01   wangkui         refactor and simplify the code as for core function
+ * 2025/12/11   wangkui         correct the issue in AI review
  * @note This file implements the SMBus Master API layer, providing
  *       high-level Master mode operations for SMBus communication.
  *       It works on top of the SMBus core layer and handles
@@ -33,6 +34,77 @@
 #include "drv_smbus_dw.h"
 #include "drv_smbus_dw_i2c.h"
 #include "drv_smbus_api.h"
+
+/* =========================================================================
+ * Helper 1: 地址合法性校验 
+ * ========================================================================= */
+static S32 arpValidateAddress(const SmbusArpMaster_s *master, U8 address)
+{
+    /* 1. 首先检查 SMBus 协议硬性限制 (0x08 - 0x77) */
+    if (address < 0x08 || address > 0x77) {
+        LOGE("[ARP] Address 0x%02X out of SMBus valid range (0x08-0x77)\n", address);
+        return -ERANGE;
+    }
+
+    /* 2. 其次检查 Master 配置的地址池范围 */
+    if (address < master->addressPoolStart || address > master->addressPoolEnd) {
+        LOGE("[ARP] Address 0x%02X out of pool range (0x%02X-0x%02X)\n",
+             address, master->addressPoolStart, master->addressPoolEnd);
+        return -ERANGE;
+    }
+
+    return EXIT_SUCCESS;
+}
+
+/* =========================================================================
+ * Helper 2: 冲突检测 
+ * ========================================================================= */
+static S32 arpCheckDuplicate(const SmbusArpMaster_s *master, const SmbusUdid_s *udid, U8 address)
+{
+    const SmbusArpDeviceNode_s *curr = master->deviceList;
+
+    while (curr) {
+        /* 检查 UDID 是否已存在 */
+        if (memcmp(&curr->udid, udid, sizeof(SmbusUdid_s)) == 0) {
+            LOGW("[ARP] Device UDID already exists\n");
+            return -EEXIST;
+        }
+
+        /* 检查地址是否已被占用 */
+        if (curr->currentAddress == address) {
+            LOGW("[ARP] Address 0x%02X already in use\n", address);
+            return -EADDRINUSE;
+        }
+
+        curr = curr->next;
+    }
+    return EXIT_SUCCESS;
+}
+
+/* =========================================================================
+ * Helper 3: 节点分配与插入 
+ * ========================================================================= */
+static S32 arpAllocateAndInsert(SmbusArpMaster_s *master, const SmbusUdid_s *udid, U8 address)
+{
+    SmbusArpDeviceNode_s *newNode = (SmbusArpDeviceNode_s *)calloc(1, sizeof(SmbusArpDeviceNode_s));
+    if (!newNode) {
+        LOGE("[ARP] Failed to allocate device node\n");
+        return -ENOMEM;
+    }
+
+    /* 赋值 */
+    newNode->currentAddress = address;
+    newNode->udid = *udid; /* Struct copy */
+    newNode->flags = 0;    /* Default flags */
+
+    /* 插入头部 (Critical Section: 指针操作必须在锁内) */
+    newNode->next = master->deviceList;
+    master->deviceList = newNode;
+    master->deviceCount++;
+
+    return EXIT_SUCCESS;
+}
+
 /**
  * @brief 在主设备列表中安装ARP设备
  * @details 向ARP主设备列表添加新设备，包含指定的UDID和地址。
@@ -60,76 +132,31 @@ S32 ArpDevInstall(DevList_e devId, SmbusArpMaster_s *master, const SmbusUdid_s *
 {
     S32 ret = EXIT_SUCCESS;
     SmbusDrvData_s *pDrvData = NULL;
-    SmbusArpDeviceNode_s *curr;
 
-    /* 1. 参数与合法性校验 (合并检查) */
+    /* 1. 基础参数校验 */
     if (!master || !udid) return -EINVAL;
 
-    /* 2. 驱动初始化状态检查和锁保护 */
-    ret = smbusDrvLockAndCheck(devId);
-    if (ret != EXIT_SUCCESS) {
-        return ret;
+    /* 2. 锁保护 (Critical Section Start) */
+    /* 注意：此锁必须保护 master 指向的数据结构，否则仍不安全 */
+    ret = funcRunBeginHelper(devId, DRV_ID_DW_I2C, (void**)&pDrvData);
+    if (ret != EXIT_SUCCESS) return ret;
+
+    /* 4. 地址校验 */
+    ret = arpValidateAddress(master, address);
+    if (ret != EXIT_SUCCESS) goto unlock;
+
+    /* 5. 冲突检测 (遍历链表) */
+    ret = arpCheckDuplicate(master, udid, address);
+    if (ret != EXIT_SUCCESS) goto unlock;
+
+    /* 6. 执行安装 */
+    ret = arpAllocateAndInsert(master, udid, address);
+    if (ret == EXIT_SUCCESS) {
+        LOGD("[ARP] Installed: Addr=0x%02X, Count=%d\n", address, master->deviceCount);
     }
-
-    /* 3. 获取驱动数据结构 */
-    if (getDevDriver(devId, (void **)&pDrvData) != EXIT_SUCCESS || pDrvData == NULL) {
-        ret = -EINVAL;
-        goto unlock;
-    }
-
-    /* 检查地址范围 (SMBus 有效地址 0x08 - 0x77) */
-    if (address < master->addressPoolStart ||
-        address > master->addressPoolEnd ||
-        address < 0x08 || address > 0x77) {
-        ret = -ERANGE;
-        goto unlock;
-    }
-
-    /* 4. 链表遍历：同时检查 UDID 重复和地址冲突 (O(N) 复杂度) */
-    curr = master->deviceList;
-    while (curr) {
-        // 检查 UDID 是否已存在
-        if (memcmp(&curr->udid, udid, sizeof(SmbusUdid_s)) == 0) {
-            ret = -EEXIST;
-            goto unlock;
-        }
-        // 检查地址是否已被占用
-        if (curr->currentAddress == address) {
-            ret = -EADDRINUSE;
-            goto unlock;
-        }
-        curr = curr->next;
-    }
-
-    /* 5. 分配新节点 (使用 calloc 自动清零，省去 memset) */
-    SmbusArpDeviceNode_s *newNode = (SmbusArpDeviceNode_s *)calloc(1, sizeof(SmbusArpDeviceNode_s));
-    if (!newNode) {
-        ret = -ENOMEM;
-        goto unlock;
-    }
-
-    /* 6. 赋值并插入链表 (头插法) */
-    // newNode->next = NULL; // calloc 已清零
-    newNode->currentAddress = address;
-    newNode->flags = 0; // 使用默认标志，而不是 SMBUS_DEVICE_FLAG_ACTIVE（该宏未定义）
-    ///< 结构体直接赋值 (现代编译器支持 struct copy，比 memcpy 更直观)
-    newNode->udid = *udid;
-
-    // 插入头部
-    newNode->next = master->deviceList;
-    master->deviceList = newNode;
-    master->deviceCount++;
-
-    /* 7. 将master变量值拷贝到驱动数据结构中的pDrvData->arpMaster */
-    memcpy(&pDrvData->arpMaster, master, sizeof(SmbusArpMaster_s));
-
-    LOGD("[ARP] Device installed successfully. Address=0x%02X, DeviceCount=%d\n",
-         address, master->deviceCount);
 
 unlock:
-    /* 8. 释放设备锁 */
-    devUnlockByDriver(devId);
-
+    funcRunEndHelper(devId);
     return ret;
 }
 
@@ -153,7 +180,7 @@ static U8 deserializeUdid(const U8 *buf, SmbusUdid_s *udid)
     udid->interface         = (U16)(buf[6] | (buf[7] << 8));
     udid->subsystemVendorId = (U16)(buf[8] | (buf[9] << 8));
     udid->subsystemDeviceId = (U16)(buf[10] | (buf[11] << 8));
-    udid->vendorSpecificId  = (U16)(buf[12] | (buf[13] << 8) | (buf[14] << 8) | (buf[15] << 8));
+    udid->vendorSpecificId  = (U16)(buf[12] | (buf[13] << 8) | (buf[14] << 16) | (buf[15] << 24));
 
     /* 3. 解析地址字节 (Byte 17, Index 16) */
     U8 addrByte = buf[16];
@@ -264,40 +291,39 @@ S32 smbusArpGetUdidGeneral(DevList_e devId, SmbusUdid_s *udid)
         .actualRxLen = &actualLen       // 获取实际长度用于校验
     };
 
-    // 3. 执行传输 (所有底层操作如寄存器读写、TX/RX Ready、PEC校验均在此内部完成)
+    ///< 3. 执行传输 (所有底层操作如寄存器读写、TX/RX Ready、PEC校验均在此内部完成)
     ret = smbusTransfer(devId, &xfer);
 
-    // 4. 异常出错处理流程
-    if (ret < EXIT_SUCCESS) {    
-        // 1. 处理 NACK (No Device Response)
-        // smbusHandleTxAbort 返回 -ENXIO (No such device or address)
+    ///< 4. 异常出错处理流程
+    if (ret < EXIT_SUCCESS) {
+        ///< 1. 处理 NACK (No Device Response)
         if (ret == -ENXIO) {
             LOGD("[ARP] No device responded to Get UDID (NACK).\n");
-            return ret; // 这是一个"预期内"的失败，表示扫描结束
-        }    
-        // 2. 处理 Arbitration Lost (IP 冲突)
+            return ret; ///< 这是一个"预期内"的失败，表示扫描结束
+        }
+        ///< 2. 处理 Arbitration Lost (IP 冲突)
         else if (ret == -EAGAIN) {
             LOGW("[ARP] Arbitration LOST during Get UDID! (Collision detected)\n");
-            return ret; // 这是一个"异常"失败，需要上层策略决定是否重试
+            return ret; ///< 这是一个"异常"失败，需要上层策略决定是否重试
         }
-        // 3. 处理 Timeout
+        ///< 3. 处理 Timeout
         else if (ret == -ETIMEDOUT) {
             LOGE("[ARP] Get UDID Timeout.\n");
             return ret;
         }
-        // 4. 其他错误
+        ///< 4. 其他错误
         else {
             LOGE("[ARP] Get UDID failed: %d\n", ret);
             return ret;
         }
     }
-    // 5. 数据长度校验
+    ///< 5. 数据长度校验
     if (actualLen != SMBUS_UDID_LEN) {
         LOGE("[ARP] Invalid UDID length received: %d (Expected %d)\n", actualLen, SMBUS_UDID_LEN);
         return -EPROTO;
     }
 
-    // 6. 解析数据到结构体
+    ///< 6. 解析数据到结构体
     nextAddr = deserializeUdid(rxBuffer, udid);
 
     LOGD("[ARP] UDID read successfully. Device Addr: 0x%02X\n", nextAddr);
@@ -320,26 +346,26 @@ S32 smbusArpPrepare(DevList_e devId)
 {
     S32 ret;
     
-    // 1. 准备数据: Prepare 命令本质上是一个 Data Byte
+    ///< 1. 准备数据: Prepare 命令本质上是一个 Data Byte
     U8 cmdData = SMBUS_CMD_PREPARE_ARP;
 
-    // 2. 构造传输描述符
-    // 注意：这里使用 SMBUS_FLAG_NO_CMD，因为 Send Byte 协议没有独立的 Command 字段，
-    //      只有 Address + Data。
+    ///< 2. 构造传输描述符
+    ///< 注意：这里使用 SMBUS_FLAG_NO_CMD，因为 Send Byte 协议没有独立的 Command 字段，
+    ///< 只有 Address + Data。
     SmbusXfer_s xfer = {
-        .addr = SMBUS_ARP_DEFAULT_ADDR,   // 目标: 0x61
-        .command = 0,                     // 在 NO_CMD 模式下忽略此字段
-        .flags = SMBUS_FLAG_PEC_ENABLE | SMBUS_FLAG_NO_COMMAND, // 启用 PEC，使用 Send Byte 模式
-        .wBuf = &cmdData,                 // 发送内容: 0x01
-        .wLen = 1,                        // 长度: 1 字节
-        .rLen = 0                         // 无读取
+        .addr = SMBUS_ARP_DEFAULT_ADDR,   ///< 目标: 0x61
+        .command = 0,                     ///< 在 NO_CMD 模式下忽略此字段
+        .flags = SMBUS_FLAG_PEC_ENABLE | SMBUS_FLAG_NO_COMMAND, ///< 启用 PEC，使用 Send Byte 模式
+        .wBuf = &cmdData,                 ///< 发送内容: 0x01
+        .wLen = 1,                        ///< 长度: 1 字节
+        .rLen = 0                         ///< 无读取
     };
 
-    LOGD("[ARP] Sending Prepare to ARP (Addr:0x%02X, Cmd:0x%02X)\n", 
+    LOGD("[ARP] Sending Prepare to ARP (Addr:0x%02X, Cmd:0x%02X)\n",
          xfer.addr, cmdData);
 
-    // 3. 执行传输
-    // 所有的锁保护、HAL 调用、寄存器操作、PEC 计算、超时处理都在这里自动完成
+    ///< 3. 执行传输
+    ///< 所有的锁保护、HAL 调用、寄存器操作、PEC 计算、超时处理都在这里自动完成
     ret = smbusTransfer(devId, &xfer);
 
     if (ret <= EXIT_SUCCESS) {
@@ -508,7 +534,7 @@ S32 smbusArpResetDevice(DevList_e devId, const SmbusUdid_s *udid)
         xfer.wLen    = 1;              // 发送 1 字节
         xfer.wBuf    = &rawCmd;        // 数据内容就是命令字 0x02
         
-        // 关键：PEC + NO_COMMAND (告诉底层不要自动发 Command 阶段，直接发 wBuf)
+        ///< 关键：PEC + NO_COMMAND (告诉底层不要自动发 Command 阶段，直接发 wBuf)
         xfer.flags = SMBUS_FLAG_PEC_ENABLE | SMBUS_FLAG_NO_COMMAND;
         
         LOGI("[ARP] Sending General ARP Reset (via Data Write)...\n");

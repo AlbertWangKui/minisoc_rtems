@@ -27,6 +27,32 @@
 
 typedef void (*ArpAssignAddrFinishCb)(U32 addrId, U32 slvAddr, void *ptr);
 
+/* emu for device working i2c_mode */
+typedef enum DwI2cMode
+{
+    DEV_SLAVE_MODE = 0, /* Indicate that the device working as slave */
+    DEV_MASTER_MODE = 1, /* Indicate that the device working as master */
+    DEV_INVALID_MODE = 255 /* Indicate that the device not init */
+} DwI2cMode_t;
+
+/* emu for device working method */
+typedef enum DevMethod
+{
+    DEV_POLL_METHOD = 0,        /* Indicate that the device running in poll method */
+    DEV_INTERRUPT_METHOD = 1    /* Indicate that the device running in interrupt method */
+} DevMethod_t;
+
+/* I2C Bus possible speed */
+typedef enum I2cSpeedMode
+{
+    I2C_SPEED_STANDARD = 0, /* Bidirectional, Standard-i2c_mode (Sm), with a bit rate up to 100 kbit/s */
+    I2C_SPEED_FAST     = 1, /* Bidirectional, Fast-i2c_mode (Fm), with a bit rate up to 400 kbit/s */
+    I2C_SPEED_FASTPLUS = 2, /* Bidirectional, Fast-i2c_mode Plus (Fm+), with a bit rate up to 1 Mbit/s */
+    I2C_SPEED_HIGH     = 3, /* Bidirectional, High-speed i2c_mode (Hs-i2c_mode), with a bit rate up to 3.4 Mbit/s */
+    I2C_SPEED_ULTRA    = 4, /* Bidirectional, Ultra-fast i2c_mode (Uf-i2c_mode), with a bit rate up to 5 Mbit/s */
+    I2C_SPEED_INVALID  = 255
+} I2cSpeedMode_t;
+
 struct i2c_msg {
   /**
    * @brief The slave address.
@@ -62,39 +88,6 @@ struct i2c_msg {
   U8 *buf;
 };
 
-/**
- ** struct i2c_timings - I2C timing information
- ** @bus_freq_hz: the bus frequency in Hz
- **/
-struct i2c_timings {
-    U32 bus_freq_hz;
-};
-
-/* emu for device working i2c_mode */
-typedef enum DwI2cMode
-{
-    DEV_SLAVE_MODE = 0, /* Indicate that the device working as slave */
-    DEV_MASTER_MODE = 1, /* Indicate that the device working as master */
-    DEV_INVALID_MODE = 255 /* Indicate that the device not init */
-} DwI2cMode_t;
-
-/* emu for device working method */
-typedef enum DevMethod
-{
-    DEV_POLL_METHOD = 0,        /* Indicate that the device running in poll method */
-    DEV_INTERRUPT_METHOD = 1    /* Indicate that the device running in interrupt method */
-} DevMethod_t;
-
-/* I2C Bus possible speed */
-typedef enum I2cSpeedMode
-{
-    I2C_SPEED_STANDARD = 0, /* Bidirectional, Standard-i2c_mode (Sm), with a bit rate up to 100 kbit/s */
-    I2C_SPEED_FAST     = 1, /* Bidirectional, Fast-i2c_mode (Fm), with a bit rate up to 400 kbit/s */
-    I2C_SPEED_FASTPLUS = 2, /* Bidirectional, Fast-i2c_mode Plus (Fm+), with a bit rate up to 1 Mbit/s */
-    I2C_SPEED_HIGH     = 3, /* Bidirectional, High-speed i2c_mode (Hs-i2c_mode), with a bit rate up to 3.4 Mbit/s */
-    I2C_SPEED_ULTRA    = 4, /* Bidirectional, Ultra-fast i2c_mode (Uf-i2c_mode), with a bit rate up to 5 Mbit/s */
-    I2C_SPEED_INVALID  = 255
-} I2cSpeedMode_t;
 
 #define IC_CON_SPEED_MASK       (0x6)
 #define IC_CON_SPEED_STANDARD   (0x2)
@@ -271,6 +264,94 @@ int i2cSclStuckCheck(DevList_e i2cNum);
  */
 S32 i2cRegArpAssignAddrFinishCb(DevList_e i2cId,ArpAssignAddrFinishCb arpAddrFinishCb, void* paramArp);
 
+/**
+ *  @brief  set udid
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @param [in] sarNum slave address num
+ *  @param [out] udid slave udid to be set
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusArpUdidSet(DevList_e i2cNum,U8 sarNum,DwSmbusArpUdid_t *udid);
+
+/**
+ *  @brief  get udid
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @param [in] sarNum slave address num
+ *  @param [out] udid return slave udid
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusArpUdidGet(DevList_e i2cNum,U8 sarNum,DwSmbusArpUdid_t *udid);
+
+/**
+ *  @brief  assign slave address
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @param [in] assign_addr slave address
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusDevAddrAssign(DevList_e i2cNum,U8 assign_addr);
+
+/**
+ *  @brief  enable arp
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @param [in] sarNum  slave address num
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusArpEnable(DevList_e i2cNum,U8 sarNum);
+
+/**
+ *  @brief  disable arp
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @param [in] sarNum  slave address num
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusArpDisable(DevList_e i2cNum,U8 sarNum);
+
+/**
+ *  @brief  enable slave address
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @param [in] sarNum  slave address num
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusSarEnable(DevList_e i2cNum,U8 sarNum);
+
+/**
+ *  @brief  disable slave address
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @param [in] sarNum  slave address num
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusSarDisable(DevList_e i2cNum,U8 sarNum);
+
+/**
+ *  @brief  get ARP address status(reosoveld or not)
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusArpAddrResolvedGetStatus(DevList_e i2cNum, U32 sarNum);
+
+/**
+ *  @brief  get ARP address status(valid or not)
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusArpAddrValidGetStatus(DevList_e i2cNum, U32 sarNum);
+
+/**
+ *  @brief  host cmd notify
+ *  @param [in] i2cNum:  设备ID，虚拟设备ID；
+ *  @return 0，执行成功；其他为错误
+ *  @warning 非阻塞；不可重入；OS启动后；不可用于中断上下文；可以用于线程上下文
+ */
+S32 i2cSmbusMasterArpNotifyCmd(DevList_e i2cNum);
 
 /**
  *  @brief  switch master or slave mode
@@ -282,7 +363,7 @@ S32 i2cRegArpAssignAddrFinishCb(DevList_e i2cId,ArpAssignAddrFinishCb arpAddrFin
 S32 i2cSwitchMode(DevList_e i2cNum, DwI2cMode_t i2cMode);
 
 #define I2C_TRANSFER_TIMEOUT_MIN_NUM    (20)
-#define I2C_TRANSFER_TIMEOUT_DEF_NUM    (1000) //adjust
+#define I2C_TRANSFER_TIMEOUT_DEF_NUM    (1000)
 #define INVALID_SDA_HOLD_TIME           (0x0)
 
 #define DEV_SYS_CMDBSE              (0x00000000)

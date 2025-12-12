@@ -1,5 +1,5 @@
-config USING_UART
-    bool "USING UART"
+config DRIVER_UART
+    bool "Enable UART driver"
     default y
     help
-      Select this to use UART driver
+      Select this to enable UART driver support

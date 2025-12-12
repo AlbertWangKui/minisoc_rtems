@@ -218,16 +218,16 @@ S32 dumpRegionInfo(U32 type)
         return ret;
     }
 
-    LOGE("header.magic: 0x%08X\n", header.magic);
-    LOGE("header.headerSize: 0x%08X\n", header.headerSize);
-    LOGE("header.primaryPtMemStart: 0x%08X\n", header.primaryPtMemStart);
-    LOGE("header.secondaryPtMemStart: 0x%08X\n", header.secondaryPtMemStart);
-    LOGE("header.regionDataAddrStart: 0x%08X\n", header.regionDataAddrStart);
-    LOGE("header.regionDataAddrEnd: 0x%08X\n", header.regionDataAddrEnd);
-    LOGE("header.regionCount: 0x%08X\n", header.regionCount);
-    LOGE("header.regionLen: 0x%08X\n", header.regionLen);
-    LOGE("header.checksumDesc: 0x%08X\n", header.checksumDesc);
-    LOGE("header.checksumHeader: 0x%08X\n", header.checksumHeader);
+    LOGI("header.magic: 0x%08X\n", header.magic);
+    LOGI("header.headerSize: 0x%08X\n", header.headerSize);
+    LOGI("header.primaryPtMemStart: 0x%08X\n", header.primaryPtMemStart);
+    LOGI("header.secondaryPtMemStart: 0x%08X\n", header.secondaryPtMemStart);
+    LOGI("header.regionDataAddrStart: 0x%08X\n", header.regionDataAddrStart);
+    LOGI("header.regionDataAddrEnd: 0x%08X\n", header.regionDataAddrEnd);
+    LOGI("header.regionCount: 0x%08X\n", header.regionCount);
+    LOGI("header.regionLen: 0x%08X\n", header.regionLen);
+    LOGI("header.checksumDesc: 0x%08X\n", header.checksumDesc);
+    LOGI("header.checksumHeader: 0x%08X\n", header.checksumHeader);
 
     U32 ptStartAddr = (type == 0) ? PT_PRIMARY_HEADER_OFFSET : PT_SECONDARY_HEADER_OFFSET;
     ptStartAddr += PARTITION_TABLE_HEADER_LEN;
@@ -236,17 +236,17 @@ S32 dumpRegionInfo(U32 type)
         /* Check for overflow in address calculation */
         if (i > (UINT32_MAX / REGION_DESC_LEN) ||
             (i * REGION_DESC_LEN) > (UINT32_MAX - ptStartAddr)) {
-            LOGE("Error: Address overflow at region %d\n", i);
+            LOGI("Error: Address overflow at region %d\n", i);
             return -ERANGE;
         }
 
         S32 flashRet = flashLoad(ptStartAddr + i * REGION_DESC_LEN, (U8 *)&region, REGION_DESC_LEN);
         if (flashRet != REGION_DESC_LEN) {
-            LOGE("Error: Failed to load region %d\n", i);
+            LOGI("Error: Failed to load region %d\n", i);
             return -EIO;
         }
 
-        LOGE("region %d: offset=0x%08X, size=0x%08X, valid=%d\n", region.regionId, region.offset, region.size, region.valid);
+        LOGI("region %d: offset=0x%08X, size=0x%08X, valid=%d\n", region.regionId, region.offset, region.size, region.valid);
     }
 
     return EXIT_SUCCESS;

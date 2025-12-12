@@ -28,10 +28,10 @@ typedef struct SbrI2cSmbusCfg {
     U8 interruptMode;    /* 工作模式: 0=poll, 1=interrupt */
     U8 speed;            /* 速度: 0=standard, 1=fast, 2=fast_plus, 3=high, 4=ultra */
     U8 addrMode;         /* 地址长度, 0=7bit, 1=10bit */
-    U8 slaveAddrHigh;    /* 从机地址高8位 */
-    U8 slaveAddrLow;     /* 从机地址低8位 */
+    U8 slaveAddrHigh;       /* 从机地址高8位 */
+    U8 slaveAddrLow;        /* 从机地址低8位 */
     U8 enSmbus;          /* SMBus模式: 0=i2c, 1=smbus */
-    U8 reserved;         /* 保留字段 :0x01 PEC, 0x02 alert respond, 0x03 host notify*/
+    U8 reserved;         /* 保留字段 */
 } __attribute__((packed)) SbrI2cSmbusCfg_s;
 
 typedef struct SbrGpioCfg {
@@ -253,5 +253,9 @@ typedef union {
     SbrSm2Cfg_s sbrSm2Cfg;           /* SM2配置 */
     SbrBrdCfg_s brdCfg;       /* 通用配置 */
 } __attribute__((packed)) sbrData_u;
-
+typedef struct SbrSm4Cfg {
+    void *regAddr; /* 寄存器地址 */
+    U16  irqNo; /* 中断号 */
+    U8   irqPrio; /* 中断优先级 */
+} __attribute__((packed)) SbrSm4Cfg_s;
 #endif /* __SBR_H__ */

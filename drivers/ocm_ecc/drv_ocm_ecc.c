@@ -1,10 +1,10 @@
 /**
- * copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
+ * Copyright (C), 2025, WuXi Stars Micro System Technologies Co.,Ltd
  *
- * @file drv_ocm_ecc.c
- * @author zhangxin3@starsmicrosystem.com
- * @date 2025/09/22
- * @brief ecc driver
+ * @file    drv_ocm_ecc.c
+ * @author  zhangxin3@starsmicrosystem.com
+ * @date    2025/09/22
+ * @brief   OCM ECC driver implementation
  */
 
 #include <stdio.h>
@@ -14,6 +14,12 @@
 #include <bsp/irq-generic.h>
 #include "drv_ocm_ecc.h"
 
+/**
+ * @brief OCM ECC interrupt service routine
+ * @details This function handles SEC and DED error interrupts, reads error information,
+ *          and calls the registered callback function if available
+ * @param [in] arg Pointer to driver private data
+ */
 static void ocmEccIsr(void *arg)
 {
     ocmEccDrvPrivateData_s *drv = (ocmEccDrvPrivateData_s *)arg;
@@ -21,9 +27,13 @@ static void ocmEccIsr(void *arg)
     U64 errData = 0;
     U32 irqStatus = 0;
 
+    if ((drv == NULL) || (drv->eccReg == NULL)) {
+        return;
+    }
+
     irqStatus = drv->eccReg->intSt.dword;
 
-    LOGD("ocm ecc irq status:0x%08x\r\n", irqStatus);
+    LOGD("%s-%d: ocm ecc irq status:0x%08x\r\n", __func__, __LINE__, irqStatus);
     if (irqStatus & ECC_SEC_ALL_IRQ_MASK) {
         if (irqStatus & ECC_SEC1_IRQ_MASK) {
             errAddr = drv->eccReg->sec1Addr.dword;
@@ -83,6 +93,15 @@ static void ocmEccIsr(void *arg)
     }
 }
 
+/**
+ * @brief Get OCM ECC device configuration from SBR
+ * @details This function reads the OCM ECC device configuration from SBR
+ * @param [in] devId Device ID
+ * @param [inout] pEccDevCfg Pointer to store the device configuration
+ * @return EXIT_SUCCESS on success
+ * @return -EIO I/O error (failed to read from SBR or invalid configuration)
+ * @return -EINVAL Invalid parameter (invalid configuration values)
+ */
 static S32 ocmEccDevCfgGet(DevList_e devId, SbrOcmEccCfg_s *pEccDevCfg)
 {
     S32 ret = EXIT_SUCCESS;
@@ -93,22 +112,22 @@ static S32 ocmEccDevCfgGet(DevList_e devId, SbrOcmEccCfg_s *pEccDevCfg)
         goto out;
     }
 
-    /* 从SBR读取配置 */
+    ///< Read configuration from SBR
     readSize = devSbrRead(devId, pEccDevCfg, 0, sizeof(SbrOcmEccCfg_s));
     if (readSize != sizeof(SbrOcmEccCfg_s)) {
-        LOGE("ocm_ecc: failed to read OCM ECC config from SBR, readSize=%u, expected=%u\r\n",
-             readSize, sizeof(SbrOcmEccCfg_s));
+        LOGE("%s-%d: failed to read OCM ECC config from SBR, readSize=%u, expected=%u\r\n",
+             __func__, __LINE__, readSize, sizeof(SbrOcmEccCfg_s));
         ret = -EIO;
         goto out;
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("ocm ecc: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, reserved:0x%08x\r\n",
-         pEccDevCfg->eccAddr, pEccDevCfg->irqNo, pEccDevCfg->irqPrio, pEccDevCfg->reserved);
+    LOGI("%s-%d: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, reserved:0x%08x\r\n",
+         __func__, __LINE__, pEccDevCfg->eccAddr, pEccDevCfg->irqNo, pEccDevCfg->irqPrio, pEccDevCfg->reserved);
 #endif
 
-    if (pEccDevCfg->eccAddr == 0 || pEccDevCfg->irqNo == 0) {
-        ret = -EIO;
+    if (pEccDevCfg->irqNo == 0 || pEccDevCfg->irqPrio == 0 || pEccDevCfg->eccAddr == 0) {
+        ret = -EINVAL;
         goto out;
     }
 
@@ -116,18 +135,13 @@ out:
     return ret;
 }
 
-/**
- * @brief 初始化
- * @param [in] devId 设备ID
- * @return 0表示成功，<0表示错误
- */
 S32 ocmEccInit(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
     ocmEccDrvPrivateData_s *pEccDrvData = NULL;
 
     if (isDrvInit(devId) == true) {
-        ret = -EBUSY;
+        ret = -EINVAL;
         goto out;
     }
 
@@ -141,20 +155,20 @@ S32 ocmEccInit(DevList_e devId)
         goto out;
     }
 
-    ///< 申请驱动私有数据内存并获取设备配置
+    ///< Allocate driver private data memory
     pEccDrvData = (ocmEccDrvPrivateData_s*)calloc(1, sizeof(ocmEccDrvPrivateData_s));
     if (pEccDrvData == NULL) {
         ret = -ENOMEM;
         goto unlock;
     }
 
-    if (ocmEccDevCfgGet(devId, &pEccDrvData->sbrCfg) != EXIT_SUCCESS) { ///< 获取设备配置
+    if (ocmEccDevCfgGet(devId, &pEccDrvData->sbrCfg) != EXIT_SUCCESS) {
         ret = -EIO;
         goto freeMem;
     }
 
     pEccDrvData->eccReg = (ocmEccReg_s *)pEccDrvData->sbrCfg.eccAddr;
-    pEccDrvData->callback = NULL; ///< 初始化中断回调函数为NULL
+    pEccDrvData->callback = NULL; ///< Initialize interrupt callback to NULL
     ospInterruptHandlerInstall(pEccDrvData->sbrCfg.irqNo, "ocm ecc",
         OSP_INTERRUPT_UNIQUE, ocmEccIsr, pEccDrvData);
 
@@ -165,13 +179,13 @@ S32 ocmEccInit(DevList_e devId)
 
     bsp_interrupt_vector_enable(pEccDrvData->sbrCfg.irqNo);
 
-    ///< 安装设备驱动
+    ///< Install device driver
     if (drvInstall(devId, (void*)pEccDrvData) != EXIT_SUCCESS) {
         ret = -EIO;
         goto disable_vector;
     }
 
-    pEccDrvData->eccReg->intEn.fields.secIrqEnable = 1; ///< 中断使能
+    pEccDrvData->eccReg->intEn.fields.secIrqEnable = 1; ///< Enable interrupt
     pEccDrvData->eccReg->intEn.fields.dedIrqEnable = 1;
 
     ret = EXIT_SUCCESS;
@@ -189,12 +203,7 @@ out:
     return ret;
 }
 
-/**
- * @brief 去初始化
- * @param [in] devId 设备ID
- * @return 0表示成功，<0表示错误
- */
-S32 ocmEccDeinit(DevList_e devId)
+S32 ocmEccDeInit(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
     ocmEccDrvPrivateData_s *pEccDrvData = NULL;
@@ -205,166 +214,108 @@ S32 ocmEccDeinit(DevList_e devId)
     }
 
     if (isDrvInit(devId) == false) {
-        ret = -EBUSY;
+        ret = -EINVAL;
         goto out;
     }
 
-    if (getDevDriver(devId,(void **)&pEccDrvData) != EXIT_SUCCESS) {
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_OCM_ECC, (void **)&pEccDrvData);
+    if (ret != EXIT_SUCCESS) {
+        goto out;
+    }
+
+    if ((pEccDrvData == NULL) || (pEccDrvData->eccReg == NULL)) {
         ret = -EIO;
+        funcRunEndHelper(devId);
         goto out;
     }
 
-    if (pEccDrvData == NULL) {
-        ret = -EIO;
-        goto out;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto out;
-    }
-
+    pEccDrvData->eccReg->intEn.dword = 0;
     ospInterruptHandlerRemove(pEccDrvData->sbrCfg.irqNo, ocmEccIsr, pEccDrvData);
     ospInterruptVectorUninit(pEccDrvData->sbrCfg.irqNo);
 
-    drvUninstall(devId); ///< 卸载设备
+    if (drvUninstall(devId) != EXIT_SUCCESS) {
+        LOGE("%s-%d: failed to uninstall driver for devId %u\r\n", __func__, __LINE__, devId);
+        ret = -EIO;
+    }
 
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 out:
     return ret;
 }
 
-/**
- * @brief 注册中断回调
- * @param [in] devId 设备ID
- * @param [in] func中断回调
- * @return 0表示成功，<0表示参数错误
- */
 S32 ocmEccIrqCbRegister(DevList_e devId, pOcmEccCallback func)
 {
     S32 ret = EXIT_SUCCESS;
     ocmEccDrvPrivateData_s *pEccDrvData = NULL;
+    U32 intEn;
 
-    if (NULL == func) {
-        ret = -EIO;
-        goto out;
-    }
-
-    if (!isDrvMatch(devId, DRV_ID_STARS_OCM_ECC)) {
+    if (func == NULL) {
         ret = -EINVAL;
         goto out;
     }
 
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto out;
-    }
-
-    ret = getDevDriver(devId,(void **)&pEccDrvData);
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_OCM_ECC, (void **)&pEccDrvData);
     if (ret != EXIT_SUCCESS) {
+        goto out;
+    }
+
+    if ((pEccDrvData == NULL) || (pEccDrvData->eccReg == NULL)) {
         ret = -EIO;
+        funcRunEndHelper(devId);
         goto out;
     }
 
-    if (pEccDrvData == NULL) {
-        ret = -EIO;
-        goto out;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
-        goto out;
-    }
-
+    intEn = pEccDrvData->eccReg->intEn.dword;
+    pEccDrvData->eccReg->intEn.dword = 0x0;
     pEccDrvData->callback = func;
+    pEccDrvData->eccReg->intEn.dword = intEn;
 
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 out:
     return ret;
 }
 
-/**
- * @brief 注销中断回调
- * @param [in] devId 设备ID
- * @return 0表示成功，<0表示参数错误
- */
-S32 ocmEccIrqCbDeregister(DevList_e devId)
+S32 ocmEccIrqCbUnregister(DevList_e devId)
 {
     S32 ret = EXIT_SUCCESS;
     ocmEccDrvPrivateData_s *pEccDrvData = NULL;
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_OCM_ECC)) {
-        ret = -EINVAL;
-        goto out;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto out;
-    }
-
-    ret = getDevDriver(devId,(void **)&pEccDrvData);
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_OCM_ECC, (void **)&pEccDrvData);
     if (ret != EXIT_SUCCESS) {
-        ret = -EIO;
         goto out;
     }
 
-    if (pEccDrvData == NULL) {
+    if ((pEccDrvData == NULL) || (pEccDrvData->eccReg == NULL)) {
         ret = -EIO;
-        goto out;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
+        funcRunEndHelper(devId);
         goto out;
     }
 
     pEccDrvData->callback = NULL;
 
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 out:
     return ret;
 }
 
-/**
- * @brief 获取错误计数
- * @param [in] devId 设备ID
- * @param [in] eType表示单bit/多bit
- * @return >= 0表示错误计数个数，<0表示参数错误
- */
 S32 ocmEccErrCntGet(DevList_e devId, ocmEccErrType_e eType)
 {
     S32 ret = EXIT_SUCCESS;
     ocmEccDrvPrivateData_s *pEccDrvData = NULL;
 
-    if (eType >= OCM_ECC_ETYPE_MAX) {
+    if ((eType < 0) || (eType >= OCM_ECC_ETYPE_MAX)) {
         ret = -EINVAL;
         goto out;
     }
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_OCM_ECC)) {
-        ret = -EINVAL;
-        goto out;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto out;
-    }
-
-    ret = getDevDriver(devId,(void **)&pEccDrvData);
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_OCM_ECC, (void **)&pEccDrvData);
     if (ret != EXIT_SUCCESS) {
-        ret = -EIO;
         goto out;
     }
 
-    if (pEccDrvData == NULL) {
+    if ((pEccDrvData == NULL) || (pEccDrvData->eccReg == NULL)) {
         ret = -EIO;
-        goto out;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
+        funcRunEndHelper(devId);
         goto out;
     }
 
@@ -373,51 +324,30 @@ S32 ocmEccErrCntGet(DevList_e devId, ocmEccErrType_e eType)
     } else {
         ret = pEccDrvData->eccReg->eccCnt.fields.dedCnt;
     }
-    devUnlockByDriver(devId);
 
+    funcRunEndHelper(devId);
 out:
     return ret;
 }
 
-/**
- * @brief 清除错误计数
- * @param [in] devId 设备ID
- * @param [in] eType表示单bit/多bit
- * @return 0表示成功，<0表示参数错误
- */
 S32 ocmEccErrCntClear(DevList_e devId, ocmEccErrType_e eType)
 {
     S32 ret = EXIT_SUCCESS;
     ocmEccDrvPrivateData_s *pEccDrvData = NULL;
 
-    if (eType >= OCM_ECC_ETYPE_MAX) {
+    if ((eType < 0) || (eType >= OCM_ECC_ETYPE_MAX)) {
         ret = -EINVAL;
         goto out;
     }
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_OCM_ECC)) {
-        ret = -EINVAL;
-        goto out;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto out;
-    }
-
-    ret = getDevDriver(devId,(void **)&pEccDrvData);
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_OCM_ECC, (void **)&pEccDrvData);
     if (ret != EXIT_SUCCESS) {
-        ret = -EIO;
         goto out;
     }
 
-    if (pEccDrvData == NULL) {
+    if ((pEccDrvData == NULL) || (pEccDrvData->eccReg == NULL)) {
         ret = -EIO;
-        goto out;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
+        funcRunEndHelper(devId);
         goto out;
     }
 
@@ -428,52 +358,29 @@ S32 ocmEccErrCntClear(DevList_e devId, ocmEccErrType_e eType)
     }
     ret = EXIT_SUCCESS;
 
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
 out:
     return ret;
 }
 
-/**
- * @brief 获取最近的错误数据和地址
- * @param [in] devId 设备ID
- * @param [in] eType表示单bit/多bit
- * @param [out] pErrAddr返回错误数据的地址
- * @param [out] pErrData返回错误数据
- * @return 0表示成功，<0表示参数错误
- */
 S32 ocmEccLastErrGet(DevList_e devId, ocmEccErrType_e eType, U32 *pErrAddr, U64 *pErrData)
 {
     S32 ret = EXIT_SUCCESS;
     ocmEccDrvPrivateData_s *pEccDrvData = NULL;
 
-    if ((pErrAddr == NULL) || (pErrData == NULL) || (eType >= OCM_ECC_ETYPE_MAX)) {
+    if ((pErrAddr == NULL) || (pErrData == NULL) || (eType < 0) || (eType >= OCM_ECC_ETYPE_MAX)) {
         ret = -EINVAL;
         goto out;
     }
 
-    if (!isDrvMatch(devId, DRV_ID_STARS_OCM_ECC)) {
-        ret = -EINVAL;
-        goto out;
-    }
-
-    if (isDrvInit(devId) == false) {
-        ret = -EIO;
-        goto out;
-    }
-
-    ret = getDevDriver(devId,(void **)&pEccDrvData);
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_OCM_ECC, (void **)&pEccDrvData);
     if (ret != EXIT_SUCCESS) {
-        ret = -EIO;
         goto out;
     }
 
-    if (pEccDrvData == NULL) {
+    if ((pEccDrvData == NULL) || (pEccDrvData->eccReg == NULL)) {
         ret = -EIO;
-        goto out;
-    }
-
-    if (devLockByDriver(devId, 1000) != EXIT_SUCCESS) {
-        ret = -EBUSY;
+        funcRunEndHelper(devId);
         goto out;
     }
 
@@ -486,7 +393,40 @@ S32 ocmEccLastErrGet(DevList_e devId, ocmEccErrType_e eType, U32 *pErrAddr, U64 
     }
     ret = EXIT_SUCCESS;
 
-    devUnlockByDriver(devId);
+    funcRunEndHelper(devId);
+out:
+    return ret;
+}
+
+S32 ocmEccErrIrqTrigger(DevList_e devId, ocmEccErrType_e eType)
+{
+    S32 ret = EXIT_SUCCESS;
+    ocmEccDrvPrivateData_s *pEccDrvData = NULL;
+
+    if ((eType < 0) || (eType >= OCM_ECC_ETYPE_MAX)) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    ret = funcRunBeginHelper(devId, DRV_ID_STARS_OCM_ECC, (void **)&pEccDrvData);
+    if (ret != EXIT_SUCCESS) {
+        goto out;
+    }
+
+    if ((pEccDrvData == NULL) || (pEccDrvData->eccReg == NULL)) {
+        ret = -EIO;
+        funcRunEndHelper(devId);
+        goto out;
+    }
+
+    if (eType == OCM_ECC_SEC) {
+        pEccDrvData->eccReg->softEccErr.fields.softSecErr = 1;
+    } else {
+        pEccDrvData->eccReg->softEccErr.fields.softDedErr = 1;
+    }
+    ret = EXIT_SUCCESS;
+
+    funcRunEndHelper(devId);
 out:
     return ret;
 }

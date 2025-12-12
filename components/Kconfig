@@ -41,7 +41,7 @@ menu "Flash Partition"
 config ENABLE_PARTITION_TABLE
     bool "Enable partition table"
     default y
-    select USING_QFLASH
+    select DRIVER_QFLASH
     help
         enable flash partition table
 

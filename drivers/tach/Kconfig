@@ -1,5 +1,5 @@
-config USING_TACH
-    bool "USING TACH"
+config DRIVER_TACH
+    bool "Enable TACH driver"
     default y
     help
-      Select this to use TACH driver
+      Select this to enable TACH (tachometer) driver support

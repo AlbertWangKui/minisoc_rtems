@@ -2,7 +2,7 @@
 
 def build(bld):
     # PVT driver
-    if bld.is_defined('CONFIG_USING_PVT'):
+    if bld.is_defined('CONFIG_DRIVER_PVT'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'drivers/pvt/hg_pvt.c'
         ]

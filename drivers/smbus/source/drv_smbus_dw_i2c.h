@@ -10,6 +10,7 @@
  * Date         Author          Description
  * 2025/10/20   wangkui         Initial version
  * 2025/12/01   wangkui         refactor and simplify the code as for core function
+ * 2025/12/11   wangkui         correct the issue in AI review
  */
 
 #ifndef __DRV_SMBUS_DW_I2C_H__
@@ -73,6 +74,13 @@
 #define SMBUS_FS_MAX_SPEED             (1000000) /**< Max frequency during fast speed */
 #define SMBUS_HS_MIN_SPEED             (1000000) /**< Min frequency during high speed */
 #define SMBUS_HS_MAX_SPEED             (3400000) /**< Max frequency during high speed */
+/* Mode switch timing constants */
+#define SMBUS_MODE_SWITCH_STD_SPEED_DELAY_US     (100U)     /**< 100us delay for standard speed */
+#define SMBUS_MODE_SWITCH_FAST_SPEED_DELAY_US    (25U)      /**< 25us delay for fast speed */
+#define SMBUS_MODE_SWITCH_HIGH_SPEED_DELAY_US    (10U)      /**< 10us delay for high speed */
+#define SMBUS_MODE_SWITCH_STD_SPEED_TIMEOUT_CNT  (10000U)   /**< Timeout count for standard speed (1s) */
+#define SMBUS_MODE_SWITCH_FAST_SPEED_TIMEOUT_CNT (40000U)   /**< Timeout count for fast speed (1s) */
+#define SMBUS_MODE_SWITCH_HIGH_SPEED_TIMEOUT_CNT (100000U)  /**< Timeout count for high speed (1s) */
 
 /* Default spike suppression limits for different speed modes */
 #define SMBUS_SS_DEFAULT_SPKLEN        (11)  /**< Default spike suppression limit during standard speed */
@@ -572,7 +580,6 @@ SmbusHalOps_s* smbusGetHalOps(void);
  * @note Sets up interrupt handling for master operations
  * @note Enables controller after configuration
  * @warning This function should only be called in Master mode
- * [HAL] Hardware abstraction layer - master initialization
  */
 S32 smbusProbeMaster(SmbusDev_s *dev);
 
@@ -591,7 +598,6 @@ S32 smbusProbeMaster(SmbusDev_s *dev);
  * @note Allocates slave buffer memory
  * @note Enables controller after configuration
  * @warning This function should only be called in Slave mode
- * [HAL] Hardware abstraction layer - slave initialization
  */
 S32 smbusProbeSlave(SmbusDev_s *dev);
 
@@ -608,7 +614,6 @@ S32 smbusProbeSlave(SmbusDev_s *dev);
  * @note Removes interrupt handlers and synchronization objects
  * @note Performs graceful shutdown of master operations
  * @warning This function should only be called in Master mode
- * [HAL] Hardware abstraction layer - master cleanup
  */
 S32 smbusUnprobeMaster(SmbusDev_s *dev);
 
@@ -625,7 +630,6 @@ S32 smbusUnprobeMaster(SmbusDev_s *dev);
  * @note Removes interrupt handlers and frees slave buffers
  * @note Performs graceful shutdown of slave operations
  * @warning This function should only be called in Slave mode
- * [HAL] Hardware abstraction layer - slave cleanup
  */
 S32 smbusUnprobeSlave(SmbusDev_s *dev);
 

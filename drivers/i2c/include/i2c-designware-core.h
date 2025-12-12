@@ -331,6 +331,9 @@ typedef void (*user_callback)(void *);
  ** struct i2c_timings - I2C timing information
  ** @bus_freq_hz: the bus frequency in Hz
  **/
+struct i2c_timings {
+    U32 bus_freq_hz;
+};
 
 enum i2c_slave_event {
     I2C_SLAVE_READ_REQUESTED,
@@ -419,6 +422,16 @@ int i2c_dw_handle_tx_abort(struct dw_i2c_dev *dev);
 int i2c_dw_calc_fifo_size(struct dw_i2c_dev *dev);
 void i2c_dw_disable(struct dw_i2c_dev *dev);
 void i2c_dw_disable_int(struct dw_i2c_dev *dev);
+S32 smbusDevAddrAssign(struct dw_i2c_dev *dev,uint8_t assign_addr);
+S32 smbusArpEnable(struct dw_i2c_dev *dev, int SarNum);
+S32 smbusArpDisable(struct dw_i2c_dev *dev, int SarNum);
+S32 smbusSarEnable(struct dw_i2c_dev *dev, int SarNum);
+S32 smbusSarDisable(struct dw_i2c_dev *dev, int SarNum);
+S32 smbusArpUdidSet(struct dw_i2c_dev *dev,U32 sarNum, DwSmbusArpUdid_t *udidInfo);
+S32 smbusArpUdidGet(struct dw_i2c_dev *dev,U32 sarNum, DwSmbusArpUdid_t *udidInfo);
+S32 smbusArpAddrResolvedGetStatus(struct dw_i2c_dev *dev, U32 sarNum);
+S32 smbusArpAddrValidGetStatus(struct dw_i2c_dev *dev, U32 sarNum);
+S32 smbusMasterSlaveModeSwitch(struct dw_i2c_dev *dev, DwI2cMode_t i2cMode);
 
 static inline int dw_reg_read(struct dw_i2c_dev *dev, U32 reg, U32 *val)
 {

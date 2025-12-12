@@ -1,15 +1,9 @@
 /**
  * Copyright (C), 2024, WuXi Stars Micro System Technologies Co.,Ltd
- *
- * @file drv_tach_api.h
- * @author yangkl (yangkl@starsmicrosystem.com)
- * @date 2025
- * @brief  Tach driver API definitions
- *
- * @par ChangeLog:
- *
- * Date         Author          Description
- * 2024         tach_driver     Created initial version
+ * @file    drv_tach_api.h
+ * @author  yangkl@starsmicrosystem.com
+ * @date    2025/01/01
+ * @brief   Tach driver API definitions
  */
 
 #ifndef __DRV_TACH_API_H__

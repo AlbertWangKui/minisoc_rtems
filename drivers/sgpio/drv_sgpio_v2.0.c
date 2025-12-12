@@ -264,7 +264,7 @@ static S32 sgpioGetDevCfg(DevList_e devId, SbrSgpioCfg_s *sbrCfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGE("sgpio: SBR dump - regAddr:%p, mode:%u, maxClk:%u, cfgClk:%u, driveNum:%u, reserved:0x%08x\r\n",
+    LOGI("sgpio: SBR dump - regAddr:%p, mode:%u, maxClk:%u, cfgClk:%u, driveNum:%u, reserved:0x%08x\r\n",
          sbrCfg->regAddr, sbrCfg->mode, sbrCfg->maxClk, sbrCfg->cfgClk, sbrCfg->driveNum, sbrCfg->reserved);
 #endif
 
