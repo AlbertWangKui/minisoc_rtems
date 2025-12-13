@@ -546,6 +546,73 @@ typedef enum SmbusTransferState {
 /* Default timeout */
 #define SMBUS_DEFAULT_TIMEOUT_MS       (5000)    /**< Default timeout in milliseconds */
 
+/* ======================================================================== */
+/*                     Additional Timeout Constants                            */
+/* ======================================================================== */
+#define SMBUS_ADDR_UPDATE_TIMEOUT_CNT     (1000)     /**< Timeout for address update operations */
+#define SMBUS_MODE_SWITCH_RETRY_CNT       (10)       /**< Retry count for mode switch operations */
+#define SMBUS_FIFO_DEPTH_SHIFT            (8)        /**< Shift amount for FIFO depth calculation */
+#define SMBUS_FIFO_DEPTH_ADD              (1)        /**< Add constant for FIFO depth calculation */
+#define SMBUS_ENABLE_STATUS_TIMEOUT_CNT   (2000)     /**< Timeout for enable status check */
+#define SMBUS_INTERRUPT_CLEAR_ALL         (0x7FFF)   /**< Clear all interrupts mask */
+#define SMBUS_SMBUS_INTERRUPT_CLEAR_ALL   (0x7FFF)   /**< Clear all SMBus interrupts mask */
+#define SMBUS_DUMMY_DATA_BYTE             (0xFF)     /**< Dummy data byte for invalid operations */
+#define SMBUS_INTERNAL_CLOCK_HZ           (12500000) /**< Internal peripheral clock frequency (12.5MHz) */
+#define SMBUS_MIN_SDA_HOLD_TIME           (1)        /**< Minimum SDA hold time */
+#define SMBUS_DUTY_CYCLE_PERCENT_50       (50)       /**< 50% duty cycle */
+#define SMBUS_SPIKE_LEN_OFFSET_HIGH       (7)        /**< High spike length offset */
+#define SMBUS_SPIKE_LEN_OFFSET_LOW        (5)        /**< Low spike length offset */
+
+/* ======================================================================== */
+/*                     Address Validity Constants                            */
+/* ======================================================================== */
+#define SMBUS_ADDR_VALID_BIT_MASK         (0x01)     /**< Address valid bit mask */
+#define SMBUS_ADDR_SHIFT_BITS             (1)        /**< Address bit shift amount */
+#define SMBUS_7BIT_ADDR_MASK              (0x7F)     /**< 7-bit address mask */
+#define SMBUS_8BIT_DATA_MASK              (0xFF)     /**< 8-bit data mask */
+#define SMBUS_16BIT_DATA_MASK             (0xFFFF)   /**< 16-bit data mask */
+#define SMBUS_BYTE_SHIFT_8                (8)        /**< 8-bit shift amount */
+#define SMBUS_BYTE_SHIFT_16               (16)       /**< 16-bit shift amount */
+#define SMBUS_BYTE_SHIFT_24               (24)       /**< 24-bit shift amount */
+
+/* ======================================================================== */
+/*                     Retry and Timeout Constants                           */
+/* ======================================================================== */
+#define SMBUS_ACTIVE_RETRY_COUNT          (50000)    /**< Retry count for active status check */
+#define SMBUS_CHECK_ERROR_RETRY_COUNT     (10)       /**< Retry count for error checking */
+#define SMBUS_RECOVERY_TIMEOUT_CNT        (100)      /**< Timeout for recovery operations */
+#define SMBUS_ENABLE_DISABLE_TIMEOUT_CNT  (200)      /**< Timeout for enable/disable operations */
+#define SMBUS_BUS_CLEAR_TIMEOUT_CNT       (1000)     /**< Timeout for bus clear operations */
+#define SMBUS_CLOCK_EXTEND_TIMEOUT_CNT    (1000)     /**< Timeout for clock extend operations */
+
+/* ======================================================================== */
+/*                     Command and Data Constants                            */
+/* ======================================================================== */
+#define SMBUS_ARP_PREPARE_PAYLOAD_BYTE    (0x00)     /**< Prepare ARP payload byte */
+#define SMBUS_SLAVE_INVALID_TX_LEN        (0)        /**< Invalid slave TX length */
+#define SMBUS_SLAVE_DEFAULT_TX_LEN        (0)        /**< Default slave TX length */
+#define SMBUS_SLAVE_INVALID_NEW_ADDR      (0x00)     /**< Invalid new slave address */
+#define SMBUS_SLAVE_RESET_OLD_ADDR        (0xFFFF)   /**< Reset old address marker */
+#define SMBUS_SLAVE_INVALID_ADDR_TAG      (0xFF)     /**< Invalid address tag */
+
+/* ======================================================================== */
+/*                     Status and Flag Constants                             */
+/* ======================================================================== */
+#define SMBUS_SLAVE_ENABLED               (1)        /**< Slave enabled flag */
+#define SMBUS_SLAVE_DISABLED              (0)        /**< Slave disabled flag */
+#define SMBUS_QUICK_COMMAND_FLAG          (1)        /**< Quick command flag */
+#define SMBUS_MASTER_MODE_FLAG            (1)        /**< Master mode flag */
+#define SMBUS_WRITE_OPERATION             (0)        /**< Write operation flag */
+#define SMBUS_READ_OPERATION              (1)        /**< Read operation flag */
+#define SMBUS_INTERRUPT_POLLING_MODE      (1)        /**< Interrupt polling mode */
+#define SMBUS_10BIT_ADDRESS_MODE          (1)        /**< 10-bit address mode flag */
+
+/* ======================================================================== */
+/*                     CRC and Checksum Constants                            */
+/* ======================================================================== */
+#define SMBUS_CRC8_POLYNOMIAL_HIGHBIT     (0x80)     /**< CRC-8 polynomial high bit */
+#define SMBUS_CRC8_POLYNOMIAL_VALUE       (0x07)     /**< CRC-8 polynomial value */
+#define SMBUS_CRC8_INITIAL_VALUE          (0x00)     /**< CRC-8 initial value */
 
 /* ======================================================================== */
 /*                    SMBus Master Configuration Macros                      */

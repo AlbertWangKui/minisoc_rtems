@@ -40,9 +40,10 @@
  * ========================================================================= */
 static S32 arpValidateAddress(const SmbusArpMaster_s *master, U8 address)
 {
-    /* 1. 首先检查 SMBus 协议硬性限制 (0x08 - 0x77) */
-    if (address < 0x08 || address > 0x77) {
-        LOGE("[ARP] Address 0x%02X out of SMBus valid range (0x08-0x77)\n", address);
+    /* 1. 首先检查 SMBus 协议硬性限制 */
+    if (address < SMBUS_MIN_VALID_ADDRESS || address > SMBUS_MAX_VALID_ADDRESS) {
+        LOGE("[ARP] Address 0x%02X out of SMBus valid range (0x%02X-0x%02X)\n",
+             address, SMBUS_MIN_VALID_ADDRESS, SMBUS_MAX_VALID_ADDRESS);
         return -ERANGE;
     }
 
@@ -175,24 +176,27 @@ static U8 deserializeUdid(const U8 *buf, SmbusUdid_s *udid)
     udid->versionRevision    = buf[1];  /* Version / Revision */
     
     /* 使用移位操作手动拼合 U16，避免非对齐访问风险 */
-    udid->vendorId          = (U16)(buf[2] | (buf[3] << 8));
-    udid->deviceId          = (U16)(buf[4] | (buf[5] << 8));
-    udid->interface         = (U16)(buf[6] | (buf[7] << 8));
-    udid->subsystemVendorId = (U16)(buf[8] | (buf[9] << 8));
-    udid->subsystemDeviceId = (U16)(buf[10] | (buf[11] << 8));
-    udid->vendorSpecificId  = (U16)(buf[12] | (buf[13] << 8) | (buf[14] << 16) | (buf[15] << 24));
+    udid->vendorId          = (U16)(((U16)buf[2]) | ((U16)buf[3] << SMBUS_BYTE_SHIFT_8));
+    udid->deviceId          = (U16)(((U16)buf[4]) | ((U16)buf[5] << SMBUS_BYTE_SHIFT_8));
+    udid->interface         = (U16)(((U16)buf[6]) | ((U16)buf[7] << SMBUS_BYTE_SHIFT_8));
+    udid->subsystemVendorId = (U16)(((U16)buf[8]) | ((U16)buf[9] << SMBUS_BYTE_SHIFT_8));
+    udid->subsystemDeviceId = (U16)(((U16)buf[10]) | ((U16)buf[11] << SMBUS_BYTE_SHIFT_8));
+    udid->vendorSpecificId  = (U32)(((U32)buf[12]) |
+                                   ((U32)buf[13] << SMBUS_BYTE_SHIFT_8) |
+                                   ((U32)buf[14] << SMBUS_BYTE_SHIFT_16) |
+                                   ((U32)buf[15] << SMBUS_BYTE_SHIFT_24));
 
     /* 3. 解析地址字节 (Byte 17, Index 16) */
     U8 addrByte = buf[16];
 
-    /* 检查 "Address Valid" 位 (Bit 0) */
-    if (UNLIKELY((addrByte & 0x01) == 0)) {
+    /* 检查 "Address Valid" 位 */
+    if (UNLIKELY((addrByte & SMBUS_ADDR_VALID_BIT_MASK) == SMBUS_SLAVE_DISABLED)) {
         LOGW("[ARP] UDID Address Valid Bit is 0! (Raw: 0x%02X)\n", addrByte);
         /* 虽然无效，但通常还是会解析出地址备查 */
     }
 
-    /* 提取 7-bit 地址 (Bit 7:1) */
-    return (addrByte >> 1) & 0x7F;
+    /* 提取 7-bit 地址 */
+    return (addrByte >> SMBUS_ADDR_SHIFT_BITS) & SMBUS_7BIT_ADDR_MASK;
 }
 
 /**
@@ -213,25 +217,25 @@ static void serializeUdid(const SmbusUdid_s *udid, U8 *buf)
     buf[0]  = udid->deviceCapabilities;      // Byte 0: Device Capabilities
     buf[1]  = udid->versionRevision;            // Byte 1: Revision
     
-    buf[2]  = (U8)(udid->vendorId & 0xFF);
-    buf[3]  = (U8)((udid->vendorId >> 8) & 0xFF);
-    
-    buf[4]  = (U8)(udid->deviceId & 0xFF);
-    buf[5]  = (U8)((udid->deviceId >> 8) & 0xFF);
-    
-    buf[6]  = (U8)(udid->interface & 0xFF);
-    buf[7]  = (U8)((udid->interface >> 8) & 0xFF);
-    
-    buf[8]  = (U8)(udid->subsystemVendorId & 0xFF);
-    buf[9]  = (U8)((udid->subsystemVendorId >> 8) & 0xFF);
+    buf[2]  = (U8)(udid->vendorId & SMBUS_8BIT_DATA_MASK);
+    buf[3]  = (U8)((udid->vendorId >> SMBUS_BYTE_SHIFT_8) & SMBUS_8BIT_DATA_MASK);
 
-    buf[10] = (U8)(udid->subsystemDeviceId & 0xFF);
-    buf[11] = (U8)((udid->subsystemVendorId >> 8) & 0xFF);
+    buf[4]  = (U8)(udid->deviceId & SMBUS_8BIT_DATA_MASK);
+    buf[5]  = (U8)((udid->deviceId >> SMBUS_BYTE_SHIFT_8) & SMBUS_8BIT_DATA_MASK);
 
-    buf[12] = (U8)(udid->vendorSpecificId & 0xFF);
-    buf[13] = (U8)((udid->vendorSpecificId >> 8) & 0xFF);
-    buf[14] = (U8)((udid->vendorSpecificId >> 16) & 0xFF);
-    buf[15] = (U8)((udid->vendorSpecificId >> 24) & 0xFF);
+    buf[6]  = (U8)(udid->interface & SMBUS_8BIT_DATA_MASK);
+    buf[7]  = (U8)((udid->interface >> SMBUS_BYTE_SHIFT_8) & SMBUS_8BIT_DATA_MASK);
+
+    buf[8]  = (U8)(udid->subsystemVendorId & SMBUS_8BIT_DATA_MASK);
+    buf[9]  = (U8)((udid->subsystemVendorId >> SMBUS_BYTE_SHIFT_8) & SMBUS_8BIT_DATA_MASK);
+
+    buf[10] = (U8)(udid->subsystemDeviceId & SMBUS_8BIT_DATA_MASK);
+    buf[11] = (U8)((udid->subsystemDeviceId >> SMBUS_BYTE_SHIFT_8) & SMBUS_8BIT_DATA_MASK);
+
+    buf[12] = (U8)(udid->vendorSpecificId & SMBUS_8BIT_DATA_MASK);
+    buf[13] = (U8)((udid->vendorSpecificId >> SMBUS_BYTE_SHIFT_8) & SMBUS_8BIT_DATA_MASK);
+    buf[14] = (U8)((udid->vendorSpecificId >> SMBUS_BYTE_SHIFT_16) & SMBUS_8BIT_DATA_MASK);
+    buf[15] = (U8)((udid->vendorSpecificId >> SMBUS_BYTE_SHIFT_24) & SMBUS_8BIT_DATA_MASK);
 
 }
 
@@ -399,8 +403,8 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid, U8 addr)
         return -EINVAL;
     }
 
-    /* SMBus 7-bit Address Check (Reserved ranges excluded: 0x00-0x07, 0x78-0x7F) */
-    if (UNLIKELY(addr < 0x08 || addr > 0x77)) {
+    /* SMBus 7-bit Address Check (Reserved ranges excluded) */
+    if (UNLIKELY(addr < SMBUS_MIN_VALID_ADDRESS || addr > SMBUS_MAX_VALID_ADDRESS)) {
         LOGE("[ARP] %s: Invalid target address 0x%02X\n", __func__, addr);
         return -EINVAL;
     }
@@ -420,7 +424,7 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid, U8 addr)
      * 通常这是一个 8-bit 值，其中 bit 7-1 是地址，bit 0 未定义或为0。
      * 这里为了保险，将其格式化为 8-bit 地址格式 (Addr << 1)。
      */
-    txBuf[16] = (U8)(addr << 1); 
+    txBuf[16] = (U8)(addr << SMBUS_ADDR_SHIFT_BITS); 
 
     /* 3. 构建传输描述符 (Adapter) */
     SmbusXfer_s xfer = {
@@ -455,7 +459,7 @@ S32 smbusArpPrepareToArp(DevList_e devId)
     /* * 根据 SMBus ARP 协议，Prepare to ARP 命令是一个 Block Write。
      * Data Byte 1 默认为 0000_0000b (Reserved)。
      */
-    U8 payload = 0x00;
+    U8 payload = SMBUS_ARP_PREPARE_PAYLOAD_BYTE;
 
     /* 构建传输描述符 (Adapter Pattern) */
     SmbusXfer_s xfer = {

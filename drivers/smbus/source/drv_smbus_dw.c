@@ -234,7 +234,7 @@ exit:
  * @param[in] len Length of data buffer
  * @return Calculated PEC value
  *
- * @note Uses CRC-8 with polynomial 0x07
+ * @note Uses CRC-8 with polynomial SMBUS_CRC8_POLYNOMIAL_VALUE
  * @note Processes entire buffer sequentially
  */
 static U8 smbusCalcPEC(U8 pec, const U8 *buf, U32 len)
@@ -863,17 +863,17 @@ static inline void smbusSlaveHandleReadRequest(SmbusDrvData_s *pDrvData, volatil
     }
 
     /* 发送当前字节 */
-    U8 txData = 0xFF;
-    if (pDrvData->pSmbusDev.slaveTxBuf != NULL && 
+    U8 txData = SMBUS_DUMMY_DATA_BYTE;
+    if (pDrvData->pSmbusDev.slaveTxBuf != NULL &&
         pDrvData->pSmbusDev.txIndex < pDrvData->pSmbusDev.slaveValidTxLen) {
-        
-        txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->pSmbusDev.txIndex];        
+
+        txData = pDrvData->pSmbusDev.slaveTxBuf[pDrvData->pSmbusDev.txIndex];
         regBase->icDataCmd.value = (U32)txData;
         LOGD("SMBus Slave: RD_REQ - Sent Byte[%d] = 0x%02X\n", pDrvData->pSmbusDev.txIndex, txData);
-        pDrvData->pSmbusDev.txIndex++; 
+        pDrvData->pSmbusDev.txIndex++;
     } else {
-        regBase->icDataCmd.value = 0xFF;
-        LOGW("SMBus Slave: RD_REQ - No data/End of buf, sent dummy 0xFF\n");
+        regBase->icDataCmd.value = SMBUS_DUMMY_DATA_BYTE;
+        LOGW("SMBus Slave: RD_REQ - No data/End of buf, sent dummy 0x%02X\n", SMBUS_DUMMY_DATA_BYTE);
     }
 
     /* 如果还有剩余数据，启用 TX_EMPTY 以利用 FIFO 中断发送 */
@@ -890,7 +890,7 @@ static inline void smbusSlaveHandleReadRequest(SmbusDrvData_s *pDrvData, volatil
 static inline void smbusSlaveHandleTxEmpty(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
 {
     U32 status = regBase->icStatus.value;
-    U32 slaveActivity = (status >> 6) & 1;
+    U32 slaveActivity = (status >> SMBUS_IC_CON_SLAVE_DISABLE_BIT) & SMBUS_SLAVE_ENABLED;
     U32 rxFifoLevel = regBase->icRxflr;
     
     if (pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK) {
@@ -1039,8 +1039,8 @@ static void smbusHandleSlaveInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRe
         smbusSlaveHandleStop(pDrvData, regBase);
     }
 
-    /* 6. Exceptions & Others */
-    if (intrStat & (SMBUS_INTR_TX_ABRT | SMBUS_INTR_RX_DONE | 0xF00 /* AddrTags mask estimate */)) {
+    /* 6. Exceptions & Others AddrTags mask estimate */
+    if (intrStat & (SMBUS_INTR_TX_ABRT | SMBUS_INTR_RX_DONE | 0xF00)) {
         smbusSlaveHandleExceptions(pDrvData, regBase, intrStat);
     }
 
@@ -1159,7 +1159,7 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
         goto unlock;
     }
 
-#if 0
+#ifndef TEST_SUITS_1
     /* Step 2: Get SBR configuration (not modularized as requested) */
     if (smbusDevCfgGet(devId, &pDrvData->sbrCfg) != EXIT_SUCCESS) {
         LOGE("%s: get SBR failed\n", __func__);
@@ -1180,19 +1180,20 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
     pDrvData->sbrCfg.slaveAddrHigh = 0;
     pDrvData->sbrCfg.slaveAddrLow = config->slaveAddrLow;
     pDrvData->sbrCfg.enSmbus = config->featureMap;
+#endif
     pDrvData->udid.deviceCapabilities = EXTRACT_BYTE(config->udidWord0, 0);
     pDrvData->udid.versionRevision = EXTRACT_BYTE(config->udidWord0, 1);
-    pDrvData->udid.vendorId = (U16)(config->udidWord0 >> 16); /* Bytes 2-3 */
+    pDrvData->udid.vendorId = (U16)(config->udidWord0 >> SMBUS_BYTE_SHIFT_16); /* Bytes 2-3 */
     /* Word 1 -> Bytes 4-7 */
-    pDrvData->udid.deviceId = (U16)(config->udidWord1 & 0xFFFF); /* Bytes 4-5 */
-    pDrvData->udid.interface = (U16)(config->udidWord1 >> 16);    /* Bytes 6-7 */
+    pDrvData->udid.deviceId = (U16)(config->udidWord1 & SMBUS_16BIT_DATA_MASK); /* Bytes 4-5 */
+    pDrvData->udid.interface = (U16)(config->udidWord1 >> SMBUS_BYTE_SHIFT_16);    /* Bytes 6-7 */
     /* Word 2 -> Bytes 8-11 */
-    pDrvData->udid.subsystemVendorId = (U16)(config->udidWord2 & 0xFFFF); /* Bytes 8-9 */
-    pDrvData->udid.subsystemDeviceId = (U16)(config->udidWord2 >> 16);    /* Bytes 10-11 */
+    pDrvData->udid.subsystemVendorId = (U16)(config->udidWord2 & SMBUS_16BIT_DATA_MASK); /* Bytes 8-9 */
+    pDrvData->udid.subsystemDeviceId = (U16)(config->udidWord2 >> SMBUS_BYTE_SHIFT_16);    /* Bytes 10-11 */
     /* Word 3 -> Bytes 12-15 */
     pDrvData->udid.vendorSpecificId = config->udidWord3;                 /* Bytes 12-15 */
     LOGD("%s: Using test configuration:%d\n", __func__, pDrvData->sbrCfg.masterMode);
-#endif
+    
     /* Step 2: Clear all pending interrupts before installing interrupt handler */
     smbusClearInterrupts((volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr, 0xFFFFFFFF);
     LOGD("%s: All interrupts cleared before handler installation\n", __func__);

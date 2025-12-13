@@ -74,10 +74,10 @@ static inline S32 smbusIsBusBusy(volatile SmbusRegMap_s *regBase)
 static S32 smbusSetLocalAddress(SmbusDrvData_s *pDrv, U8 addr)
 {
     volatile SmbusRegMap_s *regBase = pDrv->pSmbusDev.regBase;
-    U32 timeout = 1000;
+    U32 timeout = SMBUS_ADDR_UPDATE_TIMEOUT_CNT;
 
     ///< 1. 参数校验
-    if (addr > 0x7F) {
+    if (addr > SMBUS_MAX_SLAVE_ADDRESS) {
         LOGE("SMBus: Invalid local address 0x%02X\n", addr);
         return -EINVAL;
     }
@@ -92,7 +92,7 @@ static S32 smbusSetLocalAddress(SmbusDrvData_s *pDrv, U8 addr)
     ///< 3. 禁用控制器 (DesignWare IP 修改 SAR 必须先 Disable)
     regBase->icEnable.fields.enable = 0;
 
-    while ((regBase->icEnableStatus & 0x01)  && --timeout > 0) {
+    while ((regBase->icEnableStatus & SMBUS_IC_ENABLE_STATUS_IC_EN)  && --timeout > 0) {
         ///< 等待硬件完全关闭
         udelay(10);
     }
@@ -149,7 +149,7 @@ S32 smbusArpSlaveHandleAssignAddr(SmbusDrvData_s *pDrv, const U8 *payload)
     ///< 1. 解析 Payload，提取 UDID 和 New Address
     S32 ret = EXIT_SUCCESS;
     SmbusUdid_s targetUdid;
-    U8 newAddr = 0x00;
+    U8 newAddr = SMBUS_SLAVE_INVALID_NEW_ADDR;
     parseAssignPacket(payload, &targetUdid, &newAddr);
 
     ///< 2. 检查 UDID 是否匹配本机
@@ -191,8 +191,8 @@ static void smbusSlaveHandleArpReset(SmbusDrvData_s *pDrv)
         memcpy(&arpNotifyDev.udid, &pDrv->udid, sizeof(SmbusUdid_s));
         
         /* Reset 事件中，newAddr 通常填 0x61 或 0 来表示未分配 */
-        arpNotifyDev.newAddr = SMBUS_ARP_DEFAULT_ADDR; 
-        arpNotifyDev.oldAddr = 0xFFFF; // 表示复位
+        arpNotifyDev.newAddr = SMBUS_ARP_DEFAULT_ADDR;
+        arpNotifyDev.oldAddr = SMBUS_SLAVE_RESET_OLD_ADDR; // 表示复位
         arpNotifyDev.addrValid = 0;    // 地址不再是"已分配"的有效状态
 
         /* 发送 RESET 事件 */
@@ -248,7 +248,7 @@ void smbusSlvArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData)
         /* Success! Hardware accepted the Assign Address command */
         
         /* Read the new address from the Slave Address Register (IC_SAR) */
-        assignedAddr = (U16)(regBase->icSar.value & 0x3FF); ///< Mask to 10 bits just in case
+        assignedAddr = (U16)(regBase->icSar.value & SMBUS_TENBIT_ADDRESS_MASK); ///< Mask to 10 bits just in case
 
         LOGI("SMBus Slave: ARP Address Assigned! New Address: 0x%02X\n", assignedAddr);
 
@@ -323,7 +323,7 @@ void smbusTriggerSlaveEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data,
         case SMBUS_ARP_EVENT_RESET:
             /* 收到 Reset，硬件地址可能已被重置为 0x61 (由调用者处理或在此处理) */
             /* 这里主要负责通知上层 */
-            eventData.arp.newAddr = 0x61; /* Default */
+            eventData.arp.newAddr = SMBUS_ARP_DEFAULT_ADDR; /* Default */
             memcpy((void *)&eventData.arp.udid, (const void *)&pDrvData->udid, sizeof(SmbusUdid_s));
             break;
         case SMBUS_ARP_EVENT_GET_UDID:
@@ -429,7 +429,7 @@ void smbusHandleSlaveSpecificInterrupts(SmbusDrvData_s *pDrvData,
         LOGI("SMBus Slave: ARP Get UDID Command Detected\n");
         /* DW IP 配置了 UDID 寄存器，硬件会自动回传。*/
         /* 假设 smbusSlvArpAssignAddrFinishHandle 已经更新了 slaveAddr */
-        arpPayload.newAddr = 0xFF;
+        arpPayload.newAddr = SMBUS_SLAVE_INVALID_ADDR_TAG;
         arpPayload.addrValid = 0;
         memcpy(&arpPayload.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
         smbusTriggerSlaveEvent(pDrvData, SMBUS_ARP_EVENT_GET_UDID, &arpPayload, sizeof(arpPayload));

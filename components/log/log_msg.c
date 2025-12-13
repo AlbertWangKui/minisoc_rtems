@@ -13,7 +13,7 @@
 
 #define COMMAND_INT_MAX_OUTPUT_SIZE (100)
 
-static LogLevel_e logMsgLevel = LOG_LEVEL_INFO;
+static LogLevel_e logMsgLevel = LOG_LEVEL_DEBUG;
 
 LogLevel_e logMsgLevelGet(void)
 {
