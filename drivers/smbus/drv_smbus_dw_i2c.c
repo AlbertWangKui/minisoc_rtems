@@ -11,7 +11,7 @@
  * 2025/10/20   wangkui         Initial version
  * 2025/12/01   wangkui         refactor and simplify the code as for core function
  * 2025/12/11   wangkui         correct the issue in AI review
- *
+ * 2025/12/15   wangkui         replace slave with target naming
  * @note This file implements the I2C Hardware register Layer, providing
  *       direct register access functions and low-level hardware operations.
  *       These functions operate directly on the DesignWare SMBus controller
@@ -145,7 +145,7 @@ static inline void smbusEnable(SmbusDev_s *dev)
  * @param[in] regBase Pointer to SMBus register map base address
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
- * @note Handles both master and slave mode configurations
+ * @note Handles both master and target mode configurations
  * @note Configures SMBus-specific interrupts when SMBus mode is enabled
  * @note Clears pending interrupts before configuration
  */
@@ -167,21 +167,21 @@ static S32 smbusConfigTransferInterrupts(SmbusDev_s *dev, volatile SmbusRegMap_s
         LOGD("SMBus: Polling mode - interrupts disabled for CPU polling\n");
     } else {
         /* Async interrupt mode - enable interrupts based on mode */
-        if (dev->mode == SMBUS_MODE_SLAVE) {
+        if (dev->mode == SMBUS_MODE_TARGET) {
             /*
-             * Slave mode: Configure optimal interrupts for slave operations
+             * target mode: Configure optimal interrupts for target operations
              * - Write transfer: WR_REQ, RX_FULL for receiving data
              * - Read transfer: RD_REQ, TX_EMPTY for sending data
              * - Common: TX_ABRT, STOP_DET, RESTART_DET for error handling
              */
-            regBase->icIntrMask.value = SMBUS_SLAVE_OPTIMAL_CONFIG;
+            regBase->icIntrMask.value = SMBUS_TARGET_OPTIMAL_CONFIG;
             dev->status = SMBUS_STATUS_IDLE;
-            LOGD("SMBus: Slave mode interrupts configured (mask: 0x%08X)\n", SMBUS_SLAVE_OPTIMAL_CONFIG);
+            LOGD("SMBus: target mode interrupts configured (mask: 0x%08X)\n", SMBUS_TARGET_OPTIMAL_CONFIG);
         } else {
             /*
              * Master mode: Configure essential interrupts for master operations
-             * - TX_EMPTY: For sending data to slave
-             * - RX_FULL: For receiving data from slave
+             * - TX_EMPTY: For sending data to target
+             * - RX_FULL: For receiving data from target
              * - TX_ABRT: Handle transfer aborts
              * - STOP_DET/START_DET: Detect bus conditions
              * - ACTIVITY: Monitor bus activity status
@@ -320,7 +320,7 @@ static S32 smbusDwCheckErrors(SmbusDev_s *dev)
 
         /* Return specific error based on abort source */
         if (abrtSource.value & SMBUS_IC_TX_ABRT_SOURCE_ABRT_7B_ADDR_NOACK_MASK) {
-            return -ENXIO;  /* No acknowledge from slave */
+            return -ENXIO;  /* No acknowledge from target */
         } else if (abrtSource.value & SMBUS_IC_TX_ABRT_SOURCE_ABRT_ARB_LOST_MASK) {
             return -EAGAIN;  /* Arbitration lost */
         } else if (abrtSource.value & SMBUS_IC_TX_ABRT_SOURCE_ABRT_MASTER_DIS_MASK) {
@@ -495,7 +495,7 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
         ret = smbusHandleTxAbort(dev);
         ///< Log enhanced error information with device context
         LOGE("SMBus: Transfer failed - Device context:\n");
-        LOGE("  - Slave address: 0x%02X\n", dev->regBase->icSar.fields.icSar);
+        LOGE("  - target address: 0x%02X\n", dev->regBase->icSar.fields.icSar);
         LOGE("  - Error type: %d (%s)\n", dev->errorType,
              (dev->errorType == SMBUS_ERR_TYPE_NACK_7BIT) ? "NACK_7BIT" :
              (dev->errorType == SMBUS_ERR_TYPE_NACK_10BIT) ? "NACK_10BIT" :
@@ -851,19 +851,19 @@ static S32 smbusHandleTxAbort(SmbusDev_s *dev)
     ///< Classify the specific error type and log detailed information
     if (abortSource & SMBUS_IC_TX_ABRT_SOURCE_ABRT_7B_ADDR_NOACK_MASK) {
         dev->errorType = SMBUS_ERR_TYPE_NACK_7BIT;
-        LOGE("SMBus: 7-bit address NACK (0x%02X) - Slave device not responding or not present\n",
-             dev->slaveAddr);
+        LOGE("SMBus: 7-bit address NACK (0x%02X) - target device not responding or not present\n",
+             dev->targetAddr);
         LOGE("SMBus: Abort source=0x%08X, errorType=NACK_7BIT\n", abortSource);
         return -ENXIO;  ///< No such device or address
     } else if (abortSource & SMBUS_IC_TX_ABRT_SOURCE_ABRT_10B_ADDR_NOACK_MASK) {
         dev->errorType = SMBUS_ERR_TYPE_NACK_10BIT;
-        LOGE("SMBus: 10-bit address NACK (0x%03X) - Slave device not responding\n",
-             dev->slaveAddr);
+        LOGE("SMBus: 10-bit address NACK (0x%03X) - target device not responding\n",
+             dev->targetAddr);
         LOGE("SMBus: Abort source=0x%08X, errorType=NACK_10BIT\n", abortSource);
         return -ENXIO;  ///< No such device or address
     } else if (abortSource & SMBUS_IC_TX_ABRT_SOURCE_ABRT_TXDATA_NOACK_MASK) {
         dev->errorType = SMBUS_ERR_TYPE_NACK_DATA;
-        LOGE("SMBus: Data NACK - Slave rejected data during transfer\n");
+        LOGE("SMBus: Data NACK - target rejected data during transfer\n");
         LOGE("SMBus: Abort source=0x%08X, errorType=NACK_DATA\n", abortSource);
         return -EIO;   ///< I/O error during data transfer
     } else if (abortSource & SMBUS_IC_TX_ABRT_SOURCE_ABRT_GCALL_NOACK_MASK) {
@@ -1136,7 +1136,7 @@ void smbusHandleMasterSpecificInterrupts(SmbusDrvData_s *pDrvData,
  * @details Detects and configures the TX and RX FIFO sizes by reading
  *          the component parameters. This function is compatible with
  *          I2C initialization and configures FIFO parameters for both
- *          master and slave modes.
+ *          master and target modes.
  * @param[in] dev Pointer to SMBus device structure
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
@@ -1341,7 +1341,7 @@ static void smbusCalcTimingsMaster(SmbusDev_s *dev)
  * @return void
  *
  * @note Compatible with I2C's i2c_dw_configure_master interface
- * @note Sets master mode, disables slave mode, enables restart
+ * @note Sets master mode, disables target mode, enables restart
  * @note Configures speed based on clock rate setting
  * @note Sets addressing mode (7-bit or 10-bit)
  */
@@ -1354,7 +1354,7 @@ static void smbusConfigureMaster(SmbusDev_s *dev)
 
     /* Configure master mode - compatible with I2C DW_IC_CON settings */
     masterCfg |= (1U << SMBUS_IC_CON_MASTER_MODE_EN_BIT);  /* Master mode enable */
-    masterCfg |= (1U << SMBUS_IC_CON_SLAVE_DISABLE_BIT);   /* Slave disable */
+    masterCfg |= (1U << SMBUS_IC_CON_TARGET_DISABLE_BIT);   /* target disable */
     masterCfg |= (1U << SMBUS_IC_CON_RESTART_EN_BIT);      /* Restart enable */
 
     /* Set addressing mode */
@@ -1385,58 +1385,58 @@ static void smbusConfigureMaster(SmbusDev_s *dev)
 }
 
 /**
- * @brief Configure SMBus slave mode
- * @details Configures the SMBus controller for slave mode operation.
- *          This function sets up the slave configuration register with
+ * @brief Configure SMBus target mode
+ * @details Configures the SMBus controller for target mode operation.
+ *          This function sets up the target configuration register with
  *          appropriate control bits and addressing mode.
  * @param[in] dev Pointer to SMBus device structure
  * @return void
  *
- * @note Compatible with I2C's i2c_dw_configure_slave interface
- * @note Enables slave mode, configures FIFO hold control
+ * @note Compatible with I2C's i2c_dw_configure_TARGET interface
+ * @note Enables target mode, configures FIFO hold control
  * @note Sets addressing mode and restart support
  * @note Configures stop detection when addressed
  */
-static void smbusConfigureSlave(SmbusDev_s *dev)
+static void smbusConfigureTarget(SmbusDev_s *dev)
 {
-    U32 slaveCfg = 0;
+    U32 targetCfg = 0;
 
     SMBUS_CHECK_PARAM_VOID(dev == NULL || dev->regBase == NULL,
-                          "SMBus: Invalid device for slave configuration");
+                          "SMBus: Invalid device for target configuration");
 
-    /* Configure slave mode - compatible with smbusProbeSlave settings */
-    slaveCfg &= ~(1U << SMBUS_IC_CON_MASTER_MODE_EN_BIT);  /* Master mode disable */
-    slaveCfg &= ~(1U << SMBUS_IC_CON_SLAVE_DISABLE_BIT);   /* Slave enable */
-    slaveCfg |= (1U << SMBUS_IC_CON_RESTART_EN_BIT);      /* Restart enable for combined transactions */
+    /* Configure target mode - compatible with smbusProbeTarget settings */
+    targetCfg &= ~(1U << SMBUS_IC_CON_MASTER_MODE_EN_BIT);  /* Master mode disable */
+    targetCfg &= ~(1U << SMBUS_IC_CON_TARGET_DISABLE_BIT);   /* target enable */
+    targetCfg |= (1U << SMBUS_IC_CON_RESTART_EN_BIT);      /* Restart enable for combined transactions */
 
     /* Set speed based on clock rate using proper macro definitions */
     if (dev->clkRate >= SMBUS_SPEED_HIGH_THRESHOLD) {
-        slaveCfg |= SMBUS_SPEED_HIGH_CFG;      /* High speed (3.4 MHz) */
+        targetCfg |= SMBUS_SPEED_HIGH_CFG;      /* High speed (3.4 MHz) */
     } else if (dev->clkRate >= SMBUS_SPEED_FAST_PLUS_THRESHOLD) {
-        slaveCfg |= SMBUS_SPEED_FAST_PLUS_CFG; /* Fast Plus speed (1 MHz) */
+        targetCfg |= SMBUS_SPEED_FAST_PLUS_CFG; /* Fast Plus speed (1 MHz) */
     } else if (dev->clkRate >= SMBUS_SPEED_FAST_THRESHOLD) {
-        slaveCfg |= SMBUS_SPEED_FAST_CFG;      /* Fast speed (400 kHz) */
+        targetCfg |= SMBUS_SPEED_FAST_CFG;      /* Fast speed (400 kHz) */
     } else {
-        slaveCfg |= SMBUS_SPEED_STANDARD_CFG;  /* Standard speed (100 kHz) */
+        targetCfg |= SMBUS_SPEED_STANDARD_CFG;  /* Standard speed (100 kHz) */
     }
 
     /* Set address mode */
     if (dev->addrMode == 1) {
-        slaveCfg |= (1U << SMBUS_IC_CON_10BIT_SLAVE_ADDR_BIT);  /* 10-bit slave addressing */
+        targetCfg |= (1U << SMBUS_IC_CON_10BIT_TARGET_ADDR_BIT);  /* 10-bit target addressing */
     }
 
-    /* Configure SMBus features for slave mode */
-    slaveCfg |= (1U << SMBUS_IC_CON_RX_FIFO_HOLD_BIT);         /* RX FIFO full hold control */
-    slaveCfg |= (1U << SMBUS_IC_CON_STOP_DET_IFADDRESSED_BIT); /* STOP detection when addressed */
+    /* Configure SMBus features for target mode */
+    targetCfg |= (1U << SMBUS_IC_CON_RX_FIFO_HOLD_BIT);         /* RX FIFO full hold control */
+    targetCfg |= (1U << SMBUS_IC_CON_STOP_DET_IFADDRESSED_BIT); /* STOP detection when addressed */
 
-    slaveCfg |= (dev->smbFeatures.arpEnb << SMBUS_IC_CON_ARP_ENABLE_BIT);     /* 位18 = 1 (ARP enabled) */
-    slaveCfg |= (dev->smbFeatures.quickCmdEnb << SMBUS_IC_CON_QUICK_CMD_BIT);  /* 位17 = 1 (Quick command enable) */
+    targetCfg |= (dev->smbFeatures.arpEnb << SMBUS_IC_CON_ARP_ENABLE_BIT);     /* 位18 = 1 (ARP enabled) */
+    targetCfg |= (dev->smbFeatures.quickCmdEnb << SMBUS_IC_CON_QUICK_CMD_BIT);  /* 位17 = 1 (Quick command enable) */
     /* Store configuration in device structure */
-    dev->slaveCfg = slaveCfg;
-    dev->mode = SMBUS_MODE_SLAVE;
+    dev->targetCfg = targetCfg;
+    dev->mode = SMBUS_MODE_TARGET;
 
-    LOGD("SMBus: Slave configuration: 0x%08X, address: 0x%02X\n",
-         slaveCfg, dev->slaveAddr);
+    LOGD("SMBus: target configuration: 0x%08X, address: 0x%02X\n",
+         targetCfg, dev->targetAddr);
 }
 
 /**
@@ -1539,29 +1539,29 @@ S32 smbusProbeMaster(SmbusDev_s *dev)
 }
 
 /**
- * @brief SMBus slave probe function compatible with I2C initialization
- * @details Configures SMBus controller in slave mode, calculates timing,
+ * @brief SMBus target probe function compatible with I2C initialization
+ * @details Configures SMBus controller in target mode, calculates timing,
  *          detects FIFO size, and enables interrupts. This function is
  *          compatible with I2C initialization interface and can be called
  *          from SMBus device initialization to enable I2C functionality.
  * @param[in] dev Pointer to SMBus device structure
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
- * @note Compatible with I2C's i2c_dw_probe_slave interface
- * @note Configures slave mode timing and FIFO parameters
- * @note Sets up interrupt handling for slave operations
- * @note Allocates slave buffer memory
+ * @note Compatible with I2C's i2c_dw_probe_TARGET interface
+ * @note Configures target mode timing and FIFO parameters
+ * @note Sets up interrupt handling for target operations
+ * @note Allocates target buffer memory
  * @note Enables controller after configuration
- * @warning This function should only be called in Slave mode
+ * @warning This function should only be called in target mode
  */
-S32 smbusProbeSlave(SmbusDev_s *dev)
+S32 smbusProbeTarget(SmbusDev_s *dev)
 {
     S32 ret;
 
     SMBUS_CHECK_PARAM_RETURN(dev == NULL || dev->regBase == NULL, -EINVAL,
                             "SMBus: Invalid device structure");
 
-    /* Calculate FIFO size for slave operations */
+    /* Calculate FIFO size for target operations */
     ret = smbusCalcFifoSize(dev);
     if (ret != EXIT_SUCCESS) {
         LOGE("SMBus: FIFO size calculation failed: %d\n", ret);
@@ -1570,25 +1570,25 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
     
     volatile SmbusRegMap_s *regBase = (volatile SmbusRegMap_s *)dev->regBase;
 
-    /* Slave 模式初始化 */
-    if (dev->mode == SMBUS_MODE_SLAVE) {
-        LOGD("=== Starting Slave Mode Initialization ===\n");
+    /* target 模式初始化 */
+    if (dev->mode == SMBUS_MODE_TARGET) {
+        LOGD("=== Starting target Mode Initialization ===\n");
 
-        /* 验证 slaveCfg 是否已正确配置 */
-        if (dev->slaveCfg == 0) {
-            LOGW("SMBus: slaveCfg not configured, using default slave settings\n");
-            /* 使用与 smbusConfigureSlave 一致的默认 Slave 模式配置 */
-            dev->slaveCfg = (0U << SMBUS_IC_CON_MASTER_MODE_EN_BIT) |      /* 位0 = 0 (Slave mode) */
+        /* 验证 targetCfg 是否已正确配置 */
+        if (dev->targetCfg == 0) {
+            LOGW("SMBus: targetCfg not configured, using default target settings\n");
+            /* 使用与 smbusConfigureTarget 一致的默认 target 模式配置 */
+            dev->targetCfg = (0U << SMBUS_IC_CON_MASTER_MODE_EN_BIT) |      /* 位0 = 0 (target mode) */
                            (2U << 1) |                                      /* 位1:2 = 10 (Fast mode 400kHz) */
-                           (0U << SMBUS_IC_CON_SLAVE_DISABLE_BIT) |        /* 位6 = 0 (Slave enabled) */
+                           (0U << SMBUS_IC_CON_TARGET_DISABLE_BIT) |        /* 位6 = 0 (target enabled) */
                            (1U << SMBUS_IC_CON_RESTART_EN_BIT) |           /* 位5 = 1 (Restart enable) */
                            (1U << SMBUS_IC_CON_RX_FIFO_HOLD_BIT) |         /* 位9 = 1 (RX FIFO hold control) */
                            (1U << SMBUS_IC_CON_STOP_DET_IFADDRESSED_BIT) | /* 位7 = 1 (STOP detection when addressed) */
                            (dev->smbFeatures.arpEnb << SMBUS_IC_CON_ARP_ENABLE_BIT) |     /* 位18 = 1 (ARP enabled) */
                            (dev->smbFeatures.quickCmdEnb << SMBUS_IC_CON_QUICK_CMD_BIT);  /* 位17 = 1 (Quick command enable) */
-            LOGD("Applied default slave configuration: slaveCfg = 0x%08X\n", dev->slaveCfg);
+            LOGD("Applied default target configuration: targetCfg = 0x%08X\n", dev->targetCfg);
         } else {
-            LOGD("Using pre-configured slaveCfg = 0x%08X\n", dev->slaveCfg);
+            LOGD("Using pre-configured targetCfg = 0x%08X\n", dev->targetCfg);
         }
 
         /* 1. 必须首先禁用设备，才能修改 CON 和 SAR */
@@ -1601,15 +1601,15 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
         if (timeout == 0) LOGW("Warning: Timeout waiting for IC disable\n");
 
         /* 2. 在禁用状态下配置所有寄存器 */
-        regBase->icCon.value = dev->slaveCfg;
-        LOGD("IC_CON configured using pre-configured slaveCfg = 0x%08X\n", regBase->icCon.value);
+        regBase->icCon.value = dev->targetCfg;
+        LOGD("IC_CON configured using pre-configured targetCfg = 0x%08X\n", regBase->icCon.value);
 
         /* 设置从机地址 - 优先使用动态参数，未设置时使用默认值 */
-        if (dev->slaveAddr != 0) {
-            regBase->icSar.fields.icSar = dev->slaveAddr; 
+        if (dev->targetAddr != 0) {
+            regBase->icSar.fields.icSar = dev->targetAddr; 
             LOGI("IC_SAR set to dynamic address: 0x%02X\n", regBase->icSar.fields.icSar);
         } else {
-            regBase->icSar.fields.icSar = SMBUS_SLAVE_DEFAULT_ADDR; 
+            regBase->icSar.fields.icSar = SMBUS_TARGET_DEFAULT_ADDR; 
             LOGD("IC_SAR set to default address: 0x%02X\n", regBase->icSar.fields.icSar);
         }
 
@@ -1620,7 +1620,7 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
 
         /* 配置从机模式中断掩码 - 在使能设备之前配置 */
         /* TX_EMPTY将在WR_REQ处理过程中根据需要动态启用 */
-        U32 intrMask = SMBUS_SLAVE_INIT_INTR_MASK;
+        U32 intrMask = SMBUS_TARGET_INIT_INTR_MASK;
         regBase->icIntrMask.value = intrMask;
         U32 smbusIntrMask = 0;
         if (dev->smbFeatures.arpEnb) {
@@ -1646,27 +1646,27 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
              regBase->icSmbusIntrMask.value = 0;
         }
 
-        LOGE("FINAL OVERRIDE: Slave interrupt mask FORCED to 0x%08X (TX_EMPTY initially disabled)\n",
+        LOGE("FINAL OVERRIDE: target interrupt mask FORCED to 0x%08X (TX_EMPTY initially disabled)\n",
              regBase->icIntrMask.value);
-        LOGD("Slave mode smbus initialized with TX_EMPTY disabled - will be enabled on demand:%08X\n", 
+        LOGD("target mode smbus initialized with TX_EMPTY disabled - will be enabled on demand:%08X\n", 
               regBase->icSmbusIntrMask.value );
     
         if (dev->smbFeatures.arpEnb) regBase->icSmbusIntrMask.value |= SMBUS_ARP_INTR_MASK;
-        LOGD("✓ Slave interrupt mask configured: 0x%08X (WR_REQ|RX_FULL|RD_REQ|TX_ABRT|RX_DONE|STOP_DET)\n",
+        LOGD("✓ target interrupt mask configured: 0x%08X (WR_REQ|RX_FULL|RD_REQ|TX_ABRT|RX_DONE|STOP_DET)\n",
              regBase->icIntrMask.value);
 
         /* 3. 最后：统一使能设备 */
         U32 icEnable = 0;
         icEnable |= SMBUS_IC_ENABLE_MASK;   /* Enable */
-        icEnable |= SMBUS_IC_SAR_ENABLE_MASK;  /* SMBus Slave TX Enable */
+        icEnable |= SMBUS_IC_SAR_ENABLE_MASK;  /* SMBus target TX Enable */
 
         regBase->icEnable.value = icEnable;
-        LOGD("SMBus: Slave probe completed, Device Enabled=0x%x\n", regBase->icEnable.value);
+        LOGD("SMBus: target probe completed, Device Enabled=0x%x\n", regBase->icEnable.value);
 
         /* 验证配置是否成功 */
         udelay(100);  /* 短暂延时确保硬件稳定 */
 
-        LOGD("=== Slave Initialization Verification ===\n");
+        LOGD("=== target Initialization Verification ===\n");
         LOGD("Final IC_CON    = 0x%08X\n", regBase->icCon.value);
         LOGD("Final IC_SAR    = 0x%02X\n", regBase->icSar.fields.icSar);
         LOGD("Final IC_ENABLE = 0x%08X\n", regBase->icEnable.value);
@@ -1675,7 +1675,7 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
         LOGD("Final IC_TX_TL  = %d\n", regBase->icTxTl);
         LOGD("Final IC_RX_TL  = %d\n", regBase->icRxTl);
     } 
-    LOGD("SMBus: Slave probe completed successfully\n");
+    LOGD("SMBus: target probe completed successfully\n");
     return EXIT_SUCCESS;
 }
 
@@ -1711,21 +1711,21 @@ S32 smbusUnprobeMaster(SmbusDev_s *dev)
     return EXIT_SUCCESS;
 }
 /**
- * @brief SMBus slave unprobe function for cleanup
+ * @brief SMBus target unprobe function for cleanup
  * @details Disables SMBus controller, clears configuration, and removes
- *          interrupt handlers for slave mode. This function performs
- *          cleanup operations when shutting down slave mode.
+ *          interrupt handlers for target mode. This function performs
+ *          cleanup operations when shutting down target mode.
  * @param[in] dev Pointer to SMBus device structure
  * @return EXIT_SUCCESS on success, negative error code on failure
  *
- * @note Compatible with I2C's i2c_dw_unprobe_slave interface
- * @note Disables controller and clears slave configuration
- * @note Removes interrupt handlers and frees slave buffers
- * @note Performs graceful shutdown of slave operations
- * @warning This function should only be called in Slave mode
+ * @note Compatible with I2C's i2c_dw_unprobe_TARGET interface
+ * @note Disables controller and clears target configuration
+ * @note Removes interrupt handlers and frees target buffers
+ * @note Performs graceful shutdown of target operations
+ * @warning This function should only be called in target mode
 
  */
-S32 smbusUnprobeSlave(SmbusDev_s *dev)
+S32 smbusUnprobetarget(SmbusDev_s *dev)
 {
     SMBUS_CHECK_PARAM_RETURN(dev == NULL || dev->regBase == NULL, -EINVAL,
                             "SMBus: Invalid device structure");
@@ -1733,11 +1733,11 @@ S32 smbusUnprobeSlave(SmbusDev_s *dev)
     /* Disable controller */
     smbusDisable(dev);
 
-    /* Clear slave configuration */
-    dev->slaveCfg = 0;
-    /* Note: Slave buffer deallocation is handled in smbusDeInit function */
+    /* Clear target configuration */
+    dev->targetCfg = 0;
+    /* Note: target buffer deallocation is handled in smbusDeInit function */
 
-    LOGD("SMBus: Slave unprobe completed successfully\n");
+    LOGD("SMBus: target unprobe completed successfully\n");
     return EXIT_SUCCESS;
 }
 
@@ -1806,12 +1806,12 @@ static S32 smbusCalculateTimingAndDisable(SmbusDev_s *dev, U32 *ti2cPoll, U32 *m
 }
 
 /**
- * @brief SMBus Master/Slave mode switch core function
- * @details Implements the core LOGEc for switching between Master and Slave modes
+ * @brief SMBus Master/target mode switch core function
+ * @details Implements the core LOGEc for switching between Master and target modes
  *          at the HAL layer. This function handles the hardware reconfiguration
  *          required to safely switch between operational modes.
  * @param[in] dev Pointer to SMBus device structure
- * @param[in] targetMode Target mode to switch to (SMBUS_MODE_MASTER or SMBUS_MODE_SLAVE)
+ * @param[in] targetMode Target mode to switch to (SMBUS_MODE_MASTER or SMBUS_MODE_TARGET)
  * @return EXIT_SUCCESS on successful mode switch, negative error code on failure:
  *         -EINVAL: Invalid parameters (NULL dev or invalid target mode)
  *         -EBUSY: Bus is busy and cannot be switched
@@ -1820,9 +1820,9 @@ static S32 smbusCalculateTimingAndDisable(SmbusDev_s *dev, U32 *ti2cPoll, U32 *m
  *
  * @note Disables controller before reconfiguration
  * @note Waits for bus to be idle before mode switch
- * @note Configures controller for target mode (master or slave)
+ * @note Configures controller for target mode (master or target)
  * @note Re-enables controller after successful reconfiguration
- * @note Handles both master-to-slave and slave-to-master transitions
+ * @note Handles both master-to-target and target-to-master transitions
  * @warning This function should be called with proper device locking
  * @warning Controller is temporarily disabled during mode switch
  * @warning All ongoing transfers will be aborted during mode switch
@@ -1835,20 +1835,20 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
     SMBUS_CHECK_PARAM(dev == NULL || dev->regBase == NULL, -EINVAL,
                     "SMBus: Invalid device structure for mode switch");
 
-    SMBUS_CHECK_PARAM(targetMode != DW_SMBUS_MODE_MASTER && targetMode != DW_SMBUS_MODE_SLAVE,
+    SMBUS_CHECK_PARAM(targetMode != DW_SMBUS_MODE_MASTER && targetMode != DW_SMBUS_MODE_TARGET,
                       -EINVAL, "SMBus: Invalid target mode %d for mode switch", targetMode);
 
     /* Check if already in target mode */
     if (dev->mode == targetMode) {
         LOGD("SMBus: Already in %s mode, no switch needed\n",
-             targetMode == DW_SMBUS_MODE_MASTER ? "master" : "slave");
+             targetMode == DW_SMBUS_MODE_MASTER ? "master" : "target");
         ret = EXIT_SUCCESS;
         goto exit;
     }
 
     LOGD("SMBus: Switching from %s to %s mode\n",
-         dev->mode == DW_SMBUS_MODE_MASTER ? "master" : "slave",
-         targetMode == DW_SMBUS_MODE_MASTER ? "master" : "slave");
+         dev->mode == DW_SMBUS_MODE_MASTER ? "master" : "target",
+         targetMode == DW_SMBUS_MODE_MASTER ? "master" : "target");
 
     /* Step 1: Wait for bus to be idle before disable */
     ret = smbusWaitBusNotBusy(dev);
@@ -1884,37 +1884,37 @@ static S32 smbusModeSwitchCore(SmbusDev_s *dev, SmbusMode_e targetMode)
         dev->regBase->icIntrMask.value = masterMask;
         LOGD("SMBus: Set Master mode interrupt mask=0x%08X\n", dev->regBase->icIntrMask.value);
     } else {
-        /* Switch to slave mode */
-        smbusConfigureSlave(dev);
+        /* Switch to target mode */
+        smbusConfigureTarget(dev);
 
-        /* Apply slave configuration to hardware */
-        dev->regBase->icCon.value = dev->slaveCfg;
+        /* Apply target configuration to hardware */
+        dev->regBase->icCon.value = dev->targetCfg;
 
-        /* Set slave address for slave mode 
-         * Set Slave Address DIRECTLY (Do not use helper that enables HW) 
+        /* Set target address for target mode 
+         * Set target Address DIRECTLY (Do not use helper that enables HW) 
          */
         SmbusIcSarReg_u sar;
         sar.value = dev->regBase->icSar.value;
-        sar.fields.icSar = dev->slaveAddr;
+        sar.fields.icSar = dev->targetAddr;
         dev->regBase->icSar.value = sar.value;
         
-        LOGD("SMBus: Configured for slave mode, cfg=0x%08X, addr=0x%02X\n",
-             dev->slaveCfg, dev->slaveAddr);
-        /* Slave mode: Enable only interrupts needed for slave operations */
-        dev->regBase->icIntrMask.value = SMBUS_SLAVE_INTR_MASK;
+        LOGD("SMBus: Configured for target mode, cfg=0x%08X, addr=0x%02X\n",
+             dev->targetCfg, dev->targetAddr);
+        /* target mode: Enable only interrupts needed for target operations */
+        dev->regBase->icIntrMask.value = SMBUS_TARGET_INTR_MASK;
 
-        LOGE("✓ Slave mode interrupt mask set: 0x%08X (expected: 0x2F4)\n", dev->regBase->icIntrMask.value);
+        LOGE("✓ target mode interrupt mask set: 0x%08X (expected: 0x2F4)\n", dev->regBase->icIntrMask.value);
 
         /* Verify the write was successful */
         U32 readBack = dev->regBase->icIntrMask.value;
-        if (readBack != SMBUS_SLAVE_INTR_MASK) {
-            LOGE("✗ Slave interrupt mask write failed! Expected: 0x%08X, Read: 0x%08X\n", SMBUS_SLAVE_INTR_MASK, readBack);
+        if (readBack != SMBUS_TARGET_INTR_MASK) {
+            LOGE("✗ target interrupt mask write failed! Expected: 0x%08X, Read: 0x%08X\n", SMBUS_TARGET_INTR_MASK, readBack);
         }
     }
     /* Step 8: Re-enable controller */
     smbusEnable(dev);
     LOGE("SMBus: Successfully switched to %s mode\n",
-         targetMode == DW_SMBUS_MODE_MASTER ? "master" : "slave");
+         targetMode == DW_SMBUS_MODE_MASTER ? "master" : "target");
 
 exit:
     return ret;
@@ -2187,68 +2187,68 @@ S32 smbusI2cTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num)
                             "SMBus: Invalid parameters for I2C transfer");
 
     /* ============================================================
-     * BRANCH: SLAVE MODE HANDLING
+     * BRANCH: target MODE HANDLING
      * 从机模式：仅仅是操作内存缓冲区 (Producer/Consumer 模型)
      * 不需要操作硬件寄存器发起传输，也不需要等待总线空闲
      * ============================================================*/
-    if (dev->mode == SMBUS_MODE_SLAVE) {
+    if (dev->mode == SMBUS_MODE_TARGET) {
         S32 i;
-        LOGD("SMBus: Processing SLAVE transfer request (%d msgs)\n", num);
+        LOGD("SMBus: Processing target transfer request (%d msgs)\n", num);
 
         for (i = 0; i < num; i++) {
             SmbusMsg_s *msg = &msgs[i];
 
             /* Parameter Check for Buffer */
             SMBUS_CHECK_PARAM_RETURN(msg->len == 0 || msg->buf == NULL, -EINVAL,
-                            "SMBus: Slave msg[%d] invalid len/buf", i);
+                            "SMBus: target msg[%d] invalid len/buf", i);
 
             if (msg->flags & SMBUS_M_RD) {
-                /* * [SLAVE READ] = 用户取走 ISR 接收到的数据
+                /* * [target READ] = 用户取走 ISR 接收到的数据
                  * 逻辑：Copy RX Buffer -> User Buffer -> Clear RX Buffer
                  */
-                if (dev->slaveValidRxLen > 0) {
-                    U32 copyLen = (msg->len < dev->slaveValidRxLen) ? msg->len : dev->slaveValidRxLen;
+                if (dev->targetValidRxLen > 0) {
+                    U32 copyLen = (msg->len < dev->targetValidRxLen) ? msg->len : dev->targetValidRxLen;
                     
-                    if (dev->slaveRxBuf != NULL) {
-                        memcpy(msg->buf, dev->slaveRxBuf, copyLen);
+                    if (dev->targetRxBuf != NULL) {
+                        memcpy(msg->buf, dev->targetRxBuf, copyLen);
                         
                         /* 清除接收缓冲区状态 */
-                        memset(dev->slaveRxBuf, 0, dev->slaveValidRxLen);
-                        dev->slaveValidRxLen = 0;
+                        memset(dev->targetRxBuf, 0, dev->targetValidRxLen);
+                        dev->targetValidRxLen = 0;
                         /* 这里可以记录实际读取长度，但标准 I2C Msg 结构通常不回填 len */
                     }
                 } else {
                     /* 无数据可用 */
-                    /* 在 Slave Read 中，无数据通常不算错误，而是返回 0 长度 */
+                    /* 在 target Read 中，无数据通常不算错误，而是返回 0 长度 */
                     /* 为了让调用者知道没读到数据，可以将 buffer 清零 */
                     memset(msg->buf, 0, msg->len);
                 }
 
             } else {
-                /* * [SLAVE WRITE] = 用户准备数据给 ISR 发送
+                /* * [target WRITE] = 用户准备数据给 ISR 发送
                  * 逻辑：User Buffer -> TX Buffer -> Set TX Valid Length
                  */
-                if (dev->slaveTxBuf != NULL) {
+                if (dev->targetTxBuf != NULL) {
                     /* 先标记数据无效，防止拷贝过程中被 ISR 误读 */
-                    dev->slaveValidTxLen = 0;
+                    dev->targetValidTxLen = 0;
                     
                     /* 限制拷贝长度不超过硬件/缓冲区最大限制 */
                     U32 writeLen = (msg->len > SMBUS_MAX_BLOCK_LEN) ? SMBUS_MAX_BLOCK_LEN : msg->len;
                     
-                    memset(dev->slaveTxBuf, 0, SMBUS_MAX_BLOCK_LEN);
-                    memcpy(dev->slaveTxBuf, msg->buf, writeLen);
+                    memset(dev->targetTxBuf, 0, SMBUS_MAX_BLOCK_LEN);
+                    memcpy(dev->targetTxBuf, msg->buf, writeLen);
                     
                     /* 提交数据：ISR 现在可以看到有效长度了 */
-                    dev->slaveValidTxLen = writeLen;
+                    dev->targetValidTxLen = writeLen;
                 } else {
-                    LOGE("SMBus: Slave TX buffer is NULL\n");
+                    LOGE("SMBus: target TX buffer is NULL\n");
                     return -EINVAL;
                 }
             }
 
         }
         
-        /* Slave 模式下，直接返回处理的消息数，表示成功 */
+        /* target 模式下，直接返回处理的消息数，表示成功 */
         return num;
     }
     /* 3. Wait for Bus Idle */
@@ -2306,7 +2306,7 @@ SmbusHalOps_s* smbusGetHalOps(void)
         .i2cTransfer = smbusI2cTransfer,
         .smbusDwRead = smbusDwRead,
         .smbusDwXferMsg = smbusDwXferMsg,
-        .configureSlave = smbusConfigureSlave,
+        .configureTarget = smbusConfigureTarget,
     };
     return &halOps;
 }

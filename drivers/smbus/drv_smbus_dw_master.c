@@ -190,7 +190,7 @@ static U8 deserializeUdid(const U8 *buf, SmbusUdid_s *udid)
     U8 addrByte = buf[16];
 
     /* 检查 "Address Valid" 位 */
-    if (UNLIKELY((addrByte & SMBUS_ADDR_VALID_BIT_MASK) == SMBUS_SLAVE_DISABLED)) {
+    if (UNLIKELY((addrByte & SMBUS_ADDR_VALID_BIT_MASK) == SMBUS_TARGET_DISABLED)) {
         LOGW("[ARP] UDID Address Valid Bit is 0! (Raw: 0x%02X)\n", addrByte);
         /* 虽然无效，但通常还是会解析出地址备查 */
     }
