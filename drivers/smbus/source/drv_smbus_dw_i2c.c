@@ -36,7 +36,6 @@ static S32 smbusDwXferPoll(SmbusDev_s *dev, SmbusMsg_s *msgs, U32 num);
 static S32 smbusWaitBusNotBusy(SmbusDev_s *dev);
 static bool smbusIsControllerActive(SmbusDev_s *dev);
 static S32 smbusHandleTxAbort(SmbusDev_s *dev);
-static S32 smbusHandleQuickCommand(SmbusDev_s *dev, SmbusMsg_s *msg);
 /**
  * @brief Check if TX FIFO is ready (not full)
  */
@@ -496,7 +495,7 @@ static U32 smbusDwXfer(SmbusDev_s *dev, void *mg, U32 num)
         ret = smbusHandleTxAbort(dev);
         ///< Log enhanced error information with device context
         LOGE("SMBus: Transfer failed - Device context:\n");
-        LOGE("  - Slave address: 0x%02X\n", dev->slaveAddr);
+        LOGE("  - Slave address: 0x%02X\n", dev->regBase->icSar.fields.icSar);
         LOGE("  - Error type: %d (%s)\n", dev->errorType,
              (dev->errorType == SMBUS_ERR_TYPE_NACK_7BIT) ? "NACK_7BIT" :
              (dev->errorType == SMBUS_ERR_TYPE_NACK_10BIT) ? "NACK_10BIT" :
@@ -1608,11 +1607,7 @@ S32 smbusProbeSlave(SmbusDev_s *dev)
         /* 设置从机地址 - 优先使用动态参数，未设置时使用默认值 */
         if (dev->slaveAddr != 0) {
             regBase->icSar.fields.icSar = dev->slaveAddr; 
-            LOGD("IC_SAR set to dynamic address: 0x%02X\n", regBase->icSar.fields.icSar);
-            if (dev->smbFeatures.arpEnb) {
-                /* 使用默认地址 */ 
-                regBase->icSar.fields.icSar = SMBUS_SLAVE_DEFAULT_ADDR; 
-            }
+            LOGI("IC_SAR set to dynamic address: 0x%02X\n", regBase->icSar.fields.icSar);
         } else {
             regBase->icSar.fields.icSar = SMBUS_SLAVE_DEFAULT_ADDR; 
             LOGD("IC_SAR set to default address: 0x%02X\n", regBase->icSar.fields.icSar);
@@ -2265,7 +2260,7 @@ S32 smbusI2cTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num)
     /* ============================================================
      * 4. Quick Command handling
      * ============================================================*/
-    if ((num == 1 && msgs[0].len == 0 && dev->smbFeatures.quickCmdEnb)) {
+    if ((num == 1 && msgs[0].len == 0 && msgs[0].flags & SMBUS_FLAG_QUICK_CMD)) {
         LOGI("SMBus: Quick Command detected during xfer init\n");
 
         ret = smbusHandleQuickCommand(dev, &msgs[0]);

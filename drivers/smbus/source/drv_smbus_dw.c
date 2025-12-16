@@ -1076,9 +1076,8 @@ static void smbusIsr(void *arg)
     SmbusIntrStatReg_u smbusIntrStat;
     U32 intrStat, enabled;
 
-    if (!pDrvData || !pDrvData->sbrCfg.regAddr) {
-        return;
-    }
+    SMBUS_CHECK_PARAM_VOID((!pDrvData || !pDrvData->sbrCfg.regAddr),
+                           "SMBus ISR: Invalid driver data or register address\n");
 
     regBase = (SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
 
@@ -1093,10 +1092,9 @@ static void smbusIsr(void *arg)
     smbusIntrStat.value = regBase->icSmbusIntrStat.value;
 
     /* Validate interrupt source - FIXED: Use raw interrupt for validation */
-    if (!enabled || (rawIntr == 0) || (rawIntr == 0xFFFFFFFF)) {
-        LOGD("SMBus ISR: enabled=0x%08X rawIntr=0x%08X intrStat=0x%08X\n", enabled, rawIntr, intrStat);
-        return;
-    }
+    SMBUS_CHECK_PARAM_VOID((!enabled || (rawIntr == 0) || (rawIntr == 0xFFFFFFFF)),
+                           "SMBus ISR: enabled=0x%08X rawIntr=0x%08X intrStat=0x%08X\n",
+                           enabled, rawIntr, intrStat);
     LOGD("SMBus IRQ: mode=%s, rawIntr=0x%08X, intrStat=0x%08X, smbus=0x%08X\n",
          (pDrvData->pSmbusDev.mode == DW_SMBUS_MODE_MASTER) ? "MASTER" : "SLAVE",
          rawIntr, intrStat, smbusIntrStat.value);
@@ -1318,12 +1316,13 @@ S32 smbusDeInit(DevList_e devId)
     ospInterruptVectorDisable(pDrvData->sbrCfg.irqNo);
 
     /* Remove interrupt handler */
-    S32 irqRet = ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo, smbusIsr, pDrvData);
-    if (irqRet == OSP_SUCCESSFUL) {
-        LOGD("%s: Interrupt handler removed successfully: %d\n", __func__, pDrvData->sbrCfg.irqNo);
-    } else {
-        LOGW("%s: Interrupt handler removal failed, ret=%d\n", __func__, irqRet);
+    ret = ospInterruptHandlerRemove(pDrvData->sbrCfg.irqNo, smbusIsr, pDrvData);
+    if (ret != OSP_SUCCESSFUL) {
+        LOGW("%s: Interrupt handler removal failed, ret=%d\n", __func__, ret);
+        /* Continue with deinitialization even if interrupt removal fails */
+        ret = EXIT_SUCCESS;  /* Reset to success since we continue */
     }
+
     /* Disable SMBus controller */
     if (pDrvData->pSmbusDev.regBase != NULL) {
         /* Get HAL operations */
@@ -1331,15 +1330,49 @@ S32 smbusDeInit(DevList_e devId)
             dev->halOps->disable(dev);
         }
     }
+
+    /* Reset SMBus peripheral */
+    ret = peripsReset(devId);
+    if (ret != EXIT_SUCCESS && ret != -ENXIO) {
+        LOGE("%s: Peripheral reset failed, ret=%d\n", __func__, ret);
+        ret = -EIO;
+        goto cleanup;  /* Use goto for consistent error handling */
+    }
+
+    /* Disable SMBus peripheral clock */
+    ret = peripsClockDisable(devId);
+    if (ret != EXIT_SUCCESS && ret != -ENXIO) {
+        LOGE("%s: Clock disable failed, ret=%d\n", __func__, ret);
+        ret = -EIO;
+        goto cleanup;
+    }
+
     /* Free driver data using centralized cleanup function */
     smbusFreeDriverData(pDrvData);
+
     /* Unregister driver data */
-    drvUninstall(devId);
+    ret = drvUninstall(devId);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: Driver uninstall failed, ret=%d\n", __func__, ret);
+        goto unlock;
+    }
 
     LOGI("SMBus device %d deinitialized successfully\n", devId);
+    ret = EXIT_SUCCESS;
 
+unlock:
     funcRunEndHelper(devId);
     return ret;
+
+cleanup:
+    /* Ensure driver data is freed even if reset/clock fails */
+    smbusFreeDriverData(pDrvData);
+    /* Try to uninstall driver even if reset/clock failed */
+    S32 uninstallRet = drvUninstall(devId);
+    if (uninstallRet != EXIT_SUCCESS) {
+        LOGE("%s: Driver uninstall failed during cleanup, ret=%d\n", __func__, uninstallRet);
+    }
+    goto unlock;
 }
 
 /**
@@ -1564,7 +1597,7 @@ exit:
     }
     return ret;
 }
-static S32 smbusValidateXfer(const SmbusXfer_s *xfer)
+static inline S32 smbusValidateXfer(const SmbusXfer_s *xfer)
 {
     if (xfer == NULL) {
         LOGE("SMBus: xfer is NULL\n");
@@ -1721,16 +1754,13 @@ S32 smbusTransfer(DevList_e devId, SmbusXfer_s *xfer)
     ret = funcRunBeginHelper(devId, DRV_ID_DW_I2C, (void**)&pDrvData);
     if (ret != EXIT_SUCCESS) return ret;
 
-    if (getDevDriver(devId, (void **)&pDrvData) != EXIT_SUCCESS || !pDrvData) {
-        ret = -EINVAL;
-        goto unlock;
-    }
     pDev = &pDrvData->pSmbusDev;
 
     /* 2. Context Setup */
     U8 txStackBuf[SMBUS_STACK_BUF_SIZE] = {0};
     U8 rxStackBuf[SMBUS_STACK_BUF_SIZE] = {0};
     U16 txPos = 0;
+    bool noCmd   = (xfer->flags & SMBUS_FLAG_NO_COMMAND) != 0;
     
     /* 3. Prepare TX Data */
     smbusPrepareTxBuffer(xfer, txStackBuf, &txPos);
@@ -1741,9 +1771,10 @@ S32 smbusTransfer(DevList_e devId, SmbusXfer_s *xfer)
     U8 slaveAddr = xfer->addr & SMBUS_ADDRESS_MASK;
 
     /* Msg 0: Write */
-    if (txPos > 0 || ((xfer->flags & SMBUS_FLAG_NO_COMMAND) && xfer->rLen == 0)) {
+    if (txPos > 0 || (noCmd && xfer->rLen == 0)) {
         msgs[msgCount].addr  = slaveAddr;
         msgs[msgCount].flags = (xfer->flags & SMBUS_FLAG_READ) ? SMBUS_M_RD : 0; 
+        if (noCmd) msgs[msgCount].flags |= SMBUS_FLAG_QUICK_CMD;
         msgs[msgCount].len   = txPos;
         msgs[msgCount].buf   = txStackBuf;
         msgCount++;
