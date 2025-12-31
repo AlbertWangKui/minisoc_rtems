@@ -11,7 +11,7 @@
 #define __BSP_DEVICE_H__
 
 typedef enum DevList {
-    DEVICE_PVT = 0,
+    DEVICE_PVT = 19,
     DEVICE_PVT_CH0,
     DEVICE_IOMUX,
     DEVICE_GPIO0,

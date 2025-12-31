@@ -2,7 +2,7 @@
 import os
 
 def build(bld):
-    if bld.is_defined('CONFIG_USING_DSHELL'):
+    if bld.is_defined('CONFIG_ENABLE_DSHELL'):
         # Find all .c files in current directory, EXCLUDING drv_symbols.c
         dshell_sources = []
         dshell_dir = bld.path.abspath()
@@ -10,6 +10,6 @@ def build(bld):
             if f.endswith('.c') and f != 'drv_symbols.c':  # Exclude drv_symbols.c - it will be generated later
                 rel_path = 'components/dshell/' + f
                 dshell_sources.append(rel_path)
-        
+
         if dshell_sources:
             bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + dshell_sources

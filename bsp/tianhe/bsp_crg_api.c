@@ -28,6 +28,7 @@
 #define PERIPS_CLK_FREQ_HZ (250000000)
 #define QSPI_CLK_FREQ_HZ (750000000)
 #define DMA_CLK_FREQ_HZ (750000000)
+#define SGPIO_CLK_FREQ_HZ (200000000)
 
 #define PERIPS_CLK_ENABLE_UNSUPPORT (0)
 
@@ -113,6 +114,11 @@ S32 peripsClockFreqGet(DevList_e devID, U32 *Hz)
     ///< 如果当前系统没有切到高频，返会参考时钟，参考时钟有2路，一路是晶振25M，一路是差分100M;
     if (!isSystemClkPll()) {
         *Hz = SYS_XTAL_CLK_FREQ / 2;
+#ifdef CONFIG_PLATFORM_FPGA
+        if ((devID == DEVICE_SGPIO0) || (devID == DEVICE_SGPIO1) || (devID == DEVICE_SGPIO2) || (devID == DEVICE_SGPIO3)) {
+            *Hz = SYS_XTAL_CLK_FREQ / 4;
+        }
+#endif
         goto exit;
     }
 
@@ -158,9 +164,15 @@ S32 peripsClockFreqGet(DevList_e devID, U32 *Hz)
     case DEVICE_QSPI0:
         *Hz = QSPI_CLK_FREQ_HZ;
         break;
+    case DEVICE_SGPIO0:
+    case DEVICE_SGPIO1:
+    case DEVICE_SGPIO2:
+    case DEVICE_SGPIO3:
+        *Hz = SGPIO_CLK_FREQ_HZ;
+        break;
     ///< TODD  业务模块
     default:
-        ret = -EXIT_FAILURE;
+        ret = -ENXIO;
         break;
     }
 

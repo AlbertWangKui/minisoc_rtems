@@ -4,24 +4,28 @@ menu "Components"
 source "components/misc/Kconfig"
 
 menu "CLI"
-config USING_CLI
-    bool "USING cli"
+config ENABLE_CLI
+    bool "Enable CLI"
     default y
     help
-      Select this to use cli
+      Enable CLI (Command Line Interface) support
 
   choice
-      prompt "shell select"
-      depends on USING_CLI
-      default USING_DSHELL
-      config USING_DSHELL
-          bool "USING DSHELL"
-      config USING_CLI_CORE
-          bool "USING CLI_CORE"
+      prompt "Shell implementation"
+      depends on ENABLE_CLI
+      default ENABLE_DSHELL
+      config ENABLE_DSHELL
+          bool "Enable DSHELL"
+          help
+            Enable DSHELL shell implementation
+      config ENABLE_CLI_CORE
+          bool "Enable CLI Core"
+          help
+            Enable CLI Core shell implementation
   endchoice
 
   config MAX_USHELL_CMD_NUM
-    depends on USING_DSHELL
+    depends on ENABLE_DSHELL
     int "Max ushell cmd num"
     default 1024
     help

@@ -57,7 +57,9 @@ typedef long                Long;
 #define reg64Write(addr,data)       *(volatile U64*)(addr) = (data)
 
 //< 计算数组元素的个数
+#ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
+#endif
 
 //< 基于基础宏效率考虑，宏参数的有效性不检查，使用者保证, 否则可能影响这种基础宏的效率
 //< 位域操作宏: 对数据(值)

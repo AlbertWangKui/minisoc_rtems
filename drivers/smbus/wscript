@@ -3,8 +3,8 @@
 def build(bld):
     if bld.is_defined('CONFIG_DRIVER_SMBUS'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
-            'drivers/smbus/source/drv_smbus_dw.c',
-            'drivers/smbus/source/drv_smbus_dw_i2c.c',
-            'drivers/smbus/source/drv_smbus_dw_master.c',
-            'drivers/smbus/source/drv_smbus_dw_slaver.c'
+            'drivers/smbus/drv_smbus_dw.c',
+            'drivers/smbus/drv_smbus_dw_i2c.c',
+            'drivers/smbus/drv_smbus_dw_master.c',
+            'drivers/smbus/drv_smbus_dw_target.c'
         ]

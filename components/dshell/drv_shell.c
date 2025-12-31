@@ -36,6 +36,14 @@ static uintptr_t	 g_argv;
 static OSHLL_EXEC_CMD 		outer_shell_exec_cmd;
 static DSHLL_EXEC_CMD 		dshell_exec_cmd = drv_shell_execute_cmd;
 
+static CmdEntry_s gCmdTable[MAX_CMDS];
+static S32 cmdCnt = 0;
+rtems_recursive_mutex gLockAt;
+const char dshell_name[] = "dshell";
+static char *gAutoInfo;
+static char  gAutoInfoArr[AUTO_INFO_SESSION_SIZE];
+typedef void (*FuncPtr)(S32, char **argv);
+
 void drv_shell_reg_outer_exec_cmd(OSHLL_EXEC_CMD shll_exec_cmd)
 {
 	if (shll_exec_cmd == NULL) {
@@ -971,33 +979,32 @@ void driver_shell_exit(void)
 
 int driver_shell_init(bool dshell_task)
 {
-	OspStatusCode_e status;
-	OspID			tid;
+    OspStatusCode_e status;
+    OspID			tid;
+    if (!dshell_task) {
+        driver_shell_run(0);
+        return 0;
+    }
+    status = ospTaskCreate(ospBuildName('D', 'S', 'H', 'L'),
+        USER_TASK_PRIORITY_HIGHEST,   /* USER_TASK_PRIORITY_NORMAL, */
+        RTEMS_MINIMUM_STACK_SIZE * 4, /* like rtems_shell_init */
+        RTEMS_PREEMPT | RTEMS_TIMESLICE | RTEMS_NO_ASR,
+        OSP_LOCAL | OSP_FLOATING_POINT, &tid);
+    if (status != OSP_SUCCESSFUL) {
+        printf("ospTaskCreate fail, error code %d\n", status);
+        return status;
+    }
 
-	if (!dshell_task) {
-		driver_shell_run(0);
-		return 0;
-	}
+    rtems_recursive_mutex_init(&gLockAt, dshell_name);
 
-	status = ospTaskCreate(ospBuildName('D', 'S', 'H', 'L'),
-			       USER_TASK_PRIORITY_HIGHEST,   /* USER_TASK_PRIORITY_NORMAL, */
-			       RTEMS_MINIMUM_STACK_SIZE * 4, /* like rtems_shell_init */
-			       RTEMS_PREEMPT | RTEMS_TIMESLICE | RTEMS_NO_ASR,
-			       OSP_LOCAL | OSP_FLOATING_POINT, &tid);
-	if (status != OSP_SUCCESSFUL) {
-		printf("ospTaskCreate fail, error code %d\n", status);
-		return status;
-	}
-
-	/* start Task */
-	status = ospTaskStart(tid, driver_shell_run, 0);
-	if (status != OSP_SUCCESSFUL) {
-		printf("ospTaskStart fail, error code %d\n", status);
-		ospTaskDelete(tid);
-		return status;
-	}
-
-	return 0;
+    /* start Task */
+    status = ospTaskStart(tid, driver_shell_run, 0);
+    if (status != OSP_SUCCESSFUL) {
+        printf("ospTaskStart fail, error code %d\n", status);
+        ospTaskDelete(tid);
+        return status;
+    }
+    return 0;
 }
 
 int history(void)
@@ -1022,15 +1029,6 @@ int history(void)
 	return 0;
 }
 
-static CmdEntry_s gCmdTable[MAX_CMDS];
-static S32 cmdCnt = 0;
-
-OspMutex_t   gLockAt;
-static char *gAutoInfo;
-static char  gAutoInfoArr[AUTO_INFO_SESSION_SIZE];
-
-typedef void (*FuncPtr)(S32, char **argv);
-
 void r5ToolEntry(S32 argc, char **argv)
 {
     S32 flag = 0;
@@ -1053,7 +1051,8 @@ void r5ToolEntry(S32 argc, char **argv)
         }
         sprintf(gAutoInfo,"AT+%s+%s+%s+%s+%s+%s+%s+data:", argv[1],
                 argv[3], argv[4], argv[5], argv[6], argv[7], argv[9]);
-        ospMutexLock(&gLockAt);
+        ///< ospMutexLock(&gLockAt);
+        ospRecursiveMutexLock(&gLockAt);
         printf("%s", gAutoInfo);
 
         for (S32 i = 0; i < sizeof(gCmdTable) / sizeof(gCmdTable[0]); i++) {
@@ -1075,7 +1074,8 @@ void r5ToolEntry(S32 argc, char **argv)
 
         printf("+@@\n");
         memset(gAutoInfo, 0, AUTO_INFO_SESSION_SIZE);
-        ospMutexUnlock(&gLockAt);
+        ///< ospMutexUnlock(&gLockAt);
+        ospRecursiveMutexUnlock(&gLockAt);
     } else if (strcmp(argv[2], "call") == 0) {
         for (S32 i = 0; i < sizeof(gCmdTable) / sizeof(gCmdTable[0]); i++) {
             if (!gCmdTable[i].cmdName) {

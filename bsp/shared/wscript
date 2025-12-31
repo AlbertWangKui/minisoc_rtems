@@ -19,7 +19,7 @@ def build(bld):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
                 'bsp/shared/bsp_r5_op.c',
             ]
-    
+
     # Build OSP if enabled
-    if bld.is_defined('CONFIG_USING_OSP'):
+    if bld.is_defined('CONFIG_ENABLE_OSP'):
         bld.recurse('osp')

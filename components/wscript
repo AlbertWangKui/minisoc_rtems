@@ -3,9 +3,9 @@
 def build(bld):
     # Build all component subdirectories
     component_dirs = [
-        'nmea', 'core_json', 'log', 'misc', 
+        'core_json', 'log', 'misc',
         'cli_core', 'flash_partition', 'sbr', 'dshell',
     ]
-    
+
     for component_dir in component_dirs:
         bld.recurse(component_dir)

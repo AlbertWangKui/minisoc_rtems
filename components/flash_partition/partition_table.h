@@ -15,12 +15,15 @@
 #define MAX_PT_BUF_SIZE    128
 #undef PT_HEADER_CHECK
 
+#define SYS_SBR_REGION_REG_ADDR     (0xBE1004DC)
 #define PT_TABLE_HEADER_MAGIC       (0x327f68ac)
 #define PT_PRIMARY_HEADER_OFFSET    (0x10000)
 #define PT_SECONDARY_HEADER_OFFSET  (0x14000)
 #define MAX_REGION_COUNT            (509)     /* 要求header+regionDesc不能超过16K bytes: (16384-64)/32=509 */
 #define PARTITION_TABLE_HEADER_LEN  (sizeof(PtTableHeader_s))
 #define REGION_DESC_LEN             (sizeof(PtRegionDesc_s))
+#define REG_VALUE_SBR_REGION_A      (0x0)
+#define REG_VALUE_SBR_REGION_B      (0x1)
 
 typedef enum {
     REGION_ID_BOOTLOADER_A = 1,          /* bootloader分区A*/
@@ -31,7 +34,7 @@ typedef enum {
     REGION_ID_OPTIONROM_B,               /* optionrom分区B*/
     REGION_ID_FIRMWARE_A,                /* firmware分区A*/
     REGION_ID_FIRMWARE_B,                /* firmware分区B*/
-    REGION_ID_SBR_A,                     /* SBR分区A*/
+    REGION_ID_SBR_A = 25,                     /* SBR分区A*/
     REGION_ID_SBR_B,                     /* SBR分区B*/
     REGION_ID_DEFAULT_USER_SETTINGS_A,   /* default user settings分区A*/
     REGION_ID_DEFAULT_USER_SETTINGS_B,   /* default user settings分区B*/
@@ -80,5 +83,7 @@ U32 regionDataGet(U32 type, U32 regionId, U32 offset, U8 *pData, U32 size);
 #ifdef CONFIG_PARTITION_TABLE_DUMP
 S32 dumpRegionInfo(U32 type);
 #endif
+
+RegionID_e getSbrRegionId(void);
 
 #endif /* __PARTITION_TABLE_H__ */

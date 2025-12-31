@@ -26,9 +26,9 @@ static void minisoc_task_init(void)
         LOGE("%s():init soc failed\r\n", __func__);
     }
 
-#ifdef CONFIG_USING_DSHELL
+#ifdef CONFIG_ENABLE_DSHELL
     driver_shell_init(true);
-#elif defined(CONFIG_USING_CLI_CORE)
+#elif defined(CONFIG_ENABLE_CLI_CORE)
     if (EXIT_SUCCESS != clishellInit()) {
         LOGE("%s():clishellInit soc failed\r\n", __func__);
     }

@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # Efuse driver
+    if bld.is_defined('CONFIG_DRIVER_EFUSE_V1'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'drivers/efuse/drv_efuse_v1.c'
+        ]
+
+    if bld.is_defined('CONFIG_DRIVER_EFUSE_V2'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'drivers/efuse/drv_efuse_v2.c'
+        ]
+

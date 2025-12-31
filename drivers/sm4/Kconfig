@@ -1,0 +1,6 @@
+config DRIVER_SM4
+    bool "Enable SM4 driver"
+    default y
+    help
+      Select this to enable SM4 driver support
+

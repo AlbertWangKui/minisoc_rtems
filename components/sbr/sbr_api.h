@@ -13,6 +13,7 @@
 #define SBR_PRJ_CODE_TIANHE             0x22
 #define SBR_PRJ_CODE_JUXIE              0x23
 #define SBR_PRJ_CODE_MOJIE              0x24
+#define HEADER_OFFSET_SBR               0x140
 
 #if defined(CONFIG_BSP_SHESHOU)
 #define SBR_PRJ_CODE SBR_PRJ_CODE_SHESHOU
@@ -37,7 +38,7 @@ typedef struct {
     U16 hdrID;
     U32 size; /* size of entries+data, not include header */
     U16 entryCount;
-    U16 crc16; /* crc16 of entries+data */
+    U16 sbrMetaSize; /* sizeof(sbrHeader_s) + entryCount * sizeof(sbrEntry_s) */
 } __attribute__((packed)) sbrHeader_s;
 
 typedef struct {

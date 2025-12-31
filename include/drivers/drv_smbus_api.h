@@ -11,13 +11,13 @@
  * 2025/10/16   wangkui		    Doxygen style review, bug fixes, and missing definitions added.
  * 2025/11/17   wangkui         Comprehensive refactoring based on new coding standards.
  * 2025/12/01   wangkui         refactor and simplify the code as for core function
- *
+ * 2025/12/15   wangkui         replace slave with target naming
  */
 #ifndef __DRV_SMBUS_API_H__
 #define __DRV_SMBUS_API_H__
 
-#include <stdbool.h> ///<<For bool type
-#include <stdint.h>  ///<<For standard integer types
+#include <stdbool.h> 
+#include <stdint.h>  
 #include "common_defines.h"
 #include "bsp_device.h"
 
@@ -29,9 +29,9 @@ extern "C" {
 /*                           宏定义                                        */
 /* ======================================================================== */
 
-#define SMBUS_FLAG_10BIT_ADDR               (1 << 1)  /**< 使用 10-bit 地址 */
-#define SMBUS_BLOCK_MAXLEN (32)                       /** SMBus Block 传输最大长度 */
-#define DEVICE_SMBUS_MAX   (6)                        /**< 最大支持的 SMBus 设备数量 */
+#define SMBUS_FLAG_10BIT_ADDR               (1U << 1)  /**< 使用 10-bit 地址 */
+#define SMBUS_BLOCK_MAXLEN                  (32)       /** SMBus Block 传输最大长度 */
+#define SMBUS_MAX_DATA_LENGTH               (255U)     /** SMBus 最大数据长度 */
 
 /* ======================================================================== */
 /*                        统一传输描述符标志位                              */
@@ -73,7 +73,7 @@ extern "C" {
  * @brief SMBus 工作模式枚举
  */
 typedef enum SmbusMode {
-    DW_SMBUS_MODE_SLAVE = 0,      /**< 从机模式 */
+    DW_SMBUS_MODE_TARGET = 0,      /**< 从机模式 */
     DW_SMBUS_MODE_MASTER,        /**< 主机模式 */
     DW_SMBUS_MODE_RESERVED      /**< 保留字段 */
 } SmbusMode_e;
@@ -105,7 +105,7 @@ typedef struct SmbusUdid {
 _Static_assert(sizeof(SmbusUdid_s) == 16, "SmbusUdid_s size mismatch! Must be 16 bytes.");
 /**
  * @brief 通用数据传输负载
- * @note 用于 TX_DONE, RX_DONE, SLAVE_WRITE_REQ 等涉及数据缓冲区的事件
+ * @note 用于 TX_DONE, RX_DONE, TARGET_WRITE_REQ 等涉及数据缓冲区的事件
  */
 typedef struct {
     U8  *buffer;      /**< 数据缓冲区指针 */
@@ -147,18 +147,18 @@ typedef struct {
     U8  *data;            // 数据缓冲指针
     U32 len;              // 数据长度
     U32 flags;            // 操作标记（读/写/Block等）
-} SmbusSlaveRequest_s;
+} SmbusTargetRequest_s;
 
 /**
  * @brief 统一事件数据联合体
  * @details 使用 Union 节省栈空间，同时提供类型安全的访问入口
  */
 typedef union { 
-    SmbusDataPayload_s   transfer;    /* 1. 通用数据类 (Tx/Rx/SlaveReq) */
+    SmbusDataPayload_s   transfer;    /* 1. 通用数据类 (Tx/Rx/targetReq) */
     SmbusErrorPayload_s  error;       /* 2. 错误类 */
     SmbusArpPayload_s    arp;        /* 3. ARP 类 */
     SmbusNotifyPayload_s notify;     /* 4. Notify 类 */
-    SmbusSlaveRequest_s  slaveReq;    // ← 新增：Slave请求上下文
+    SmbusTargetRequest_s  targetReq;    // ← 新增：target请求上下文
     U32                  value;      /* 5. 简单的数值 (如 Stop 检测，或者通用调用) */
 } SmbusEventData_u;
 
@@ -183,9 +183,9 @@ typedef enum SmbusEvent {
     SMBUS_EVENT_STOP_DET,         /**< STOP 条件检测到 */
     SMBUS_EVENT_ERROR,            /**< 通信错误（NACK/Timeout/Arbitration lost 等） */
     SMBUS_EVENT_PEC_ERROR,        /**< PEC 校验失败 */
-    SMBUS_EVENT_SLAVE_READ_REQ,   /**< 主机发起读请求（Slave 需应答数据）*/
-    SMBUS_EVENT_SLAVE_WRITE_REQ,  /**< 主机发起写请求（Slave 接收数据）*/
-    SMBUS_EVENT_SLAVE_DONE,       /**< Slave 读写传输结束 */
+    SMBUS_EVENT_TARGET_READ_REQ,  /**< 主机发起读请求（target 需应答数据）*/
+    SMBUS_EVENT_TARGET_WRITE_REQ, /**< 主机发起写请求（target 接收数据）*/
+    SMBUS_EVENT_TARGET_DONE,      /**< target 读写传输结束 */
     SMBUS_EVENT_ALERT,            /**< SMBus ALERT# 信号 */
     SMBUS_EVENT_HOST_NOTIFY,      /**< Host Notify 事件 */
     SMBUS_EVENT_GENERAL_CALL,     /**< General Call 命令 */
@@ -198,6 +198,123 @@ typedef enum SmbusEvent {
     SMBUS_EVENT_SLV_CLK_LOW_TIMEOUT,    /**< Slave clock low timeout */
     SMBUS_EVENT_RESERVED,                 /**< 保留字段 */
 } SmbusEvent_e;
+
+/**
+ * @brief SMBus操作命令类型
+ */
+typedef enum SmbusCmd {
+    /* 硬件控制命令 */
+    SMBUS_CMD_HW_ENABLE         = 0x0100,   /**< SMBus硬件使能 */
+    SMBUS_CMD_HW_DISABLE,                   /**< SMBus硬件失能 */
+
+    /* SAR(Slave Address Register)相关命令 */
+    SMBUS_CMD_SAR_ENABLE        = 0x0200,   /**< SAR使能 */
+    SMBUS_CMD_SAR_DISABLE,                  /**< SAR失能 */
+    SMBUS_CMD_SAR_SET_ADDR,                 /**< 设置从地址 */
+    SMBUS_CMD_SAR_GET_ADDR,                 /**< 获取从地址 */
+
+    /* ARP(Address Resolution Protocol)相关命令 */
+    SMBUS_CMD_ARP_ENABLE        = 0x0300,   /**< ARP使能 */
+    SMBUS_CMD_ARP_DISABLE,                  /**< ARP失能 */
+    SMBUS_CMD_ARP_IS_ADDR_USED,             /**< 检查ARP地址是否被使用 */
+    SMBUS_CMD_ARP_SET_UDID,                 /**< 设置ARP UDID */
+    SMBUS_CMD_ARP_GET_UDID,                 /**< 获取ARP UDID */
+    SMBUS_CMD_ARP_GET_ADDR_VALID,           /**< 获取地址有效状态 */
+    SMBUS_CMD_ARP_GET_ADDR_RESOLVED,        /**< 获取地址解析状态 */
+
+    /* Host Notify相关命令 */
+    SMBUS_CMD_HOST_NOTIFY       = 0x0400,   /**< Host Notify通知 */
+    SMBUS_CMD_HOST_NOTIFY_ENABLE,           /**< 使能Host Notify */
+    SMBUS_CMD_HOST_NOTIFY_DISABLE,          /**< 失能Host Notify */
+
+    /* Alert Response相关命令 */
+    SMBUS_CMD_ALERT_RESPOND     = 0x0500,   /**< Alert响应 */
+    SMBUS_CMD_ALERT_ENABLE,                 /**< 使能Alert */
+    SMBUS_CMD_ALERT_DISABLE,                /**< 失能Alert */
+
+    /* I2C总线恢复命令 */
+    SMBUS_CMD_BUS_RECOVERY      = 0x0600,   /**< I2C总线恢复 */
+} SmbusCmd_e;
+
+/**
+ * @brief SAR配置结构体
+ */
+typedef struct SmbusSarConfig {
+    U8 sarId;           /**< SAR ID (0 ~ SMBUS_MAX_SAR_NUM-1) */
+    U8 slaveAddr;       /**< 从地址 (7位地址) */
+    bool enable;        /**< 使能标志 */
+} SmbusSarConfig_s;
+
+/**
+ * @brief ARP地址状态结构体
+ */
+typedef struct SmbusArpAddrStatus {
+    U8 addr;            /**< SMBus地址 */
+    bool isValid;       /**< 地址是否有效 */
+    bool isResolved;    /**< 地址是否已解析 */
+    bool isInUse;       /**< 地址是否被使用 */
+} SmbusArpAddrStatus_s;
+
+/**
+ * @brief ARP配置参数聚合结构体
+ * @note 用于 SmbusParam_u 中，避免匿名结构体
+ */
+typedef struct SmbusArpConfig {
+    SmbusUdid_s udid;               /**< ARP UDID (复用已有的 SmbusUdid_s) */
+    SmbusArpAddrStatus_s addrStatus;/**< 地址状态 */
+    U8 checkAddr;                   /**< 用于检查的地址 */
+} SmbusArpConfig_s;
+
+/**
+ * @brief Host Notify 数据结构体
+ */
+typedef struct SmbusHostNotifyData {
+    U8 slaveAddr;       /**< 从设备地址 */
+    U16 data;           /**< 通知数据 (16位) */
+    U32 timestamp;      /**< 时间戳(可选) */
+} SmbusHostNotifyData_s;
+
+/**
+ * @brief Alert Response 数据结构体
+ */
+typedef struct SmbusAlertResponseData {
+    U8 respondingAddr;                  /**< 响应的设备地址 */
+    U8 status;                          /**< 设备状态 */
+    U8 data[SMBUS_MAX_DATA_LENGTH];     /**< 附加数据 */
+    U16 dataLen;                        /**< 数据长度 */
+} SmbusAlertResponseData_s;
+
+/**
+ * @brief 总线恢复配置结构体
+ */
+typedef struct SmbusBusRecoveryConfig {
+    U32 sclRecoveryCount;   /**< SCL恢复时钟周期数 */
+    U32 timeoutMs;          /**< 恢复超时时间(毫秒) */
+    bool forceRecovery;     /**< 强制恢复标志 */
+} SmbusBusRecoveryConfig_s;
+
+/**
+ * @brief SMBus控制参数联合体
+ */
+typedef union SmbusParam {
+    /* SAR相关参数 */
+    SmbusSarConfig_s sarConfig;
+    
+    /* ARP相关参数 */
+    SmbusArpConfig_s arp;
+    
+    /* Host Notify参数 */
+    SmbusHostNotifyData_s hostNotify;
+    
+    /* Alert Response参数 */
+    SmbusAlertResponseData_s alertResponse;
+    
+    /* 总线恢复参数 */
+    SmbusBusRecoveryConfig_s busRecovery;
+    
+    /* 通用使能/失能标志 (用于简单命令) */
+    bool enable;
+} SmbusParam_u;
 
 /* ======================================================================== */
 /*                        统一传输描述符数据结构                              */
@@ -254,9 +371,9 @@ typedef struct SmbusSwitchParam {
     U32          timeout;         /**< 超时时间 */
     union {
         struct {
-            U8  slaveAddr;         /**< 从机地址 */
+            U8  targetAddr;         /**< 从机地址 */
             U8  enableArp;         /**< ARP 使能 */
-        } slaveConfig;
+        } targetConfig;
         struct {
             U8  addrMode;          /**< 地址模式 (7-bit/10-bit) */
             U32 speed;             /**< 速率 */
@@ -268,22 +385,24 @@ typedef struct SmbusSwitchParam {
 /*                           API 函数声明                                    */
 /* ======================================================================== */
 typedef struct SmbusUserConfigParam {
+#ifdef TEST_SUITS_1
     void *base;                   /**< Base configuration pointer */
     U32 busSpeedHz;              /**< Bus speed in Hz (100000, 400000, 1000000) */
+    U32 irqNo;                   /**< IRQ number */
+    U32 irqPrio;                 /**< IRQ priority */
+    S32 addrMode;                /**< Address mode (0=7-bit, 1=10-bit) */
+    U8 targetAddrLow;            /**< target address (lower 7 bits for 7-bit mode) */
+    S32 interruptMode;           /**< Interrupt mode (0=polling, 1=interrupt) */
+    Bool isArpEnable;            /**< ARP enable flag */
+    U32 featureMap;              /**< smbus 使用 SMBUS_FEATURE_* 宏组合*/
+#endif
+    S32 masterMode;              /**< Master mode configuration (0=disable, 1=enable) */
     U32 udidWord0;               /**< UDID word 0 */
     U32 udidWord1;               /**< UDID word 1 */
     U32 udidWord2;               /**< UDID word 2 */
     U32 udidWord3;               /**< UDID word 3 */
-    U32 irqNo;                   /**< IRQ number */
-    U32 irqPrio;                 /**< IRQ priority */
-    S32 masterMode;              /**< Master mode configuration (0=disable, 1=enable) */
-    S32 addrMode;                /**< Address mode (0=7-bit, 1=10-bit) */
-    U8 slaveAddrLow;             /**< Slave address (lower 7 bits for 7-bit mode) */
-    S32 interruptMode;           /**< Interrupt mode (0=polling, 1=interrupt) */
-    Bool isArpEnable;            /**< ARP enable flag */
-    U32 featureMap;              /**< smbus 使用 SMBUS_FEATURE_* 宏组合*/
-    SmbusUdid_s localUdid;       /**< 本机 UDID (Slave模式或ARP用) */
-    void *userData;               /**< 用户数据，回传给 Callback */
+    SmbusUdid_s localUdid;       /**< 本机 UDID (target模式或ARP用) */
+    void *userData;              /**< 用户数据，回传给 Callback */
 } SmbusUserConfigParam_s;
 /**
  * @brief  SMBus 总线初始化
@@ -389,8 +508,8 @@ S32 smbusArpAssignAddress(DevList_e devId, const SmbusUdid_s *udid, U8 addr);
 S32 ArpDevInstall(DevList_e devId, SmbusArpMaster_s *master, const SmbusUdid_s *udid, U8 address);
 
 /**
- * @brief [Slave] 设置响应数据
- * @details 在SLAVE_READ_REQ回调中调用此函数填充TX缓冲。
+ * @brief [target] 设置响应数据
+ * @details 在TARGET_READ_REQ回调中调用此函数填充TX缓冲。
  *          支持动态响应不同命令的数据。可选超时自动NACK。
  *
  * @param devId 设备ID
@@ -399,10 +518,10 @@ S32 ArpDevInstall(DevList_e devId, SmbusArpMaster_s *master, const SmbusUdid_s *
  * @param status 操作状态 (0=发送成功, <0=NACK/错误)
  * @return S32  0成功, <0失败
  *
- * @note 必须在SLAVE_READ_REQ回调中调用
+ * @note 必须在TARGET_READ_REQ回调中调用
  * @note 可选参数status：0=正常响应, -NACK/-TIMEOUT=拒绝请求
  */
-S32 smbusSlaveSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status);
+S32 smbusTargetSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status);
 
 /* ======================================================================== */
 /*                   Master 模式协议操作 API                                 */
@@ -423,10 +542,46 @@ S32 smbusTransfer(DevList_e devId, SmbusXfer_s *xfer);
 /**
  * @brief 设备模式切换函数
  * @param devId SMBus设备ID
- * @param param MASTER/SLAVER模式切换需要参数
+ * @param param MASTER/TARGET模式切换需要参数
  * @return 0 成功, 负值错误码
  */
-S32 smbusMasterSlaveModeSwitch(DevList_e devId, SmbusSwitchParam_s *param);
+S32 smbusMasterTargetModeSwitch(DevList_e devId, SmbusSwitchParam_s *param);
+
+/**
+ * @brief SMBus 控制操作接口
+ * @details 提供对SMBus硬件和协议功能的统一控制接口，支持SAR、ARP、Host Notify、Alert和总线恢复等功能
+ *
+ * @param[in] devId SMBus设备ID，用于指定操作的设备实例
+ * @param[in] cmd 控制命令类型，取值为SmbusCmd_e枚举值，包括：
+ *              - SMBUS_CMD_HW_ENABLE/DISABLE: 硬件使能/失能
+ *              - SMBUS_CMD_SAR_*: SAR相关操作
+ *              - SMBUS_CMD_ARP_*: ARP相关操作
+ *              - SMBUS_CMD_HOST_NOTIFY_*: Host Notify相关操作
+ *              - SMBUS_CMD_ALERT_*: Alert相关操作
+ *              - SMBUS_CMD_BUS_RECOVERY: I2C总线恢复
+ * @param[in,out] param 控制参数联合体指针，根据cmd类型使用对应的成员：
+ *                     - SAR命令: 使用sarConfig成员
+ *                     - ARP命令: 使用arp成员
+ *                     - Host Notify命令: 使用hostNotify成员
+ *                     - Alert命令: 使用alertResponse成员
+ *                     - 总线恢复: 使用busRecovery成员
+ *                     - 简单使能命令: 使用enable成员
+ *
+ * @return S32 操作结果，成功返回 0 (EXIT_SUCCESS)，失败返回负值错误码：
+ *             - (-EINVAL) 无效参数：参数为空或参数值不符合要求
+ *             - (-ENOTSUP) 操作不支持：HAL层未实现control接口或命令不支持
+ *             - (-EBUSY) 设备忙：设备已被其他操作占用
+ *             - (-ENODEV) 设备未初始化：设备ID无效或未正确初始化
+ *             - (-EIO) 通用IO错误：硬件访问失败或其他底层错误
+ *             - 其他负值错误码由具体命令的HAL层实现返回
+ *
+ * @note 此函数为同步阻塞接口，调用后会等待操作完成
+ * @note param参数必须根据具体的cmd类型正确设置对应的联合体成员
+ * @note 部分命令需要先调用smbusInit初始化设备
+ * @warning 调用者必须确保param指针有效，对于不需要参数的简单命令可传入NULL
+ * @warning 某些命令可能会影响总线状态，建议在总线空闲时调用
+ */
+S32 smbusControl(DevList_e devId, SmbusCmd_e cmd, SmbusParam_u *param);
 
 #ifdef __cplusplus
 }

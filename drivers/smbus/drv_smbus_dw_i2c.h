@@ -449,7 +449,7 @@ typedef union SmbusUdidWordReg {
 typedef struct SmbusRegMap {
     SmbusIcConReg_u              icCon;                 /**< 0x00: Control register */
     SmbusIcTarReg_u              icTar;                 /**< 0x04: Target address register */
-    SmbusIcSarReg_u              icSar;                 /**< 0x08: target address register */
+    SmbusIcSarReg_u              icSar;                 /**< 0x08: slaver address register */
     U32                          reserved1;             /**< 0x0C: Reserved */
     SmbusIcDataCmdReg_u          icDataCmd;             /**< 0x10: Data buffer and command */
     U32                          icSsSclHcnt;           /**< 0x14: Std speed SCL high count */
@@ -549,16 +549,8 @@ typedef struct SmbusHalOps {
     void (*smbusDwRead)(SmbusDrvData_s *pDrvData, void *buf, U32 len);  ///< block read RX full used
     void (*smbusDwXferMsg)(SmbusDev_s *dev);    ///< block write TX empty used
     void (*configureTarget)(SmbusDev_s *dev);        ///< Configure SMBus device for target mode
+    S32 (*control)(SmbusDev_s *dev, SmbusCmd_e cmd, void *param);  ///< Generic control function
 } SmbusHalOps_s;
-
-/**
- * @brief Generic I2C transfer function
- * @param[in] dev SMBus device handle
- * @param[in] msgs Array of I2C messages
- * @param[in] num Number of messages in array
- * @return EXIT_SUCCESS on success, negative error code on failure
- */
-S32 smbusI2cTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 num);
 
 /**
  * @brief Get HAL function pointers for external use
@@ -631,7 +623,7 @@ S32 smbusUnprobeMaster(SmbusDev_s *dev);
  * @note Performs graceful shutdown of target operations
  * @warning This function should only be called in target mode
  */
-S32 smbusUnprobetarget(SmbusDev_s *dev);
+S32 smbusUnprobeTarget(SmbusDev_s *dev);
 
 #ifdef __cpluscplus
 }

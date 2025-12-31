@@ -1,9 +1,9 @@
 menu "CLI CORE"
 
-config USING_CLI_CORE
-    bool "USING cli core"
-    default y
+config ENABLE_CLI_CORE
+    bool "Enable CLI Core"
+    default n
     help
-      Select this to use cli core component
+      Enable CLI Core component for command line interface
 
 endmenu

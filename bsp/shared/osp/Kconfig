@@ -1,8 +1,8 @@
 menu "Osp"
 
-config USING_OSP
-    bool "USING OSP"
+config ENABLE_OSP
+    bool "Enable OSP"
     default y
     help
-      Select this to use OSP
+      Enable OSP (Operating System Porting) support
 endmenu

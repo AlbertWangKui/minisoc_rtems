@@ -16,7 +16,6 @@ typedef struct SbrUartCfg {
     U8 console;   /* 控制台标志 */
     U8 txIntEn;   /* 发送中断使能 */
     U8 rxIntEn;   /* 接收中断使能 */
-    U8 reserved;  /* 保留字段 */
 } __attribute__((packed)) SbrUartCfg_s;
 
 /* I2C & SMBUS 配置结构体 */
@@ -31,7 +30,6 @@ typedef struct SbrI2cSmbusCfg {
     U8 slaveAddrHigh;       /* 从机地址高8位 */
     U8 slaveAddrLow;        /* 从机地址低8位 */
     U8 enSmbus;          /* SMBus模式: 0=i2c, 1=smbus */
-    U8 reserved;         /* 保留字段 */
 } __attribute__((packed)) SbrI2cSmbusCfg_s;
 
 typedef struct SbrGpioCfg {
@@ -61,7 +59,6 @@ typedef struct SbrSgpioCfg {
     U8 irqEn;      /* 中断使能 */
     U16 irqNum;    /* 中断号 */
     U16 irqPrio;    /* 中断优先级 */
-    U32 reserved;   /* 保留字段 */
 } __attribute__((packed)) SbrSgpioCfg_s;
 
 /* TRNG配置结构体 */
@@ -69,7 +66,6 @@ typedef struct {
     void *regAddr;
     U16 irqNo;
     U16 irqPrio;
-    U32 reserved;
 } __attribute__((packed)) SbrTrngCfg_s;
 
 /* SM3 SBR Configuration Structure */
@@ -77,7 +73,6 @@ typedef struct SbrSm3Cfg {
     void *regAddr;      /* Register base address */
     U32 irqNo;          /* Interrupt number */
     U32 irqPrio;        /* Interrupt priority */
-    U32 reserved;       /* Reserved for future use */
 } __attribute__((packed)) SbrSm3Cfg_s;
 
 /* WDT配置结构体 */
@@ -89,18 +84,15 @@ typedef struct SbrWdtCfg {
     U16 feedTime;    ///< ms
     U16 maxFeedTime; ///< ms
     U16 div;
-    U32 reserved;
 } __attribute__((packed)) SbrWdtCfg_s;
 
 typedef struct SbrEfuseCfg {
     U32 regAddr;
-    U32 reserved;
 } __attribute__((packed)) SbrEfuseCfg_s;
 
 /* PVT配置结构体 */
 typedef struct {
     U8 totalCh;        /* 总通道数 */
-    U8 reserved[3];    /* 保留字段 */
 } __attribute__((packed)) pvtCfg_s;
 
 /* PVT通道配置结构体 */
@@ -140,7 +132,6 @@ typedef struct SbrTimerCfg {
     U32 irqNo;
     U32 irqPrio;
     U32 intervalMs;
-    U32 reserved;
 } __attribute__((packed)) SbrTimerCfg_s;
 
 /* IOMUX配置结构体 */
@@ -156,14 +147,12 @@ typedef struct SbrOcmEccCfg {
     U32 eccAddr;
     U16 irqNo;
     U8 irqPrio;
-    U32 reserved;
 } __attribute__((packed)) SbrOcmEccCfg_s;
 
 typedef struct {
     void *regAddr;
     U32 irqNo;
     U32 irqPrio;
-    U32 reserved;
 } __attribute__((packed)) SbrSm2Cfg_s;
 
 /* sbrData_s and sbrData_u are used to store the configuration data for the devices
@@ -189,7 +178,10 @@ typedef struct {
     SbrGpioCfg_s sbrGpio1Cfg;       /* GPIO1配置 */
 
     /* 其他设备配置 */
-    SbrSgpioCfg_s sgpioCfg;       /* SGPIO0配置 */
+    SbrSgpioCfg_s sgpio0Cfg;       /* SGPIO0配置 */
+    SbrSgpioCfg_s sgpio1Cfg;       /* SGPIO1配置 */
+    SbrSgpioCfg_s sgpio2Cfg;       /* SGPIO2配置 */
+    SbrSgpioCfg_s sgpio3Cfg;       /* SGPIO3配置 */ 
     SbrTrngCfg_s sbrTrngCfg;   /* TRNG0配置 */
     SbrSm3Cfg_s sbrSm3Cfg;     /* SM3配置 */
     SbrWdtCfg_s SbrWdt0Cfg;     /* WDT0配置 */
@@ -209,6 +201,7 @@ typedef struct {
     SbrTachCfg_s sbrTach1Cfg;           /* TACH0配置 */
     SbrTachCfg_s sbrTach2Cfg;           /* TACH0配置 */
     SbrTachCfg_s sbrTach3Cfg;           /* TACH0配置 */
+    SbrSm2Cfg_s sbrSm2Cfg;           /* SM2配置 */
     SbrBrdCfg_s brdCfg;       /* 通用配置 */
 } __attribute__((packed)) sbrData_s;
 

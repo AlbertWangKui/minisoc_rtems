@@ -2,7 +2,7 @@
 
 def build(bld):
     # CLI_CORE component
-    if bld.is_defined('CONFIG_USING_CLI_CORE'):
+    if bld.is_defined('CONFIG_ENABLE_CLI_CORE'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'components/cli_core/cli_argument.c',
             'components/cli_core/cli_command.c',

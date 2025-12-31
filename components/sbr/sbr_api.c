@@ -15,6 +15,7 @@
 #include "log_msg.h"
 #include "partition_table.h"
 #include "drv_spi_api.h"
+#include "bsp_device.h"
 
 #ifdef CONFIG_SBR_IMG_IN_RAM
 extern U8 _binary_sbr_bin_start[];
@@ -29,18 +30,6 @@ static U32 bitMapRegionOffset = 0, bitMapRegionSize = 0;
 static U32 usrSettingsRegionOffset = 0, usrSettingsRegionSize = 0;
 static U32 defaultUsrSettingsRegionOffset = 0, defaultUsrSettingsRegionSize = 0;
 
-/* CRC16查找表（64字节版本，使用6位索引） */
-static const U16 crc16Table[64] = {
-    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
-    0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD, 0xE1CE, 0xF1EF,
-    0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6,
-    0x9339, 0x8318, 0xB37B, 0xA35A, 0xD3BD, 0xC39C, 0xF3FF, 0xE3DE,
-    0x2462, 0x3443, 0x0420, 0x1401, 0x64E6, 0x74C7, 0x44A4, 0x5485,
-    0xA56A, 0xB54B, 0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D,
-    0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
-    0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC
-};
-
 /**
  * @brief 从SBR镜像的指定偏移处读取指定长度的数据到缓冲区
  * @param offset 镜像偏移位置
@@ -51,6 +40,9 @@ static const U16 crc16Table[64] = {
 static U32 sbrLoad(U32 offset, U8 *buf, U32 len)
 {
      U32 readLen = 0;
+#ifndef CONFIG_SBR_IMG_IN_RAM
+     RegionID_e sbrRegionId = 0;
+#endif
 
      /* 参数检查 */
      if (buf == NULL || len == 0) {
@@ -68,8 +60,13 @@ static U32 sbrLoad(U32 offset, U8 *buf, U32 len)
      readLen = len;  /* 设置返回值 */
 
 #else
+     sbrRegionId = getSbrRegionId();
+     if ((sbrRegionId != REGION_ID_SBR_A) && (sbrRegionId != REGION_ID_SBR_B)) {
+        LOGE("get sbr region id failed\r\n");
+        return 0;
+     }
      if(sbrRegionOffset == 0 || sbrRegionSize == 0) {
-        if(regionOffsetGet(0, REGION_ID_SBR_A, &sbrRegionOffset, &sbrRegionSize) != EXIT_SUCCESS) {
+        if(regionOffsetGet(0, sbrRegionId, &sbrRegionOffset, &sbrRegionSize) != EXIT_SUCCESS) {
             LOGE("get sbr region offset failed\r\n");
             return 0;
         }
@@ -89,6 +86,9 @@ static U32 sbrLoad(U32 offset, U8 *buf, U32 len)
 static U32 sbrSave(U32 offset, U8 *buf, U32 len)
 {
      U32 writeLen = 0;
+#ifndef CONFIG_SBR_IMG_IN_RAM
+     RegionID_e sbrRegionId = 0;
+#endif
 
      /* 参数检查 */
      if (buf == NULL || len == 0) {
@@ -106,7 +106,12 @@ static U32 sbrSave(U32 offset, U8 *buf, U32 len)
      writeLen = len;
 #else
      if(sbrRegionOffset == 0 || sbrRegionSize == 0) {
-        if(regionOffsetGet(0, REGION_ID_SBR_A, &sbrRegionOffset, &sbrRegionSize) != EXIT_SUCCESS) {
+        sbrRegionId = getSbrRegionId();
+        if ((sbrRegionId != REGION_ID_SBR_A) && (sbrRegionId != REGION_ID_SBR_B)) {
+            LOGE("get sbr region id failed\r\n");
+            return 0;
+        }
+        if(regionOffsetGet(0, sbrRegionId, &sbrRegionOffset, &sbrRegionSize) != EXIT_SUCCESS) {
             LOGE("get sbr region offset failed\r\n");
             return 0;
         }
@@ -129,13 +134,11 @@ static U32 sbrSave(U32 offset, U8 *buf, U32 len)
      return writeLen;  /* 返回实际写入的长度 */
 }
 
- static S32 sbrUpdateCrc(void)
+ static S32 sbrUpdateMetaSize(void)
  {
-    U8 buffer[MAX_SBR_BUF_SIZE];
-    U16 calcCrc = 0xFFFF;
-    U32 remainingSize, readSize, offset;
     sbrHeader_s header;
     S32 ret = EXIT_SUCCESS;
+    U16 sbrMetaSize;
 
     /* 读取头部信息 */
     if (sbrLoad(0, (U8 *)&header, sizeof(sbrHeader_s)) != sizeof(sbrHeader_s)) {
@@ -143,28 +146,11 @@ static U32 sbrSave(U32 offset, U8 *buf, U32 len)
         goto exit;
     }
 
-    /* 计算剩余数据的大小（entries+data，不包括头部） */
-    remainingSize = header.size;
-    offset = sizeof(sbrHeader_s);
+    /* 计算sbrMetaSize: sizeof(sbrHeader_s) + entryCount * sizeof(sbrEntry_s) */
+    sbrMetaSize = sizeof(sbrHeader_s) + header.entryCount * sizeof(sbrEntry_s);
 
-    /* 分段计算CRC16 */
-    while (remainingSize > 0) {
-        readSize = (remainingSize > MAX_SBR_BUF_SIZE) ? MAX_SBR_BUF_SIZE : remainingSize;
-        U32 actualRead = sbrLoad(offset, buffer, readSize);
-        if (actualRead != readSize) {
-            ret = -EIO;
-            goto exit;
-        }
-        for (U32 i = 0; i < readSize; i++) {
-            U8 index = ((calcCrc >> 10) ^ (buffer[i] >> 2)) & 0x3F;
-            calcCrc = ((calcCrc << 6) ^ crc16Table[index]) & 0xFFFF;
-        }
-        offset += readSize;
-        remainingSize -= readSize;
-    }
-
-    /* 更新header中的crc16 */
-    header.crc16 = calcCrc;
+    /* 更新header中的sbrMetaSize */
+    header.sbrMetaSize = sbrMetaSize;
 
     /* 写回header */
     if(sbrSave(0, (U8 *)&header, sizeof(sbrHeader_s)) != sizeof(sbrHeader_s)) {
@@ -179,10 +165,8 @@ exit:
 
 S32 sbrValidate(void)
 {
-    U8 buffer[MAX_SBR_BUF_SIZE];
-    U16 calcCrc = 0xFFFF;  /* CRC16初始值 */
-    U32 remainingSize, readSize, offset;
     sbrHeader_s header;
+    U16 expectedMetaSize;
 
     /* 读取头部信息 */
     if (sbrLoad(0, (U8 *)&header, sizeof(sbrHeader_s)) != sizeof(sbrHeader_s)) {
@@ -199,38 +183,11 @@ S32 sbrValidate(void)
         return -EINVAL;
     }
 
-    /* 验证CRC16不为0 */
-    if (header.crc16 == 0) {
-        return -EINVAL;
-    }
+    /* 计算期望的sbrMetaSize: sizeof(sbrHeader_s) + entryCount * sizeof(sbrEntry_s) */
+    expectedMetaSize = sizeof(sbrHeader_s) + header.entryCount * sizeof(sbrEntry_s);
 
-    /* 计算剩余数据的大小（entries+data，不包括头部） */
-    remainingSize = header.size;  /* header.size已经是entries+data的大小 */
-    offset = sizeof(sbrHeader_s);  /* 从头部之后开始读取 */
-
-    /* 分段计算CRC16 */
-    while (remainingSize > 0) {
-        /* 确定本次读取的大小 */
-        readSize = (remainingSize > MAX_SBR_BUF_SIZE) ? MAX_SBR_BUF_SIZE : remainingSize;
-
-        /* 使用sbrLoad读取数据段 */
-        U32 actualRead = sbrLoad(offset, buffer, readSize);
-        if (actualRead != readSize) {
-            return -EIO;  /* 读取失败 */
-        }
-
-        /* 计算当前段的CRC16 */
-        for (U32 i = 0; i < readSize; i++) {
-            U8 index = ((calcCrc >> 10) ^ (buffer[i] >> 2)) & 0x3F;
-            calcCrc = ((calcCrc << 6) ^ crc16Table[index]) & 0xFFFF;
-        }
-
-        offset += readSize;
-        remainingSize -= readSize;
-    }
-
-    /* 比较计算的CRC16与头部中的CRC16 */
-    if (calcCrc != header.crc16) {
+    /* 验证sbrMetaSize */
+    if (header.sbrMetaSize != expectedMetaSize) {
         return -EINVAL;
     }
 
@@ -248,7 +205,7 @@ U32 devSbrRead(DevList_e devID, void *CfgBuf, U32 offset, U32 len)
     U8 buffer[MAX_SBR_BUF_SIZE];
     sbrHeader_s header = {0};
     sbrEntry_s *entryPtr = NULL;
-    U32 i = 0, entriesSize = 0;
+    U32 i = 0;
     U32 readSize = 0, actualRead = 0, entriesPerRead = 0;
     U32 currentOffset = 0;
 
@@ -258,7 +215,7 @@ U32 devSbrRead(DevList_e devID, void *CfgBuf, U32 offset, U32 len)
     }
 
     /* 读取头部信息 */
-    if (sbrLoad(0, (U8 *)&header, sizeof(sbrHeader_s)) != sizeof(sbrHeader_s)) {
+    if (sbrLoad(HEADER_OFFSET_SBR, (U8 *)&header, sizeof(sbrHeader_s)) != sizeof(sbrHeader_s)) {
         errno = EIO;
         return 0;  /* 文件不存在或读取失败 */
     }
@@ -268,7 +225,6 @@ U32 devSbrRead(DevList_e devID, void *CfgBuf, U32 offset, U32 len)
         errno = EINVAL;
         return 0;  /* 防止整数溢出 */
     }
-    entriesSize = header.entryCount * sizeof(sbrEntry_s);
 
     /* 验证魔数 */
     if (header.magic != SBR_MAGIC) {
@@ -301,7 +257,7 @@ U32 devSbrRead(DevList_e devID, void *CfgBuf, U32 offset, U32 len)
         readSize = currentBatchSize * sizeof(sbrEntry_s);
 
         /* 一次性读取头部和当前批次的entries */
-        actualRead = sbrLoad(currentOffset + sizeof(sbrHeader_s), buffer, readSize);
+        actualRead = sbrLoad(currentOffset + sizeof(sbrHeader_s) + HEADER_OFFSET_SBR, buffer, readSize);
         if (actualRead != readSize) {
             errno = EIO;
             return 0;  /* 读取失败 */
@@ -316,8 +272,7 @@ U32 devSbrRead(DevList_e devID, void *CfgBuf, U32 offset, U32 len)
             /* 检查设备ID和有效性 */
             if (entryPtr->devID == devID && entryPtr->valid == 1) {
                 /* 计算数据在文件中的偏移位置 */
-                U32 dataOffset = sizeof(sbrHeader_s) + entriesSize + entryPtr->offset + offset;
-
+                U32 dataOffset = header.sbrMetaSize + HEADER_OFFSET_SBR + entryPtr->offset + offset;
                 /* 检查偏移是否超出设备配置大小 */
                 if (offset >= entryPtr->size) {
                     errno = EINVAL;
@@ -409,8 +364,8 @@ U32 devSbrWrite(DevList_e devID, void *CfgBuf, U32 offset, U32 len)
                     errno = EIO;
                     return 0;
                 } else {
-                    if(sbrUpdateCrc() != EXIT_SUCCESS) {
-                        LOGE("update sbr crc failed\r\n");
+                    if(sbrUpdateMetaSize() != EXIT_SUCCESS) {
+                        LOGE("update sbr meta size failed\r\n");
                         errno = EIO;
                         return 0;
                     }

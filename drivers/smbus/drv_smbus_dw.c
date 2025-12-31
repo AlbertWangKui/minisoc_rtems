@@ -98,7 +98,7 @@ static S32 smbusInitTargetResources(SmbusDrvData_s *pDrvData)
             pDrvData->pSmbusDev.targetTxBuf = (U8 *)malloc(SMBUS_TARGET_BUF_LEN);
             if (pDrvData->pSmbusDev.targetTxBuf == NULL) {
                 LOGE("%s: Failed to allocate target TX buffer\n", __func__);
-                ///< 清理已分配的RX缓冲区
+                ///< Clean up allocated RX buffer
                 if (pDrvData->pSmbusDev.targetRxBuf != NULL) {
                     free(pDrvData->pSmbusDev.targetRxBuf);
                     pDrvData->pSmbusDev.targetRxBuf = NULL;
@@ -149,17 +149,17 @@ static void smbusFreetargetResources(SmbusDrvData_s *pDrvData)
 }
 
 /**
- * @brief 将软件 UDID 结构体写入硬件寄存器
- * @note 必须在使能 target 之前调用
+ * @brief Write software UDID structure to hardware registers
+ * @note Must be called before enabling target mode
  */
 static void smbusWriteHwUdid(volatile SmbusRegMap_s *regBase, const SmbusUdid_s *udid)
 {
-    /* * SMBus UDID 顺序 (16 bytes):
+    /* * SMBus UDID sequence (16 bytes):
      * Byte 0: Device Capabilities
      * Byte 1: Version Revision
      * Byte 2-3: Vendor ID
      * ...
-     * * DW IP 寄存器通常按 Little Endian 填充：
+     * * DW IP registers are typically filled in Little Endian:
      * Word0 [7:0]   = Byte 0
      * Word0 [15:8]  = Byte 1
      * Word0 [23:16] = Byte 2
@@ -189,9 +189,9 @@ static void smbusWriteHwUdid(volatile SmbusRegMap_s *regBase, const SmbusUdid_s 
                                       ((U32)pBytes[13] << 8) | 
                                       ((U32)pBytes[14] << 16) | 
                                       ((U32)pBytes[15] << 24);
-    
+  
     LOGD("SMBus Hardware UDID Configured.\n");
-    /* 增加调试打印，确认写入成功 */
+    /* Add debug prints to confirm successful write */
     LOGD("[DEBUG] Configured HW UDID Registers:\n");
     LOGD("  UDID0: 0x%08X\n", regBase->icSmbusUdidWord0.value);
     LOGD("  UDID1: 0x%08X\n", regBase->icSmbusUdidWord1.value);
@@ -276,30 +276,6 @@ static U8 smbusPecPktConstruct(U8 addr7bitIn, bool isWrite, const U8 *pData, U32
 }
 
 /**
- * @brief Get SMBus register base address
- * @param devId Device identifier
- * @param pCtrlReg Pointer to register map pointer
- * @return EXIT_SUCCESS on success, negative error code on failure
- */
-S32 getSmbusReg(DevList_e devId, SmbusRegMap_s **pCtrlReg)
-{
-    S32 ret = EXIT_SUCCESS;
-    SmbusDrvData_s *pDrvData = NULL;
-
-    /* Check driver match */
-    SMBUS_CHECK_PARAM_RETURN(isDrvInit(devId) == false, -EINVAL, "Driver not initialized for devId %d", devId);
-    SMBUS_CHECK_PARAM_RETURN(pCtrlReg == NULL, -EINVAL, "pCtrlReg is NULL");
-
-    if(getDevDriver(devId, (void**)&pDrvData) != EXIT_SUCCESS) {
-        return -EIO;
-    }
-
-    *pCtrlReg = (SmbusRegMap_s*)pDrvData->sbrCfg.regAddr;
-
-    return ret;
-}
-
-/**
  * @brief Allocate and initialize SMBus driver data structure
  * @details Allocates memory for driver data and initializes basic fields.
  * @param[in] devId SMBus device identifier
@@ -344,8 +320,6 @@ static S32 smbusAllocateDriverData(DevList_e devId, SmbusDrvData_s **ppDrvData)
     pDrvData->pSmbusDev.mode = DW_SMBUS_MODE_MASTER;  /* Default to master mode */
     pDrvData->pSmbusDev.transferTimeout = SMBUS_DEFAULT_TIMEOUT_MS;  /* Default timeout */
     
-    memset(pDrvData->pSmbusDev.msgs, 0, sizeof(SmbusMsg_s) *32);
-
     *ppDrvData = pDrvData;
     return EXIT_SUCCESS;
 }
@@ -402,7 +376,7 @@ static S32 smbusInitializeHardware(SmbusDrvData_s *pDrvData)
     #if 1
         if (pDrvData->pSmbusDev.smbFeatures.quickCmdEnb) {
             LOGW("Conflict detected: ARP enabled, Auto-disabling Quick Command to ensure ARP works.\n");
-            pDrvData->pSmbusDev.smbFeatures.quickCmdEnb = 0; /* 强制关闭，优先保证 ARP */
+            pDrvData->pSmbusDev.smbFeatures.quickCmdEnb = 0; /* Force disable, prioritize ARP */
         }
     #endif
    
@@ -493,19 +467,19 @@ static inline void clearInterrupts(volatile SmbusRegMap_s *regBase, U32 mask)
     volatile U32 *reg_ptr;
     uintptr_t base_addr, reg_offset;
 
-    /* 使用位扫描快速定位 */
+    /* Use bit scanning for fast positioning */
     while (mask != 0) {
-        bit = __builtin_ctz(mask);  /* 获取最低置位位索引 */
+        bit = __builtin_ctz(mask);  /* Get lowest set bit index */
 
         if (bit < ARRAY_SIZE(INTR_CLR_REGS) && INTR_CLR_REGS[bit] != NULL) {
-            /* 计算实际寄存器地址 - 使用uintptr_t进行正确的指针运算 */
+            /* Calculate actual register address - use uintptr_t for correct pointer arithmetic */
             base_addr = (uintptr_t)regBase;
             reg_offset = (uintptr_t)INTR_CLR_REGS[bit];
             reg_ptr = (volatile U32*)(base_addr + reg_offset);
             (void)(*reg_ptr);
         }
 
-        mask &= ~(1U << bit);  /* 清除已处理的位 */
+        mask &= ~(1U << bit);  /* Clear processed bit */
     }
 }
 /**
@@ -538,7 +512,7 @@ static void smbusClearInterrupts(volatile SmbusRegMap_s *regBase, U32 mask)
         return;
     }
 
-    /* 使用优化后的中断清除函数 */
+    /* Use optimized interrupt clear function */
     clearInterrupts(regBase, mask);
 
     /* Clear SMBus specific interrupts if available */
@@ -792,43 +766,48 @@ static void smbusFreeDriverData(SmbusDrvData_s *pDrvData)
 }
 
 /* =========================================================================
- * Helper: 处理 WR_REQ (Master -> target 写传输开始)
+ * Helper: Handle WR_REQ (Master -> target write transfer start)
  * ========================================================================= */
-static void smbustargetHandleWriteRequest(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
+static void smbusTargetHandleWriteRequest(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
 {
     LOGI("SMBus target: WR_REQ - Master writing (Priority 1)\n");
 
-    /* 重置计数器，设置写状态 */
+    /* Reset counters, set write status */
     pDrvData->pSmbusDev.targetValidRxLen = 0;
     pDrvData->pSmbusDev.status |= SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
     pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
-    
-    /* 保持 TX_EMPTY 禁用，因为是接收模式 */
+
+    /* Keep TX_EMPTY disabled as this is receive mode */
     regBase->icIntrMask.value &= ~SMBUS_INTR_TX_EMPTY;
 
-    /* 清除 WR_REQ */
-    (void)regBase->icClrWrReq; 
-    
+    /* Clear WR_REQ */
+    (void)regBase->icClrWrReq;
+
     LOGD("SMBus target: WR_REQ - Setup done, mask=0x%08X\n", regBase->icIntrMask.value);
 
-    /* 触发事件通知上层准备接收 */
+    /* Trigger event to notify upper layer to prepare for reception */
     smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_TARGET_WRITE_REQ,
                            pDrvData->pSmbusDev.targetRxBuf,
                            pDrvData->pSmbusDev.targetValidRxLen);
 }
 
 /* =========================================================================
- * Helper: 处理 RX_FULL (接收数据 FIFO)
+ * Helper: Handle RX_FULL (receive data FIFO)
  * ========================================================================= */
-static inline void smbustargetHandleRxData(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase, U32 intrStat)
+static inline void smbusTargetHandleRxData(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase, U32 intrStat)
 {
     LOGI("SMBus target: RX_FULL - Receiving data (Priority 2)\n");
 
     U32 loopCount = 0;
-    /* 读取 FIFO 直到空或达到限制 */
-    while ((regBase->icStatus.fields.rfne) && (loopCount < SMBUS_TARGET_BUF_LEN)) {
-        U32 tmp = regBase->icDataCmd.value;
+    /* Read FIFO until empty or limit reached */
+    SmbusIcStatusReg_u statusReg;
+    statusReg.value = smbusReadReg(&regBase->icStatus.value);
+    while ((statusReg.fields.rfne) && (loopCount < SMBUS_TARGET_BUF_LEN)) {
+        U32 tmp = smbusReadReg(&regBase->icDataCmd.value);
         U8 val = (U8)tmp;
+
+        /* Re-read status for next iteration */
+        statusReg.value = smbusReadReg(&regBase->icStatus.value);
 
         if (tmp & SMBUS_IC_DATA_CMD_FIRST_DATA_BYTE_MASK) {
             LOGD("SMBus target: FIRST_DATA_BYTE: 0x%02X\n", val);
@@ -846,24 +825,24 @@ static inline void smbustargetHandleRxData(SmbusDrvData_s *pDrvData, volatile Sm
 }
 
 /* =========================================================================
- * Helper: 处理 RD_REQ (Master <- target 读传输请求)
+ * Helper: Handle RD_REQ (Master <- target read transfer request)
  * ========================================================================= */
-static inline void smbustargetHandleReadRequest(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
+static inline void smbusTargetHandleReadRequest(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
 {
-    LOGD("SMBus target: RD_REQ - Master requests data\n");
+    LOGD("SMBus Slave: RD_REQ - Master requests data\n");
     (void)regBase->icClrRdReq;
 
-    /* 如果是新传输，准备数据 */
+    /* If this is a new transfer, prepare data */
     if (pDrvData->pSmbusDev.txIndex == 0) {
         LOGI("SMBus target: RD_REQ - New transaction start\n");
-        smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_TARGET_READ_REQ, 
+        smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_TARGET_READ_REQ,
                                pDrvData->pSmbusDev.targetTxBuf,
                                pDrvData->pSmbusDev.targetValidTxLen);
     } else {
         LOGD("SMBus target: RD_REQ - Continued transfer, idx=%d\n", pDrvData->pSmbusDev.txIndex);
     }
 
-    /* 发送当前字节 */
+    /* Send current byte */
     U8 txData = SMBUS_DUMMY_DATA_BYTE;
     if (pDrvData->pSmbusDev.targetTxBuf != NULL &&
         pDrvData->pSmbusDev.txIndex < pDrvData->pSmbusDev.targetValidTxLen) {
@@ -873,22 +852,23 @@ static inline void smbustargetHandleReadRequest(SmbusDrvData_s *pDrvData, volati
         LOGD("SMBus target: RD_REQ - Sent Byte[%d] = 0x%02X\n", pDrvData->pSmbusDev.txIndex, txData);
         pDrvData->pSmbusDev.txIndex++;
     } else {
-        regBase->icDataCmd.value = SMBUS_DUMMY_DATA_BYTE;
+        smbusWriteReg(&regBase->icDataCmd.value, SMBUS_DUMMY_DATA_BYTE);
         LOGW("SMBus target: RD_REQ - No data/End of buf, sent dummy 0x%02X\n", SMBUS_DUMMY_DATA_BYTE);
     }
 
-    /* 如果还有剩余数据，启用 TX_EMPTY 以利用 FIFO 中断发送 */
+    /* If there is remaining data, enable TX_EMPTY to use FIFO interrupt for sending */
     if (pDrvData->pSmbusDev.targetValidTxLen > 1) {
         regBase->icIntrMask.value |= SMBUS_INTR_TX_EMPTY;
     } else {
         regBase->icIntrMask.value &= ~SMBUS_INTR_TX_EMPTY;
     }
+    
 }
 
 /* =========================================================================
- * Helper: 处理 TX_EMPTY (FIFO 填充)
+ * Helper: Handle TX_EMPTY (FIFO filling)
  * ========================================================================= */
-static inline void smbustargetHandleTxEmpty(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
+static inline void smbusTargetHandleTxEmpty(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
 {
     U32 status = regBase->icStatus.value;
     U32 targetActivity = (status >> SMBUS_IC_CON_TARGET_DISABLE_BIT) & SMBUS_TARGET_ENABLED;
@@ -896,12 +876,12 @@ static inline void smbustargetHandleTxEmpty(SmbusDrvData_s *pDrvData, volatile S
     
     if (pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK) {
         LOGD("SMBus target: TX_EMPTY ignored during WRITE state\n");
-        /* 此时不应填充数据，也不应禁用中断(因为可能马上转Read)，直接返回即可 */
-        /* 或者：如果中断触发太频繁影响性能，可以临时 mask 掉，在 RD_REQ 里再打开 */
-        regBase->icIntrMask.value &= ~SMBUS_INTR_TX_EMPTY; 
+        /* Should not fill data at this time, nor disable interrupt (may switch to Read soon), just return */
+        /* Or: If interrupt fires too frequently affecting performance, can temporarily mask, reopen in RD_REQ */
+        regBase->icIntrMask.value &= ~SMBUS_INTR_TX_EMPTY;
         return;
     }
-    /* 只有在 Master 真正读取且无 RX 数据时才处理 */
+    /* Only handle when Master is actually reading and there is no RX data */
     if (targetActivity && rxFifoLevel == 0) {
         LOGD("SMBus target: TX_EMPTY - Refilling FIFO\n");
         U32 txLen = pDrvData->pSmbusDev.targetValidTxLen;
@@ -923,27 +903,27 @@ static inline void smbustargetHandleTxEmpty(SmbusDrvData_s *pDrvData, volatile S
             LOGD("SMBus target: All bytes queued, disabling TX_EMPTY\n");
         }
     } else {
-        /* 伪中断处理：Master 正在写或总线空闲 */
+        /* Spurious interrupt handling: Master is writing or bus is idle */
         LOGW("SMBus target: Spurious TX_EMPTY (act=%d, rxLvl=%d) - Disabling\n", targetActivity, rxFifoLevel);
         regBase->icIntrMask.value &= ~SMBUS_INTR_TX_EMPTY;
     }
 }
 
 /* =========================================================================
- * Helper: 处理 STOP_DET (传输结束)
+ * Helper: Handle STOP_DET (transfer end)
  * ========================================================================= */
-static inline void smbustargetHandleStop(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
+static inline void smbusTargetHandleStop(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase)
 {
     LOGI("SMBus target: STOP_DET - Transaction completed\n");
     
-    /* Case A: 写操作完成 */
+    /* Case A: Write operation completed */
     if (pDrvData->pSmbusDev.status & SMBUS_STATUS_WRITE_IN_PROGRESS_MASK) {
         pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_WRITE_IN_PROGRESS_MASK;
-        
+
         if (pDrvData->pSmbusDev.targetValidRxLen == 1) {
-            /* Send Byte 协议 (或只写了一个字节) */
+            /* Send Byte protocol (or only wrote one byte) */
             smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_TARGET_WRITE_REQ,
-                                   pDrvData->pSmbusDev.targetRxBuf, 1); 
+                                   pDrvData->pSmbusDev.targetRxBuf, 1);
         } else if (pDrvData->pSmbusDev.targetValidRxLen > 1) {
             /* Block Write */
             smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_RX_DONE,
@@ -952,22 +932,22 @@ static inline void smbustargetHandleStop(SmbusDrvData_s *pDrvData, volatile Smbu
         }
         LOGD("SMBus target: Write Done, len=%d\n", pDrvData->pSmbusDev.targetValidRxLen);
     }
-    
-    /* Case B: 读操作完成 */
+
+    /* Case B: Read operation completed */
     if (pDrvData->pSmbusDev.status & SMBUS_STATUS_READ_IN_PROGRESS_MASK) {
         pDrvData->pSmbusDev.status &= ~SMBUS_STATUS_READ_IN_PROGRESS_MASK;
     }
 
-    /* 重置状态以准备下一次可能的读操作 (IP特性需求) */
+    /* Reset status to prepare for next possible read operation (IP feature requirement) */
     regBase->icIntrMask.value |= SMBUS_INTR_TX_EMPTY;
     pDrvData->pSmbusDev.txIndex = 0;
     (void)regBase->icClrStopDet;
 }
 
 /* =========================================================================
- * Helper: 处理异常和其他简单中断 (Tag, Abort, RX Done)
+ * Helper: Handle exceptions and other simple interrupts (Tag, Abort, RX Done)
  * ========================================================================= */
-static inline void smbustargetHandleExceptions(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase, U32 intrStat)
+static inline void smbusTargetHandleExceptions(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase, U32 intrStat)
 {
     /* Address Tags */
     if (intrStat & (SMBUS_INTR_SLV_ADDR1_TAG | SMBUS_INTR_SLV_ADDR2_TAG |
@@ -1007,7 +987,7 @@ static inline void smbustargetHandleExceptions(SmbusDrvData_s *pDrvData, volatil
  * @note Integrates I2C target ISR LOGEc with SMBus protocol handling
  * @note Uses SMBus callback functions for event notification
  */
-static void smbusHandletargetInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase,
+static void smbusHandleTargetInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusRegMap_s *regBase,
                                       U32 intrStat, U32 smbusIntrStat)
 {
     SMBUS_CHECK_PARAM_VOID(pDrvData == NULL || regBase == NULL,
@@ -1017,37 +997,37 @@ static void smbusHandletargetInterrupt(SmbusDrvData_s *pDrvData, volatile SmbusR
 
     /* 1. WR_REQ (Priority 1) */
     if (intrStat & SMBUS_INTR_WR_REQ) {
-        smbustargetHandleWriteRequest(pDrvData, regBase);
+        smbusTargetHandleWriteRequest(pDrvData, regBase);
     }
 
     /* 2. RX_FULL (Priority 2) */
     if (intrStat & SMBUS_INTR_RX_FULL) {
-        smbustargetHandleRxData(pDrvData, regBase, intrStat);
+        smbusTargetHandleRxData(pDrvData, regBase, intrStat);
     }
 
     /* 3. RD_REQ (Priority 3) */
     if (intrStat & SMBUS_INTR_RD_REQ) {
-        smbustargetHandleReadRequest(pDrvData, regBase);
+        smbusTargetHandleReadRequest(pDrvData, regBase);
     }
 
     /* 4. TX_EMPTY (Priority 5 - but handled here) */
     if (intrStat & SMBUS_INTR_TX_EMPTY) {
-        smbustargetHandleTxEmpty(pDrvData, regBase);
+        smbusTargetHandleTxEmpty(pDrvData, regBase);
     }
 
     /* 5. STOP_DET (Priority 4) */
     if (intrStat & SMBUS_INTR_STOP_DET) {
-        smbustargetHandleStop(pDrvData, regBase);
+        smbusTargetHandleStop(pDrvData, regBase);
     }
 
     /* 6. Exceptions & Others AddrTags mask estimate */
     if (intrStat & (SMBUS_INTR_TX_ABRT | SMBUS_INTR_RX_DONE | 0xF00)) {
-        smbustargetHandleExceptions(pDrvData, regBase, intrStat);
+        smbusTargetHandleExceptions(pDrvData, regBase, intrStat);
     }
 
     /* 7. SMBus Specific */
     if (smbusIntrStat) {
-        smbusHandletargetSpecificInterrupts(pDrvData, regBase, smbusIntrStat);
+        smbusHandleTargetSpecificInterrupts(pDrvData, regBase, smbusIntrStat);
     }
     
     /* 8. Clear Status to prevent re-trigger */
@@ -1106,7 +1086,7 @@ static void smbusIsr(void *arg)
         smbusHandleMasterInterrupt(pDrvData, regBase, rawIntr, smbusIntrStat.value);
     } else {
         LOGD("SMBus ISR: Handling target mode interrupts\n");
-        smbusHandletargetInterrupt(pDrvData, regBase, rawIntr, smbusIntrStat.value);
+        smbusHandleTargetInterrupt(pDrvData, regBase, rawIntr, smbusIntrStat.value);
     }
 }
 
@@ -1118,7 +1098,9 @@ static void smbusIsr(void *arg)
  *          registers the interrupt service routine.
  * @param[in] devId SMBus device identifier to initialize
  * @return EXIT_SUCCESS on successful initialization, negative error code on failure:
- *         -EBUSY: Device already initialized
+ *         -EBUSY: Device locked by another driver
+ *         -EEXIST: Device already initialized
+ *         -ENODEV: Device not found or driver mismatch
  *         -EINVAL: Invalid device identifier or driver mismatch
  *         -ENOMEM: Memory allocation failed
  *         -EIO: Hardware configuration failed
@@ -1139,16 +1121,16 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
     }
     /* Check if already initialized */
     if (isDrvInit(devId) == true) {
-        ret = -EBUSY;
+        ret = -EEXIST;
         goto unlock;
     }
 
     if (!isDrvMatch(devId, DRV_ID_DW_I2C)) {
-        ret = -EINVAL;
+        ret = -ENODEV;    ///< device not matched
         goto unlock;
     }
     if(config == NULL){
-       ret = -EXDEV;
+       ret = -EINVAL;
        goto unlock;
     }
     /* Step 1: Allocate driver data structure */
@@ -1162,7 +1144,7 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
     /* Step 2: Get SBR configuration (not modularized as requested) */
     if (smbusDevCfgGet(devId, &pDrvData->sbrCfg) != EXIT_SUCCESS) {
         LOGE("%s: get SBR failed\n", __func__);
-        ret = -EIO;
+        ret = -ENXIO;
         goto freeMem;
     }
 #endif
@@ -1180,6 +1162,7 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
     pDrvData->sbrCfg.slaveAddrLow = config->targetAddrLow;
     pDrvData->sbrCfg.enSmbus = config->featureMap;
 #endif
+    pDrvData->sbrCfg.masterMode = config->masterMode;
     pDrvData->udid.deviceCapabilities = EXTRACT_BYTE(config->udidWord0, 0);
     pDrvData->udid.versionRevision = EXTRACT_BYTE(config->udidWord0, 1);
     pDrvData->udid.vendorId = (U16)(config->udidWord0 >> SMBUS_BYTE_SHIFT_16); /* Bytes 2-3 */
@@ -1257,7 +1240,7 @@ S32 smbusInit(DevList_e devId, SmbusUserConfigParam_s *config)
     }
 
     /* Step 9: Initialize ARP Master context (modularized) */
-    if (config->isArpEnable) {
+    if (pDrvData->sbrCfg.enSmbus & SMBUS_FEATURE_ARP) {
         ret = smbusInitializeArpMaster(pDrvData);
         if (ret != EXIT_SUCCESS) {
             LOGE("%s: ARP Master initialization failed, ret=%d\n", __func__, ret);
@@ -1477,7 +1460,7 @@ S32 smbusMasterTargetModeSwitch(DevList_e devId, SmbusSwitchParam_s *param)
         smbusFreetargetResources(pDrvData);
 
         /* Update driver configuration to reflect master mode */
-        pDrvData->sbrCfg.masterMode = 1;  /* Set to master mode */
+        pDrvData->sbrCfg.masterMode = SMBUS_MODE_MASTER;  /* Set to master mode */
     }
 
     /* Get HAL operations for mode switching */
@@ -1517,84 +1500,84 @@ exit:
 /*                    Core ARP Functions                                    */
 /* ======================================================================== */
 /**
- * @brief 注册SMBus设备通用事件回调函数
- * @param devId SMBus设备ID
- * @param callback 回调函数指针
- * @param userData 用户数据指针，会在回调时传回
- * @return 0 成功, 负值 失败
+ * @brief Register SMBus device general event callback function
+ * @param devId SMBus device ID
+ * @param callback Pointer to callback function
+ * @param userData Pointer to user data, will be passed back during callback
+ * @return 0 on success, negative value on failure
  */
 S32 smbusRegisterCallback(DevList_e devId, SmbusCallback_t callback, void *userData)
 {
     SmbusDrvData_s *pDrvData = NULL;
     S32 ret = EXIT_SUCCESS;
 
-    /* 参数有效性检查 */
+    /* Parameter validity check */
     if (callback == NULL) {
         ret = -EINVAL;
         goto exit;
     }
 
-    /* 使用funcRunBeginHelper统一检查驱动匹配、初始化状态和获取设备锁 */
+    /* Use funcRunBeginHelper to uniformly check driver match, initialization status and acquire device lock */
     ret = funcRunBeginHelper(devId, DRV_ID_DW_I2C, (void**)&pDrvData);
     if (ret != EXIT_SUCCESS) {
         goto exit;
     }
 
-    /* 注册回调函数和用户数据 */
+    /* Register callback function and user data */
     pDrvData->callback = callback;
     pDrvData->userData = (SmbusEventData_u*)userData;
-    LOGI("%s(): SMBus回调函数注册成功，设备ID: %d\n", __func__, devId);
+    LOGI("%s(): SMBus callback function registered successfully, device ID: %d\n", __func__, devId);
 
-    /* 释放设备锁 */
+    /* Release device lock */
     funcRunEndHelper(devId);
 
 exit:
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s(): SMBus回调函数注册失败，ret=%d，设备ID: %d\n", __func__, ret, devId);
+        LOGE("%s(): SMBus callback function registration failed, ret=%d, device ID: %d\n", __func__, ret, devId);
     }
     return ret;
 }
 
 /**
- * @brief 注销SMBus设备通用事件回调函数
- * @param devId SMBus设备ID
- * @param callback 回调函数指针
- * @return 0 成功, 负值 失败
+ * @brief Unregister SMBus device general event callback function
+ * @param devId SMBus device ID
+ * @param callback Pointer to callback function
+ * @return 0 on success, negative value on failure
  */
 S32 smbusUnregisterCallback(DevList_e devId, SmbusCallback_t callback)
 {
     SmbusDrvData_s *pDrvData = NULL;
     S32 ret = EXIT_SUCCESS;
 
-    /* 参数有效性检查 */
+    /* Parameter validity check */
     if (callback == NULL) {
         ret = -EINVAL;
         goto exit;
     }
 
-    /* 使用funcRunBeginHelper统一检查驱动匹配、初始化状态和获取设备锁 */
+    /* Use funcRunBeginHelper to uniformly check driver match, initialization status and acquire device lock */
     ret = funcRunBeginHelper(devId, DRV_ID_DW_I2C, (void**)&pDrvData);
 
     if (ret != EXIT_SUCCESS) {
         goto exit;
     }
 
-    /* 检查是否是同一个回调函数 */
+    /* Check if it's the same callback function */
     if (pDrvData->callback == callback) {
         pDrvData->callback = NULL;
         pDrvData->userData = NULL;
-        LOGI("%s(): SMBus回调函数注销成功，设备ID: %d\n", __func__, devId);
+        LOGI("%s(): SMBus callback function unregistered successfully, device ID: %d\n", __func__, devId);
     } else {
-        ret = -ENOENT;  /* 回调函数不匹配 */
-        LOGW("%s(): SMBus回调函数注销失败，回调函数不匹配，设备ID: %d\n", __func__, devId);
+        ret = -ENOENT;  /* Callback function does not match */
+        LOGW("%s(): SMBus callback function unregistration failed, callback function mismatch, device ID: %d\n", __func__, devId);
     }
 
-    /* 释放设备锁 */
+    /* Release device lock */
     funcRunEndHelper(devId);
 
 exit:
     if (ret != EXIT_SUCCESS) {
-        LOGE("%s(): SMBus回调函数注销失败，ret=%d，设备ID: %d\n", __func__, ret, devId);
+        LOGE("%s(): SMBus callback function unregistration failed, ret=%d, device ID: %d\n", __func__, ret, devId);
     }
     return ret;
 }
@@ -1605,14 +1588,14 @@ static inline S32 smbusValidateXfer(const SmbusXfer_s *xfer)
         return -EINVAL;
     }
 
-    /* 检查数据长度上限 */
+    /* Check data length limit */
     if (xfer->wLen > SMBUS_BLOCK_MAXLEN || xfer->rLen > SMBUS_BLOCK_MAXLEN) {
         LOGE("SMBus: Length exceeds limit %d\n", SMBUS_BLOCK_MAXLEN);
         return -EINVAL;
     }
 
-    /* [FIX Bug #3] 严格检查缓冲区指针：有长度必须有 buffer */
-    if ((xfer->wLen > 0 && xfer->wBuf == NULL) || 
+    /* [FIX Bug #3] Strictly check buffer pointers: if there is length, there must be a buffer */
+    if ((xfer->wLen > 0 && xfer->wBuf == NULL) ||
         (xfer->rLen > 0 && xfer->rBuf == NULL)) {
         LOGE("SMBus: Invalid buffer (Len > 0 but Buf is NULL)\n");
         return -EINVAL;
@@ -1622,7 +1605,7 @@ static inline S32 smbusValidateXfer(const SmbusXfer_s *xfer)
 }
 
 /* =========================================================================
- * Helper 2: 构建 TX Buffer 和处理 Write PEC
+ * Helper 2: Build TX Buffer and handle Write PEC
  * ========================================================================= */
 static void smbusPrepareTxBuffer(const SmbusXfer_s *xfer, U8 *txBuf, U16 *pTxPos)
 {
@@ -1648,15 +1631,15 @@ static void smbusPrepareTxBuffer(const SmbusXfer_s *xfer, U8 *txBuf, U16 *pTxPos
 
     /* 3. Write-Only PEC Construction */
     if (pecEn && isWriteOnly && pos > 0) {
-        /* [FIX Bug #10] 使用足够大的缓冲区，或复用堆栈变量（如果大小可控） */
+        /* [FIX Bug #10] Use sufficiently large buffer, or reuse stack variables (if size is controllable) */
         U8 pecCalcBuf[SMBUS_PEC_BUF_SIZE]; 
         U8 pIdx = 0;
         U8 targetAddr = xfer->addr & SMBUS_ADDRESS_MASK;
 
-        /* 构造 PEC 流: Addr(W) + [Cmd] + [Count] + [Data] */
+        /* Construct PEC stream: Addr(W) + [Cmd] + [Count] + [Data] */
         pecCalcBuf[pIdx++] = (U8)(targetAddr << 1); 
         
-        /* 边界检查防止溢出 */
+        /* Boundary check to prevent overflow */
         if (pos + 1 > SMBUS_PEC_BUF_SIZE) {
             LOGE("SMBus: PEC buffer overflow risk\n");
         } else {
@@ -1670,7 +1653,7 @@ static void smbusPrepareTxBuffer(const SmbusXfer_s *xfer, U8 *txBuf, U16 *pTxPos
 }
 
 /* =========================================================================
- * Helper 3: 接收后处理 (PEC 校验 & 数据拷贝)
+ * Helper 3: Post-receive processing (PEC verification & data copy)
  * ========================================================================= */
 static S32 smbusVerifyAndCopyRx(SmbusXfer_s *xfer, U8 *rxBuf, U8 *txBuf, U16 txLen)
 {
@@ -1679,7 +1662,7 @@ static S32 smbusVerifyAndCopyRx(SmbusXfer_s *xfer, U8 *rxBuf, U8 *txBuf, U16 txL
     U8 *pDataStart = rxBuf;
     U8 actualDataLen = (U8)xfer->rLen;
 
-    /* 1. 解析 Block Length */
+    /* 1. Parse Block Length */
     if (isBlock) {
         U8 blockCount = rxBuf[0];
         if (blockCount > SMBUS_BLOCK_MAXLEN || blockCount == 0) {
@@ -1687,10 +1670,10 @@ static S32 smbusVerifyAndCopyRx(SmbusXfer_s *xfer, U8 *rxBuf, U8 *txBuf, U16 txL
             return -EPROTO;
         }
         actualDataLen = blockCount;
-        pDataStart = &rxBuf[1]; /* Block读数据偏移1字节 */
+        pDataStart = &rxBuf[1]; /* Block read data offset by 1 byte */
     }
 
-    /* 2. PEC 校验 */
+    /* 2. PEC verification */
     if (pecEn) {
         U8 pecCalcBuf[SMBUS_PEC_BUF_SIZE];
         U32 pIdx = 0;
@@ -1709,7 +1692,7 @@ static S32 smbusVerifyAndCopyRx(SmbusXfer_s *xfer, U8 *rxBuf, U8 *txBuf, U16 txL
         /* Read Payload (Data + Count if block) */
         U16 payloadLen = isBlock ? (actualDataLen + 1) : actualDataLen;
         
-        /* [FIX Bug #10] 再次检查 buffer 边界 */
+        /* Check buffer boundary again */
         if (pIdx + payloadLen >= SMBUS_PEC_BUF_SIZE) {
             LOGE("SMBus: PEC Verify buffer too small\n");
             return -ENOMEM;
@@ -1739,8 +1722,8 @@ static S32 smbusVerifyAndCopyRx(SmbusXfer_s *xfer, U8 *rxBuf, U8 *txBuf, U16 txL
 }
 
 /**
- * @brief 通用 SMBus 传输接口 (Core API)
- * @details 处理所有 SMBus 协议细节：命令构建、Block 长度处理、PEC 计算与校验
+ * @brief General SMBus transfer interface (Core API)
+ * @details Handle all SMBus protocol details: command construction, Block length processing, PEC calculation and verification
  */
 S32 smbusTransfer(DevList_e devId, SmbusXfer_s *xfer)
 {

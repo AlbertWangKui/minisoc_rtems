@@ -32,7 +32,6 @@
 /* Logging includes for static inline functions */
 #include "log_msg.h"
 
-///< #define TEST_SUITS_1
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -45,7 +44,13 @@ typedef struct SmbusHalOps SmbusHalOps_s;
 /* ======================================================================== */
 /*                              Constants                                   */
 /* ======================================================================== */
+#define TIANHE_FPGA_PLATFORM                    /**< FPGA platform flag */
+
+#ifdef TIANHE_FPGA_PLATFORM
 #define SMBUS_MAX_DEVICE_NUM          (6)       /**< 最大支持的 SMBus 设备数量 */
+#else
+#define SMBUS_MAX_DEVICE_NUM          (2)       /**< 最大支持的 SMBus 设备数量 */
+#endif
 #define SMBUS_LOCK_TIMEOUT_MS         (1000)    /**< Lock timeout in milliseconds */
 #define SMBUS_TRANSFER_TIMEOUT_MS     (5000)    /**< Transfer timeout in milliseconds */
 #define SMBUS_MAX_BLOCK_LEN           (32)      /**< Maximum block transfer length */
@@ -59,7 +64,7 @@ typedef struct SmbusHalOps SmbusHalOps_s;
 #define SMBUS_ARP_TIMEOUT_MS          (5000U)   /**< Timeout for the SMBus Address Resolution Protocol (ARP) in milliseconds */
 
 /* ======================================================================== */
-/*                    Unified I2C Transfer Constants                          */
+/*                    Unified I2C Transfer Constants                         */
 /* ======================================================================== */
 
 /* SMBus Block Transfer Constants */
@@ -78,9 +83,9 @@ typedef struct SmbusHalOps SmbusHalOps_s;
 
 /* Maximum Transfer Sizes */
 #define SMBUS_MAX_WRITE_BLOCK_SIZE     (SMBUS_CMD_LEN + SMBUS_LEN_BYTE + SMBUS_BLOCK_MAX + SMBUS_PEC_LEN)  /**< Max write block: Cmd + Len + Data + PEC */
-#define SMBUS_MAX_READ_BLOCK_SIZE      (SMBUS_LEN_BYTE + SMBUS_BLOCK_MAX + SMBUS_PEC_LEN)                /**< Max read block: Len + Data + PEC */
-#define SMBUS_MAX_WORD_XFER_SIZE       (SMBUS_CMD_LEN + 2 + SMBUS_PEC_LEN)                             /**< Max word transfer: Cmd + 2 bytes + PEC */
-#define SMBUS_MAX_BYTE_XFER_SIZE       (SMBUS_CMD_LEN + 1 + SMBUS_PEC_LEN)                             /**< Max byte transfer: Cmd + 1 byte + PEC */
+#define SMBUS_MAX_READ_BLOCK_SIZE      (SMBUS_LEN_BYTE + SMBUS_BLOCK_MAX + SMBUS_PEC_LEN)                  /**< Max read block: Len + Data + PEC */
+#define SMBUS_MAX_WORD_XFER_SIZE       (SMBUS_CMD_LEN + 2 + SMBUS_PEC_LEN)                                 /**< Max word transfer: Cmd + 2 bytes + PEC */
+#define SMBUS_MAX_BYTE_XFER_SIZE       (SMBUS_CMD_LEN + 1 + SMBUS_PEC_LEN)                                 /**< Max byte transfer: Cmd + 1 byte + PEC */
 
 /* ======================================================================== */
 /*                       SMBus Hardware Timing Constants                      */
@@ -88,17 +93,17 @@ typedef struct SmbusHalOps SmbusHalOps_s;
 /* SCL count values for different speed modes (ported from I2C) */
 #define SMBUS_HW_CLK_H100             (65)     /**< Standard mode (100kHz) SCL high count */
 #define SMBUS_HW_CLK_L100             (65)     /**< Standard mode (100kHz) SCL low count */
-#define SMBUS_HW_CLK_H400             (15)      /**< Fast mode (400kHz) SCL high count */
-#define SMBUS_HW_CLK_L400             (15)      /**< Fast mode (400kHz) SCL low count */
+#define SMBUS_HW_CLK_H400             (15)     /**< Fast mode (400kHz) SCL high count */
+#define SMBUS_HW_CLK_L400             (15)     /**< Fast mode (400kHz) SCL low count */
 #define SMBUS_HW_CLK_H1000            (6)      /**< Fast mode plus (1MHz) SCL high count */
 #define SMBUS_HW_CLK_L1000            (6)      /**< Fast mode plus (1MHz) SCL low count */
-#define SMBUS_HW_CLK_H3400            (30)       /**< High speed (3.4MHz) SCL high count */
-#define SMBUS_HW_CLK_L3400            (30)       /**< High speed (3.4MHz) SCL low count */
+#define SMBUS_HW_CLK_H3400            (30)     /**< High speed (3.4MHz) SCL high count */
+#define SMBUS_HW_CLK_L3400            (30)     /**< High speed (3.4MHz) SCL low count */
 
 /* SMBus speed mode frequencies */
-#define SMBUS_MAX_STANDARD_MODE_FREQ  (100000U)  /**< Standard mode: 100 kHz */
-#define SMBUS_MAX_FAST_MODE_FREQ      (400000U)  /**< Fast mode: 400 kHz */
-#define SMBUS_MAX_FAST_MODE_PLUS_FREQ (1000000U) /**< Fast mode plus: 1 MHz */
+#define SMBUS_MAX_STANDARD_MODE_FREQ  (100000U)   /**< Standard mode: 100 kHz */
+#define SMBUS_MAX_FAST_MODE_FREQ      (400000U)   /**< Fast mode: 400 kHz */
+#define SMBUS_MAX_FAST_MODE_PLUS_FREQ (1000000U)  /**< Fast mode plus: 1 MHz */
 #define SMBUS_MAX_HIGH_SPEED_MODE_FREQ (3400000U) /**< High speed: 3.4 MHz */
 
 /* ======================================================================== */
@@ -524,8 +529,8 @@ typedef enum SmbusTransferState {
 #define SMBUS_TRANSACTION_TIMEOUT_US  (100000U) /**< Overall transaction timeout in microseconds */
 
 /* Address constants */
-#define SMBUS_ARP_ADDR                (0x61)    /**< SMBus ARP address */
-#define SMBUS_HOST_NOTIFY_ADDR        (0x08)    /**< SMBus host notify address */
+#define SMBUS_ARP_ADDR                 (0x61)    /**< SMBus ARP address */
+#define SMBUS_HOST_NOTIFY_ADDR         (0x08)    /**< SMBus host notify address */
 #define SMBUS_MIN_VALID_ADDRESS        (0x08)   /**< Minimum valid address (reserved 0x00-0x07) */
 #define SMBUS_MAX_VALID_ADDRESS        (0x77)   /**< Maximum valid address */
 #define SMBUS_I2C_WRITE_MODE           (0x00)   /**< I2C write mode bit */
@@ -798,6 +803,8 @@ typedef struct SmbusDev {
     U8                       isQuick;
     U32                      abortSource;                           /**< Abort source register value */
     U32                      errorType;                             /**< Specific error type (NACK, ARB_LOST, etc.) */
+    U8                       notifyBuf[4];                          /**< Host Notify buffer */
+    U8                       alertBuf[2];                           /**< SMBus Alert buffer */                                                      
     SmbusMsg_s		         msgs[SMBUS_MAX_BLOCK_LEN + 1];         /**< SMBus messages parameters */
 
     U32                      irq;                /**< Interrupt number */
@@ -807,7 +814,7 @@ typedef struct SmbusDev {
     SmbusFeatureConfig_s     smbFeatures;        /**< SMBus feature configuration (PEC, ARP, Host Notify) */
     U8                       restartEnb;         /**< Device restart enabled status */
     U32                      masterCfg;          /**< Master configuration register value */
-    U32                      targetCfg;           /**< target configuration register value */
+    U32                      targetCfg;          /**< target configuration register value */
     U32                      txFifoDepth;        /**< TX FIFO depth */
     U32                      rxFifoDepth;        /**< RX FIFO depth */
     void                     *isrHandler;        /**< Interrupt service routine handler */
@@ -827,8 +834,8 @@ typedef struct SmbusDev {
     U32                      targetValidRxLen;    /**< Valid RX buffer length */
     U32                      targetValidTxLen;    /**< Valid TX buffer length */
     U32                      txIndex;            /**< Current TX buffer index */
-    U8                       masterTxBuf[33];    // 当前正在发送的消息缓冲区位置
-    U32                      masterTxBufLen;     // 当前消息剩余待发送长度
+    U8                       masterTxBuf[SMBUS_MAX_BLOCK_LEN + 1];    ///< 当前正在发送的消息缓冲区位置
+    U32                      masterTxBufLen;     ///< 当前消息剩余待发送长度
     U32                      sdaHoldTime;        /**< SDA hold time configuration */
     U32                      clkRate;            /**< Clock rate for timing calculations */
 
@@ -861,14 +868,6 @@ typedef struct SmbusDev {
 #define SMBUS_ERR_RX_OVER               (0x00000006)  ///< RX overflow error
 #define SMBUS_ERR_TX_OVER               (0x00000008)  ///< TX overflow error
 #define SMBUS_ERR_ACTIVITY              (0x00000010)  ///< Activity error
-
-/**
- * @brief Host Notify 数据结构
- */
-typedef struct SmbusHostNotifyData {
-    U8  deviceAddr;         /**< 发送通知的设备地址 */
-    U16 data;               /**< 通知数据 (低字节在前) */
-} SmbusHostNotifyData_s;
 
 /**
  * @brief ARP失败原因枚举
@@ -1050,7 +1049,7 @@ void smbusHandleMasterSpecificInterrupts(SmbusDrvData_s *pDrvData,
  * @param[in] smbusIntrStat SMBus interrupt status
  * @return void
  */
-void smbusHandletargetSpecificInterrupts(SmbusDrvData_s *pDrvData,
+void smbusHandleTargetSpecificInterrupts(SmbusDrvData_s *pDrvData,
                                         volatile SmbusRegMap_s *regBase,
                                         U32 smbusIntrStat);
 
@@ -1299,13 +1298,29 @@ static inline S32 smbusExecuteTransfer(SmbusDev_s *dev, SmbusMsg_s *msgs, S32 nu
     return dev->halOps->i2cTransfer(dev, msgs, num);
 }
 
-/**
- * @brief Get SMBus register base address
- * @param devId Device identifier
- * @param pCtrlReg Pointer to register map pointer
- * @return EXIT_SUCCESS on success, negative error code on failure
- */
-S32 getSmbusReg(DevList_e devId, SmbusRegMap_s **pCtrlReg);
+/* Write register: Use dsb st (Store Only) for better performance and sufficient safety */
+static inline void smbusWriteReg(volatile U32 *addr, U32 val)
+{
+    /* 1. Memory barrier: Prevent compiler from moving subsequent instructions before the write operation */
+    /* 2. dsb st: Force flush CPU write buffer to ensure data reaches peripheral/bus before next instruction */
+    __asm__ __volatile__("dsb st" : : : "memory");
+
+    *addr = val;
+}
+
+/* Read register: Use dmb (Data Memory Barrier) */
+static inline U32 smbusReadReg(volatile U32 *addr)
+{
+    U32 val = *addr;
+
+    /* * dmb (Data Memory Barrier):
+     * Ensure the data read operation is completed before executing subsequent instructions.
+     * Prevent compiler or CPU from speculatively using the read data.
+     */
+    __asm__ __volatile__("dmb" : : : "memory");
+
+    return val;
+}
 
 #ifdef __cplusplus
 }

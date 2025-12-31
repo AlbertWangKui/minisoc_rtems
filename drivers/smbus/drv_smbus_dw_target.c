@@ -54,10 +54,10 @@ static inline S32 smbusIsBusBusy(volatile SmbusRegMap_s *regBase)
     U32 timeout = SMBUS_TRANSACTION_TIMEOUT_US; ///< Timeout may need to be longer for full transaction
 
     while (timeout--) {
-        status.value = regBase->icStatus.value;
+        status.value = smbusReadReg(&regBase->icStatus.value);
         ///< We wait for the 'activity' bit to be cleared, indicating the
         if (!status.fields.activity) {
-            return EXIT_SUCCESS; 
+            return EXIT_SUCCESS;
         }
         rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(10));
     }
@@ -65,36 +65,35 @@ static inline S32 smbusIsBusBusy(volatile SmbusRegMap_s *regBase)
 }
 
 /**
- * @brief [Internal] 修改本机 target 地址
- * @details 安全地更新硬件的从机地址寄存器 (SAR)。
- * 通常在初始化或 ARP 地址分配完成后调用。
- * @param pDrv  驱动私有数据指针
- * @param addr  新地址 (7-bit)
- * @return S32  0 成功, <0 失败
+ * @brief [Internal] Update local target address
+ * @details Safely updates the hardware Slave Address Register (SAR).
+ *          Usually called during initialization or after ARP address assignment completion.
+ * @param[in] pDrv Pointer to driver private data
+ * @param[in] addr New address (7-bit)
+ * @return S32 0 on success, <0 on failure
  */
 static S32 smbusSetLocalAddress(SmbusDrvData_s *pDrv, U8 addr)
 {
     volatile SmbusRegMap_s *regBase = pDrv->pSmbusDev.regBase;
+    SmbusDev_s *pDev = &pDrv->pSmbusDev;
     U32 timeout = SMBUS_ADDR_UPDATE_TIMEOUT_CNT;
 
-    ///< 1. 参数校验
-    if (addr > SMBUS_MAX_TARGET_ADDRESS) {
-        LOGE("SMBus: Invalid local address 0x%02X\n", addr);
-        return -EINVAL;
-    }
+    ///< 1. Parameter validation
+    SMBUS_CHECK_PARAM_RETURN( pDev->halOps == NULL || regBase == NULL ||
+                            addr > SMBUS_MAX_TARGET_ADDRESS, -EINVAL,
+                            "SMBus: Invalid local address 0x%02X or invalid register\n", addr);
 
-    ///< 2. 检查当前是否忙 (如果正在传输，强制修改可能导致总线错误)
+    ///< 2. Check if currently busy (forcing modification during transfer may cause bus errors)
     if (smbusIsBusBusy(regBase)) {
         LOGW("SMBus: Warning - Changing address while bus is busy\n");
         return -EBUSY;
-        ///< 策略：可以选择返回 -EBUSY，或者强行继续（视 ARP 协议要求而定）
+        ///< Strategy: Can return -EBUSY, or force continue (depending on ARP protocol requirements)
     }
 
-    ///< 3. 禁用控制器 (DesignWare IP 修改 SAR 必须先 Disable)
-    regBase->icEnable.fields.enable = 0;
-
-    while ((regBase->icEnableStatus & SMBUS_IC_ENABLE_STATUS_IC_EN)  && --timeout > 0) {
-        ///< 等待硬件完全关闭
+    ///< 3. Disable controller (DesignWare IP requires Disable before modifying SAR)
+    pDev->halOps->disable(pDev);
+    while ((smbusReadReg(&regBase->icEnableStatus) & SMBUS_IC_ENABLE_STATUS_IC_EN)  && --timeout > 0) {
+        ///< Wait for hardware to completely shutdown
         udelay(10);
     }
     if (timeout == 0) {
@@ -102,76 +101,80 @@ static S32 smbusSetLocalAddress(SmbusDrvData_s *pDrv, U8 addr)
         return -ETIMEDOUT;
     }
 
-    ///< 4. 更新 SAR (target Address Register)
-    regBase->icSar.fields.icSar = addr;
+    ///< 4. Update SAR (target Address Register)
+    SmbusIcSarReg_u sarReg;
+    sarReg.value = smbusReadReg(&regBase->icSar.value);
+    sarReg.fields.icSar = addr;
+    smbusWriteReg(&regBase->icSar.value, sarReg.value);
 
-    ///< 5. 重新启用控制器
-    regBase->icEnable.fields.enable = 1;
+    ///< 5. Re-enable controller
+    pDev->halOps->enable(pDev);
 
     LOGD("SMBus: Local target Address updated to 0x%02X\n", addr);
     return EXIT_SUCCESS;
 }
 
 /**
- * @brief 从机端ARP地址分配处理函数
- * @details 处理从机端的ARP地址分配命令。当接收到ARP Assign Address命令时调用此函数，
- *          解析命令中的UDID和新地址，验证UDID是否匹配本机，如果匹配则更新硬件地址寄存器，
- *          并通知上层应用程序地址分配完成。
- * @param[in] pDrv 指向SMBus驱动私有数据结构的指针
- * @param[in] payload 指向ARP Assign Address命令负载数据的指针，包含目标UDID和新分配的地址
+ * @brief Target-side ARP address assignment handler function
+ * @details Handles target-side ARP address assignment commands. This function is called when
+ *          receiving an ARP Assign Address command, parses the UDID and new address from the command,
+ *          validates if the UDID matches the local device, updates the hardware address register if
+ *          matched, and notifies the upper application that address assignment is complete.
+ * @param[in] pDrv Pointer to SMBus driver private data structure
+ * @param[in] payload Pointer to ARP Assign Address command payload data, containing target UDID and newly assigned address
  * @return void
  *
- * @note 此函数仅在从机模式下使用
- * @note 地址更新是硬件级别的，直接修改SAR寄存器
- * @note 成功分配地址后会触发用户回调函数
- * @note 如果UDID不匹配本机，函数将静默返回
+ * @note This function is only used in target mode
+ * @note Address update is hardware-level, directly modifies SAR register
+ * @note User callback function will be triggered after successful address assignment
+ * @note Function will return silently if UDID doesn't match local device
  *
- * @par 处理流程：
- * 1. 解析ARP命令负载，提取目标UDID和新地址
- * 2. 比较目标UDID与本机UDID，确认是否为发给本机的命令
- * 3. 如果UDID匹配，调用smbusSetLocalAddress更新硬件地址
- * 4. 更新驱动内部状态，记录新的ARP状态和当前地址
- * 5. 通过回调函数通知应用程序地址分配完成
+ * @par Processing Flow:
+ * 1. Parse ARP command payload, extract target UDID and new address
+ * 2. Compare target UDID with local UDID, confirm if command is for this device
+ * 3. If UDID matches, call smbusSetLocalAddress to update hardware address
+ * 4. Update driver internal state, record new ARP status and current address
+ * 5. Notify application via callback function that address assignment is complete
  *
- * @warning 此函数假设传入的payload格式正确
- * @warning 硬件地址更新操作具有原子性
- * @warning 更新失败时不会触发回调函数
+ * @warning This function assumes the passed payload format is correct
+ * @warning Hardware address update operation is atomic
+ * @warning Callback function will not be triggered on update failure
  *
- * @par 依赖函数：
- * - parseAssignPacket: 解析ARP Assign Address命令包
- * - isMyUdid: 比较UDID是否匹配本机
- * - smbusSetLocalAddress: 更新硬件从机地址寄存器
+ * @par Dependent Functions:
+ * - parseAssignPacket: Parse ARP Assign Address command packet
+ * - isMyUdid: Compare if UDID matches local device
+ * - smbusSetLocalAddress: Update hardware slave address register
  *
- * @par 线程安全性：
- * 此函数不是线程安全的，应该在SMBus中断上下文或已加锁的环境中调用
+ * @par Thread Safety:
+ * This function is not thread-safe, should be called in SMBus interrupt context or locked environment
  */
 S32 smbusArptargetHandleAssignAddr(SmbusDrvData_s *pDrv, const U8 *payload)
 {
-    ///< 1. 解析 Payload，提取 UDID 和 New Address
+    ///< 1. Parse Payload, extract UDID and New Address
     S32 ret = EXIT_SUCCESS;
     SmbusUdid_s targetUdid;
     U8 newAddr = SMBUS_TARGET_INVALID_NEW_ADDR;
     parseAssignPacket(payload, &targetUdid, &newAddr);
 
-    ///< 2. 检查 UDID 是否匹配本机
+    ///< 2. Check if UDID matches local device
     if (isMyUdid(&pDrv->udid, &targetUdid)) {
 
-        ///< 3. 核心步骤：直接调用内部函数修改硬件地址
+        ///< 3. Core step: Directly call internal function to modify hardware address
         ret = smbusSetLocalAddress(pDrv, newAddr);
 
         if (ret == EXIT_SUCCESS) {
-            ///< 4. 更新内部状态
+            ///< 4. Update internal state
             pDrv->arpState = SMBUS_ARP_EVENT_ASSIGN;
             pDrv->assignedAddr = newAddr;
-            LOGI("SMBus ARP: Assigned new address 0x%02X for matching UDID\n", newAddr);        
+            LOGI("SMBus ARP: Assigned new address 0x%02X for matching UDID\n", newAddr);
         }
     }
     return ret;
 }
 
 /**
- * @brief 专门处理 ARP Reset 中断的逻辑
- * @note 复用 smbusSetLocalAddress，但不解析 Payload
+ * @brief Logic specifically for handling ARP Reset interrupts
+ * @note Reuses smbusSetLocalAddress but doesn't parse Payload
  */
 static void smbustargetHandleArpReset(SmbusDrvData_s *pDrv)
 {
@@ -179,24 +182,24 @@ static void smbustargetHandleArpReset(SmbusDrvData_s *pDrv)
 
     LOGI("SMBus target: Handling ARP Reset...\n");
     {
-        /* 2. 正确更新软件状态机 (与 Assign 区分开) */
-        pDrv->arpState = SMBUS_ARP_STATE_RESET; // 或者 SMBUS_ARP_STATE_DEFAULT
+        /* 2. Correctly update software state machine (distinguished from Assign) */
+        pDrv->arpState = SMBUS_ARP_STATE_RESET; // or SMBUS_ARP_STATE_DEFAULT
         pDrv->assignedAddr = SMBUS_ARP_DEFAULT_ADDR;
         
         LOGI("SMBus target: Address reset to Default (0x%02X)\n", SMBUS_ARP_DYNAMIC_ADDR);
 
-        /* 4. 通知上层应用 (构造对应的 Event 数据结构) */
+        /* 4. Notify upper application (construct corresponding Event data structure) */
         memset(&arpNotifyDev, 0, sizeof(arpNotifyDev));
-        
-        /* 填充当前设备的 UDID */
-        memcpy(&arpNotifyDev.udid, &pDrv->udid, sizeof(SmbusUdid_s));
-        
-        /* Reset 事件中，newAddr 通常填 0x61 或 0 来表示未分配 */
-        arpNotifyDev.newAddr = SMBUS_ARP_DEFAULT_ADDR;
-        arpNotifyDev.oldAddr = SMBUS_TARGET_RESET_OLD_ADDR; // 表示复位
-        arpNotifyDev.addrValid = 0;    // 地址不再是"已分配"的有效状态
 
-        /* 发送 RESET 事件 */
+        /* Fill current device UDID */
+        memcpy(&arpNotifyDev.udid, &pDrv->udid, sizeof(SmbusUdid_s));
+
+        /* In Reset event, newAddr is usually filled with 0x61 or 0 to indicate unassigned */
+        arpNotifyDev.newAddr = SMBUS_ARP_DEFAULT_ADDR;
+        arpNotifyDev.oldAddr = SMBUS_TARGET_RESET_OLD_ADDR; // indicates reset
+        arpNotifyDev.addrValid = 0;    // address is no longer in "assigned" valid state
+
+        /* Send RESET event */
         smbusTriggerTargetEvent(pDrv, SMBUS_ARP_EVENT_RESET, &arpNotifyDev, sizeof(arpNotifyDev));
     } 
     return;
@@ -236,8 +239,8 @@ void smbusTarArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData)
      */
 
     /* Read IC_STATUS to check ARP resolution status */
-    icStatus = regBase->icStatus.value;
-    
+    icStatus = smbusReadReg(&regBase->icStatus.value);
+
     /* * Check if the target Address has been Resolved.
      * Bit 17: SMBUS_TARGET_ADDR_VALID - Hardware has a valid address
      * Bit 18: SMBUS_TARGET_ADDR_RESOLVED - ARP process successfully resolved an address
@@ -247,9 +250,9 @@ void smbusTarArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData)
 
     if (addrResolved && addrValid) {
         /* Success! Hardware accepted the Assign Address command */
-        
+
         /* Read the new address from the target Address Register (IC_SAR) */
-        assignedAddr = (U16)(regBase->icSar.value & SMBUS_TENBIT_ADDRESS_MASK); ///< Mask to 10 bits just in case
+        assignedAddr = (U16)(smbusReadReg(&regBase->icSar.value) & SMBUS_TENBIT_ADDRESS_MASK); ///< Mask to 10 bits just in case
 
         LOGI("SMBus target: ARP Address Assigned! New Address: 0x%02X\n", assignedAddr);
 
@@ -277,10 +280,10 @@ void smbusTarArpAssignAddrFinishHandle(SmbusDrvData_s *pDrvData)
     }
 
     /* * Clear the interrupt bit specifically for Assign Address.
-     * Note: In the main ISR, we might clear all bits at the end, 
+     * Note: In the main ISR, we might clear all bits at the end,
      * but clearing it here explicitly is safe practice for specific handlers.
      */
-    regBase->icClrSmbusIntr = SMBUS_ASSIGN_ADDR_CMD_DET_BIT;
+    smbusWriteReg(&regBase->icClrSmbusIntr, SMBUS_ASSIGN_ADDR_CMD_DET_BIT);
 }
 /**
  * @brief Trigger target event callback
@@ -297,16 +300,16 @@ void smbusTriggerTargetEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data
 
     DevList_e devId = pDrvData->devId;
     SmbusEventData_u eventData;
-    bool triggerCallback = true; ///< 默认触发用户回调
+    bool triggerCallback = true; ///< Default to trigger user callback
     memset(&eventData, 0, sizeof(SmbusEventData_u));
 
     switch (eventType) {
         
         /* ==========================================================
-         * Case 1: ARP Assign Address (集成你的处理逻辑)
+         * Case 1: ARP Assign Address (Integrated handling logic)
          * ========================================================== */
         case SMBUS_ARP_EVENT_ASSIGN: 
-            /* 数据长度校验: UDID(16) + Addr(1) = 17 bytes */
+            /* Data length validation: UDID(16) + Addr(1) = 17 bytes */
             if (data == NULL || len < 17) {
                 LOGW("SMBus ARP: Invalid payload len %d\n", len);
                 return; 
@@ -317,18 +320,18 @@ void smbusTriggerTargetEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data
                 return;
             }
             LOGI("SMBus ARP: Assigned new address 0x%02X\n", pDrvData->assignedAddr);
-            /* 5. 准备回调数据 */
+            /* 5. Prepare callback data */
             eventData.arp.newAddr = pDrvData->assignedAddr;
             memcpy((void *)&eventData.arp.udid, (const void *)&pDrvData->udid, sizeof(SmbusUdid_s));
             break;
         case SMBUS_ARP_EVENT_RESET:
-            /* 收到 Reset，硬件地址可能已被重置为 0x61 (由调用者处理或在此处理) */
-            /* 这里主要负责通知上层 */
+            /* Reset received, hardware address may have been reset to 0x61 (handled by caller or here) */
+            /* Mainly responsible for notifying upper layer */
             eventData.arp.newAddr = SMBUS_ARP_DEFAULT_ADDR; /* Default */
             memcpy((void *)&eventData.arp.udid, (const void *)&pDrvData->udid, sizeof(SmbusUdid_s));
             break;
         case SMBUS_ARP_EVENT_GET_UDID:
-            /* 仅通知上层被读取了 UDID */
+            /* Only notify upper layer that UDID was read */
             memcpy((void *)&eventData.arp.udid, (const void *)&pDrvData->udid, sizeof(SmbusUdid_s));
             break;
         /* ==========================================================
@@ -338,7 +341,7 @@ void smbusTriggerTargetEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data
             eventData.targetReq.flags = SMBUS_M_RD;
             eventData.targetReq.data  = NULL;
             eventData.targetReq.len   = 0;
-            /* 默认状态设置，等待用户在回调中调用 smbusTargetSetResponse 修改 */
+            /* Default state setting, waiting for user to call smbusTargetSetResponse in callback to modify */
             break;
 
         /* ==========================================================
@@ -367,9 +370,9 @@ void smbusTriggerTargetEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data
             eventData.error.statusReg = (U32)(uintptr_t)data;
             break;
 
-        /* 其他事件... */
+        /* Other events... */
         default:
-            /* 对于不需要特殊数据打包的事件，尝试转换 data 指针 */
+            /* For events that don't need special data packing, try to convert data pointer */
              if (data != NULL && len <= 4) {
                 eventData.value = (U32)(uintptr_t)data;
             }
@@ -387,28 +390,28 @@ void smbusTriggerTargetEvent(SmbusDrvData_s *pDrvData, U32 eventType, void *data
  * @param[in] smbusIntrStat SMBus interrupt status
  * @return void
  */
-void smbusHandletargetSpecificInterrupts(SmbusDrvData_s *pDrvData,
+void smbusHandleTargetSpecificInterrupts(SmbusDrvData_s *pDrvData,
                                         volatile SmbusRegMap_s *regBase,
                                         U32 smbusIntrStat)
 {
     SmbusArpPayload_s arpPayload;
-    /* 1. 处理 Quick Command */
+    /* 1. Handle Quick Command */
     if (smbusIntrStat & SMBUS_QUICK_CMD_DET_BIT) {
         LOGD("SMBus target: Quick Command Detected\n");
-        /* 立即清除中断 */
+        /* Clear interrupt immediately */
         regBase->icClrSmbusIntr = SMBUS_QUICK_CMD_DET_BIT;
         
-        /* 触发事件通知上层 注意：硬件很难区分 Quick Read/Write，通常通过后续是否有数据流判断，
-         *或者直接作为 Event 通知上层 "被 Ping 了" */
+        /* Trigger event notification to upper layer. Note: Hardware can hardly distinguish Quick Read/Write,
+         * usually determined by whether there is subsequent data flow, or directly notify upper layer "was pinged" */
         smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_QUICK_CMD, NULL, 0);
     }
 
-    /* 2. 处理 ARP Reset (Master 广播复位) - 优先级高 */
+    /* 2. Handle ARP Reset (Master broadcast reset) - High priority */
     if (smbusIntrStat & SMBUS_ARP_RST_CMD_DET_BIT) {
         LOGI("SMBus target: ARP Reset Command Detected!\n");
         
-        /* [关键操作] 硬件通常会自动重置地址到 0x61 (Default)，
-           但软件层面的状态（如 UDID 关联状态、pDrvData 中的标志位）需要重置 */
+        /* [Key operation] Hardware usually automatically resets address to 0x61 (Default),
+           but software layer state (such as UDID association state, flags in pDrvData) needs to be reset */
         if (pDrvData->pSmbusDev.smbFeatures.arpEnb) {
             smbustargetHandleArpReset(pDrvData); 
             LOGD("SMBus target: ARP state reset to default (unassigned)\n");
@@ -417,19 +420,19 @@ void smbusHandletargetSpecificInterrupts(SmbusDrvData_s *pDrvData,
         regBase->icClrSmbusIntr = SMBUS_ARP_RST_CMD_DET_BIT;
     }
 
-    /* 3. 处理 ARP Prepare (ARP 流程开始) */
+    /* 3. Handle ARP Prepare (ARP process start) */
     if (smbusIntrStat & SMBUS_ARP_PREPARE_CMD_DET_BIT) {
         LOGI("SMBus target: ARP Prepare Command Detected\n");
-        /* 可以在这里标记状态机进入 "ARP Ready" 状态 */
+        /* Can mark state machine to enter "ARP Ready" state here */
         pDrvData->arpState = SMBUS_ARP_STATE_PREPARED;
         regBase->icClrSmbusIntr = SMBUS_ARP_PREPARE_CMD_DET_BIT;
     }
 
-    /* 4. 处理 ARP Get UDID (Master 读取 UDID) */
+    /* 4. Handle ARP Get UDID (Master reads UDID) */
     if (smbusIntrStat & SMBUS_GET_UDID_CMD_DET_BIT) {
         LOGI("SMBus target: ARP Get UDID Command Detected\n");
-        /* DW IP 配置了 UDID 寄存器，硬件会自动回传。*/
-        /* 假设 smbusTarArpAssignAddrFinishHandle 已经更新了 targetAddr */
+        /* DW IP has UDID register configured, hardware will automatically respond.*/
+        /* Assume smbusTarArpAssignAddrFinishHandle has updated targetAddr */
         arpPayload.newAddr = SMBUS_TARGET_INVALID_ADDR_TAG;
         arpPayload.addrValid = 0;
         memcpy(&arpPayload.udid, &pDrvData->udid, sizeof(SmbusUdid_s));
@@ -437,48 +440,48 @@ void smbusHandletargetSpecificInterrupts(SmbusDrvData_s *pDrvData,
         regBase->icClrSmbusIntr |= SMBUS_GET_UDID_CMD_DET_BIT;
     }
 
-    /* 5. 处理 ARP Assign Address (地址分配完成) */
+    /* 5. Handle ARP Assign Address (Address assignment completed) */
     if (smbusIntrStat & SMBUS_ASSIGN_ADDR_CMD_DET_BIT) {
         LOGI("SMBus target: ARP Assign Address Completed\n");
         
-        /* 调用已有的处理函数更新软件状态（如更新 pDrvData->targetAddr） */
+        /* Call existing handler function to update software state (such as updating pDrvData->targetAddr) */
         smbusTarArpAssignAddrFinishHandle(pDrvData);
         smbusIntrStat &= ~SMBUS_ASSIGN_ADDR_CMD_DET_BIT;
     }
 
-    /* 6. 处理 ARP/传输 失败 (PEC NACK) */
+    /* 6. Handle ARP/Transfer failure (PEC NACK) */
     if (smbusIntrStat & SMBUS_SLV_RX_PEC_NACK_BIT) {
         LOGE("SMBus target: RX PEC Error (NACK sent)\n");
-        /* * 当 target 接收数据且 PEC 校验失败时触发。
-         * 此时 target 已经向 Master 发送了 NACK。
-         * 软件需要丢弃刚才接收到的缓冲区数据，因为它是损坏的。
+        /* * Triggered when target receives data and PEC verification fails.
+         * At this point, target has already sent NACK to Master.
+         * Software needs to discard the buffer data just received, because it is corrupted.
          */
         pDrvData->pSmbusDev.targetValidRxLen = 0; 
         
-        /* 触发错误事件 */
+        /* Trigger error event */
         smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_PEC_ERROR, NULL, 0);
     }
 
-    /* 7. 处理 Suspend (挂起) */
+    /* 7. Handle Suspend */
     if (smbusIntrStat & SMBUS_SUSPEND_DET_BIT) {
         LOGI("SMBus target: Suspend Condition Detected\n");
         smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_SUSPEND, NULL, 0);
     }
 
-    /* 8. 处理 Alert (Master 响应了 Alert Response Address) */
+    /* 8. Handle Alert (Master responded to Alert Response Address) */
     if (smbusIntrStat & SMBUS_ALERT_DET_BIT) {
         LOGD("SMBus target: Alert Response Detected\n");
-        /* 意味着我们发出的 ALERT# 已经被 Master 处理 */
+        /* Means that the ALERT# we sent has been handled by Master */
     }
 
-    /* 9. 处理 Timeout */
+    /* 9. Handle Timeout */
     if (smbusIntrStat & (SMBUS_SLV_CLOCK_EXTND_TIMEOUT_BIT | SMBUS_MST_CLOCK_EXTND_TIMEOUT_BIT)) {
         LOGE("SMBus target: Clock Extend Timeout!\n");
         smbusTriggerTargetEvent(pDrvData, SMBUS_EVENT_SLV_CLK_EXT_TIMEOUT, NULL, 0);
     }
 
-    /* 10. 清除所有已处理的中断 */
-    /* 注意：Quick Command 已经在上面单独清除了，这里清除剩余的 */
+    /* 10. Clear all handled interrupts */
+    /* Note: Quick Command has been cleared separately above, clear the remaining ones here */
     U32 handledMask = smbusIntrStat & ~SMBUS_QUICK_CMD_DET_BIT;
     if (handledMask) {
         regBase->icClrSmbusIntr = handledMask;
@@ -490,18 +493,18 @@ void smbusHandletargetSpecificInterrupts(SmbusDrvData_s *pDrvData,
 /*                    target Mode Response Functions                          */
 /* ======================================================================== */
 /**
- * @brief [target] 设置响应数据
- * @details 在target_READ_REQ回调中调用此函数填充TX缓冲。
- *          支持动态响应不同命令的数据。可选超时自动NACK。
+ * @brief [target] Set response data
+ * @details Call this function in target_READ_REQ callback to fill TX buffer.
+ *          Supports dynamic response to different commands' data. Optional timeout auto-NACK.
  *
- * @param[in] devId 设备ID
- * @param[in] data  指向要发送的数据指针（可为NULL）
- * @param[in] len   数据长度(0-32字节)，0表示准备NACK
- * @param[in] status 操作状态 (0=发送成功, <0=NACK/错误)
- * @return S32  0成功, <0失败
+ * @param[in] devId Device ID
+ * @param[in] data  Pointer to data to be sent (can be NULL)
+ * @param[in] len   Data length (0-32 bytes), 0 means prepare NACK
+ * @param[in] status Operation status (0=send success, <0=NACK/error)
+ * @return S32  0 success, <0 failure
  *
- * @note 必须在target_READ_REQ回调中调用
- * @note 可选参数status：0=正常响应, -NACK/-TIMEOUT=拒绝请求
+ * @note Must be called in target_READ_REQ callback
+ * @note Optional parameter status: 0=normal response, -NACK/-TIMEOUT=reject request
  */
 S32 smbusTargetSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status)
 {
@@ -510,38 +513,38 @@ S32 smbusTargetSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status)
     S32 ret = EXIT_SUCCESS;
     volatile SmbusRegMap_s *regBase = NULL;
 
-    /* ========== 参数有效性检查 ========== */
-    /* 设备ID范围检查 */
+    /* ========== Parameter validity check ========== */
+    /* Device ID range check */
     if (devId < DEVICE_SMBUS0 || devId >= DEVICE_SMBUS6) {
         LOGE("%s: Invalid devId %d\n", __func__, devId);
         return -EINVAL;
     }
 
-    /* 数据长度检查 */
+    /* Data length check */
     if (len > SMBUS_BLOCK_MAXLEN) {
         LOGE("%s: Data length %u exceeds maximum %u\n", __func__, len, SMBUS_BLOCK_MAXLEN);
         return -ERANGE;
     }
 
-    /* 使用funcRunBeginHelper统一检查驱动匹配、初始化状态和获取设备锁 */
+    /* Use funcRunBeginHelper to uniformly check driver matching, initialization status and acquire device lock */
     ret = funcRunBeginHelper(devId, DRV_ID_DW_I2C, (void**)&pDrvData);
     if (ret != EXIT_SUCCESS) return ret;
 
-    /* 获取SMBus设备指针 */
+    /* Get SMBus device pointer */
     dev = &pDrvData->pSmbusDev;
 
-    /* 获取寄存器基地址 */
+    /* Get register base address */
     regBase = (volatile SmbusRegMap_s *)pDrvData->sbrCfg.regAddr;
     SMBUS_CHECK_PARAM(regBase == NULL, -EINVAL, "Register base address is NULL");
 
-    /* 验证设备是否处于从机模式 */
+    /* Verify if device is in target mode */
     if (pDrvData->sbrCfg.masterMode != SMBUS_MODE_TARGET) {
         LOGE("%s: Device not in target mode, current mode=%d\n", __func__, pDrvData->sbrCfg.masterMode);
         ret = -EINVAL;
         goto unlock;
     }
 
-    /* 验证是否有从机TX缓冲区 */
+    /* Verify if target TX buffer exists */
     if (dev->targetTxBuf == NULL) {
         LOGE("%s: target TX buffer not allocated\n", __func__);
         ret = -ENOMEM;
@@ -551,39 +554,39 @@ S32 smbusTargetSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status)
     LOGD("%s: Setting target response - len=%u, status=%d, txBuf=%p\n",
          __func__, len, status, dev->targetTxBuf);
 
-    /* ========== 根据status参数处理响应 ========== */
+    /* ========== Process response based on status parameter ========== */
     if (status < 0) {
-        /* 状态异常，发送NACK响应 */
+        /* Abnormal status, send NACK response */
         LOGD("%s: Negative status detected, preparing NACK response (status=%d)\n", __func__, status);
 
-        /* 禁用TX_EMPTY中断以防止继续发送 */
-        U32 currentMask = regBase->icIntrMask.value;
+        /* Disable TX_EMPTY interrupt to prevent further transmission */
+        U32 currentMask = smbusReadReg(&regBase->icIntrMask.value);
         currentMask &= ~SMBUS_INTR_TX_EMPTY;
-        regBase->icIntrMask.value = currentMask;
-        /* 清除TX缓冲状态 */
+        smbusWriteReg(&regBase->icIntrMask.value, currentMask);
+        /* Clear TX buffer state */
         dev->targetValidTxLen = 0;
-        dev->msgErr = status;  /* 记录错误状态 */
+        dev->msgErr = status;  /* Record error status */
         LOGD("%s: NACK prepared - TX_EMPTY disabled (mask=0x%08X)\n", __func__, currentMask);
 
     } else {
-        /* 正常响应，检验数据有效性 */
+        /* Normal response, verify data validity */
         if ((len > 0) && (data != NULL)) {
-            /* 将数据复制到从机TX缓冲 */
+            /* Copy data to target TX buffer */
             LOGD("%s: Copying %u bytes to target TX buffer\n", __func__, len);
             __asm__ volatile("dsb st" : : : "memory");
-            /* 复制数据到缓冲区 */
+            /* Copy data to buffer */
             memcpy(dev->targetTxBuf, data, len);
 
-            /* 再次添加内存屏障确保复制完成 */
+            /* Add memory barrier again to ensure copy completion */
             __asm__ volatile("dsb st" : : : "memory");
-            /* 更新TX缓冲长度和索引 */
+            /* Update TX buffer length and index */
             dev->targetValidTxLen = len;
             dev->txIndex = 0;
 
             LOGD("%s: target TX data prepared - validTxLen=%u, txIndex=0\n",
                  __func__, dev->targetValidTxLen);
 
-            /* 调试：显示缓冲区内容 */
+            /* Debug: display buffer content */
             if (len <= 8) {
                 LOGD("%s: TX buffer content: ", __func__);
                 for (U32 i = 0; i < len; i++) {
@@ -592,40 +595,126 @@ S32 smbusTargetSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status)
                 LOGD("\n");
             }
 
-            /* 启用TX_EMPTY中断以处理后续数据发送 */
-            U32 currentMask = regBase->icIntrMask.value;
+            /* Enable TX_EMPTY interrupt to handle subsequent data transmission */
+            U32 currentMask = smbusReadReg(&regBase->icIntrMask.value);
             currentMask |= SMBUS_INTR_TX_EMPTY;
-            regBase->icIntrMask.value = currentMask;
+            smbusWriteReg(&regBase->icIntrMask.value, currentMask);
 
             LOGD("%s: TX_EMPTY enabled for data transmission (mask=0x%08X)\n",
                  __func__, currentMask);
 
         } else {
-                /* 数据无效或长度为0，准备NACK响应 */
+                /* Data invalid or length is 0, prepare NACK response */
             LOGD("%s: No data or zero length - preparing NACK response (len=%u, data=%p)\n",
                 __func__, len, data);
 
-            /* 禁用TX_EMPTY中断 */
-            U32 currentMask = regBase->icIntrMask.value;
+            /* Disable TX_EMPTY interrupt */
+            U32 currentMask = smbusReadReg(&regBase->icIntrMask.value);
             currentMask &= ~SMBUS_INTR_TX_EMPTY;
-            regBase->icIntrMask.value = currentMask;
+            smbusWriteReg(&regBase->icIntrMask.value, currentMask);
 
-            /* 清除TX缓冲状态 */
+            /* Clear TX buffer state */
             dev->targetValidTxLen = 0;
             dev->txIndex = 0;
 
             LOGD("%s: NACK prepared - TX buffer cleared (mask=0x%08X)\n", __func__, currentMask);
         }
     }
-    /* ========== 释放资源和返回 ========== */
+    /* ========== Release resources and return ========== */
     LOGD("%s: target response setup completed successfully\n", __func__);
 exit:
 unlock:
-    /* 释放设备锁 */
+    /* Release device lock */
     funcRunEndHelper(devId);
 
     if (ret != EXIT_SUCCESS) {
         LOGE("%s: Failed to set target response, ret=%d, devId=%d\n", __func__, ret, devId);
     }
+    return ret;
+}
+
+/**
+ * @brief SMBus control operation interface implementation
+ * @details Implements the unified control interface for SMBus hardware and protocol features.
+ *          This function handles locking, parameter validation, HAL layer calls, and error
+ *          conversion according to the single responsibility principle. It supports SAR, ARP,
+ *          Host Notify, Alert, and bus recovery functionalities by delegating to the HAL layer.
+ *
+ * @param[in] devId SMBus device identifier specifying the target device instance
+ * @param[in] cmd Control command type from SmbusCmd_e enumeration, including:
+ *              - SMBUS_CMD_HW_ENABLE/DISABLE: Hardware enable/disable operations
+ *              - SMBUS_CMD_SAR_*: Slave Address Register related operations
+ *              - SMBUS_CMD_ARP_*: Address Resolution Protocol operations
+ *              - SMBUS_CMD_HOST_NOTIFY_*: Host Notify operations
+ *              - SMBUS_CMD_ALERT_*: Alert response operations
+ *              - SMBUS_CMD_BUS_RECOVERY: I2C bus recovery operations
+ * @param[in,out] param Control parameter union pointer, using appropriate members based on cmd type:
+ *                     - SAR commands: Use sarConfig member
+ *                     - ARP commands: Use arp member
+ *                     - Host Notify commands: Use hostNotify member
+ *                     - Alert commands: Use alertResponse member
+ *                     - Bus recovery: Use busRecovery member
+ *                     - Simple enable commands: Use enable member
+ *
+ * @return S32 Operation result, returns 0 (EXIT_SUCCESS) on success, negative error code on failure:
+ *             - (-EINVAL) Invalid parameters: Parameter is NULL or parameter value is invalid
+ *             - (-ENOTSUP) Operation not supported: HAL layer control interface not implemented or command not supported
+ *             - (-EBUSY) Device busy: Device is occupied by other operations
+ *             - (-ENODEV) Device not initialized: Invalid device ID or device not properly initialized
+ *             - (-EIO) Generic I/O error: Hardware access failure or other low-level errors
+ *             - Other negative error codes returned by specific command HAL layer implementations
+ *
+ * @note This is a synchronous blocking interface that waits for operation completion
+ * @note param must be properly set with corresponding union members based on cmd type
+ * @note Some commands require prior device initialization via smbusInit
+ * @note Function provides thread-safe operation with internal locking mechanism
+ * @note Commands are delegated to HAL layer for hardware-specific implementation
+ * @warning Caller must ensure param pointer is valid; simple commands without parameters can pass NULL
+ * @warning Some commands may affect bus state, recommended to call when bus is idle
+ */
+S32 smbusControl(DevList_e devId, SmbusCmd_e cmd, SmbusParam_u *param)
+{
+    S32 ret = EXIT_SUCCESS;
+    SmbusDrvData_s *pDrvData = NULL;
+    SmbusDev_s *dev = NULL;
+
+    /* 1. Acquire lock and verify device state (Context Setup & Locking) */
+    ret = funcRunBeginHelper(devId, DRV_ID_DW_I2C, (void**)&pDrvData);
+    if (ret != EXIT_SUCCESS) {
+        return ret;
+    }
+
+    if (pDrvData == NULL) {
+        ret = -EINVAL;
+        goto unlock;
+    }
+    dev = &pDrvData->pSmbusDev;
+
+    /* 2. Parameter validation (Check if Param is NULL based on Cmd type) */
+    /* Some commands don't need param (like HwEnable, BusRecovery, etc.) */
+    bool needParam = (cmd != SMBUS_CMD_HW_ENABLE && cmd != SMBUS_CMD_HW_DISABLE &&
+                      cmd != SMBUS_CMD_ARP_DISABLE && cmd != SMBUS_CMD_HOST_NOTIFY_DISABLE && 
+                      cmd != SMBUS_CMD_ALERT_DISABLE && cmd != SMBUS_CMD_ARP_ENABLE && 
+                      cmd != SMBUS_CMD_HOST_NOTIFY_ENABLE && cmd != SMBUS_CMD_ALERT_ENABLE);
+
+    if (needParam && param == NULL) {
+        LOGE("SMBus: Control cmd %d requires params but NULL provided\n", cmd);
+        ret = -EINVAL;
+        goto unlock;
+    }
+
+    /* 3. Call HAL layer (Core Logic Execution) */
+    if (dev->halOps && dev->halOps->control) {
+        /* Directly pass through S32 error code returned from HAL layer */
+        ret = dev->halOps->control(dev, cmd, param);
+        LOGE("SMBus: Control cmd %d executed via HAL, ret=%d\n", cmd, ret);
+    } else {
+        ret = -ENOTSUP;
+    }
+
+unlock:
+    /* 4. Release lock (Cleanup) */
+    funcRunEndHelper(devId);
+    
     return ret;
 }

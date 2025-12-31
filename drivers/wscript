@@ -4,9 +4,9 @@ def build(bld):
     # Build all driver subdirectories
     driver_dirs = [
         'timer', 'uart', 'soc_ctrl', 'gpio', 'wdt', 'tach',
-        'sgpio', 'pwm', 'qspi', 'security', 'smbus',
+        'sgpio', 'pwm', 'qspi', 'efuse', 'sm2', 'sm3', 'sm4', 'trng', 'smbus',
         'pvt', 'qspi_ctrl', 'brd_init', 'ocm_ecc'
     ]
-    
+
     for driver_dir in driver_dirs:
         bld.recurse(driver_dir)

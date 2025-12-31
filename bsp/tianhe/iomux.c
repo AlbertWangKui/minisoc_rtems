@@ -23,10 +23,6 @@
 #include "iomux.h"
 #include "kconfig.h"
 
-#ifdef TIANHE_BSP_SELFTEST_ENABLE
-#include "tianhe_bsp_selftest.h"
-#endif
-
 S32 ioFuncConfig(IomuxIoNum_e ioNum, IomuxFunc_e funcSel)
 {
     S32 ret = EXIT_SUCCESS;
@@ -45,13 +41,8 @@ S32 ioFuncConfig(IomuxIoNum_e ioNum, IomuxFunc_e funcSel)
     }
 
     ioMuxReg += ioNum;
-#if !defined(TIANHE_BSP_SELFTEST_ENABLE)
     ioMuxReg->pinFunc.fields.mode = funcSel;
-#else
-    testPrint((U32)(&(ioMuxReg->pinFunc)), funcSel);
-#endif
 
 exit:
     return ret;
 }
-

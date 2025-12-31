@@ -43,8 +43,8 @@ static S32 timerDevCfgGet(DevList_e devId, SbrTimerCfg_s *cfg)
     }
 
 #ifdef CONFIG_DUMP_SBR
-    LOGI("timer: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, intervalMs:%u, reserved:0x%08x\r\n",
-         cfg->regAddr, cfg->irqNo, cfg->irqPrio, cfg->intervalMs, cfg->reserved);
+    LOGI("timer: SBR dump - regAddr:%p, irqNo:%u, irqPrio:%u, intervalMs:%u\r\n",
+         cfg->regAddr, cfg->irqNo, cfg->irqPrio, cfg->intervalMs);
 #endif
 
     if (cfg->regAddr == NULL || cfg->irqNo == 0) {
@@ -231,12 +231,6 @@ S32 timerInit(DevList_e devId)
         goto free_mem;
     }
 
-    if (timerParamSet(devId, drv->sbrCfg.intervalMs, NULL) != EXIT_SUCCESS) {
-        LOGE("[func: %s]timer%u failed to config param\r\n", __func__, devId);
-        ret = -EINVAL;
-        goto free_mem;
-    }
-
     ospInterruptHandlerInstall(drv->sbrCfg.irqNo, "timer", OSP_INTERRUPT_UNIQUE, timerIsr, drv);
     if (arm_gic_irq_set_priority(drv->sbrCfg.irqNo, drv->sbrCfg.irqPrio) != 0) {
         ret = -EIO;
@@ -247,6 +241,12 @@ S32 timerInit(DevList_e devId)
         LOGE("[func: %s]timer%u failed to install driver\r\n", __func__, devId);
         ret = -EIO;
         goto disable_vector;
+    }
+
+    if (timerParamSet(devId, drv->sbrCfg.intervalMs, NULL) != EXIT_SUCCESS) {
+        LOGE("[func: %s]timer%u failed to config param\r\n", __func__, devId);
+        ret = -EINVAL;
+        goto free_mem;
     }
 
     ospInterruptVectorEnable(drv->sbrCfg.irqNo);

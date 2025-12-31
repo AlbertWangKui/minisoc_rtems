@@ -1,0 +1,6 @@
+config DRIVER_SM2
+    bool "Enable SM2 driver"
+    default y
+    help
+      Select this to enable SM2 driver support
+

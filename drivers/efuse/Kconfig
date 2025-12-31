@@ -1,0 +1,16 @@
+config DRIVER_EFUSE
+    bool "Enable efuse driver"
+    default y
+    help
+      Select this to enable efuse driver support
+
+choice
+    prompt "efuse driver select"
+    depends on DRIVER_EFUSE
+
+    config DRIVER_EFUSE_V1
+        bool "efuse v1 driver"
+    config DRIVER_EFUSE_V2
+        bool "efuse v2 driver"
+endchoice
+

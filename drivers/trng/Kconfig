@@ -1,0 +1,23 @@
+config DRIVER_TRNG
+    bool "Enable TRNG driver"
+    default y
+    help
+      Select this to enable TRNG (True Random Number Generator) driver support
+
+choice
+    prompt "trng driver select"
+    depends on DRIVER_TRNG
+
+    config DRIVER_TRNG_DW
+        bool "DesignWare TRNG driver"
+    config DRIVER_TRNG_TH
+        bool "TH TRNG driver"
+endchoice
+
+config DRIVER_TRNG_API_TEST
+    bool "Enable TRNG API test"
+    default n
+    depends on DRIVER_TRNG
+    help
+        Select this to enable TRNG API test
+

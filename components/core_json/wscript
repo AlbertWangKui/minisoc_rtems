@@ -2,7 +2,7 @@
 
 def build(bld):
     # CORE_JSON component
-    if bld.is_defined('CONFIG_USING_CORE_JSON'):
+    if bld.is_defined('CONFIG_CORE_JSON'):
         bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
             'components/core_json/core_json.c'
         ]

@@ -280,6 +280,7 @@ typedef volatile struct {
 
 typedef struct __attribute__((packed)) sgpioDrvData {
     SbrSgpioCfg_s sbrCfg;
+    U32 sgpioSrcClk; /* SGPIO source clock frequency in Hz */
 } SgpioDrvData_s;
 
 #endif /* __DRV_SGPIO_V1P0_H__ */

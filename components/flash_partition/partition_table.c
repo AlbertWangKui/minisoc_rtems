@@ -15,6 +15,22 @@
 #include "drv_spi_api.h"
 #include "log_msg.h"
 
+RegionID_e getSbrRegionId(void)
+{
+    U32 regVal = 0;
+
+    regVal = reg32Read(SYS_SBR_REGION_REG_ADDR);
+
+    if (REG_VALUE_SBR_REGION_A == regVal) {
+        return REGION_ID_SBR_A;  ///< SBR region A
+    } else if (REG_VALUE_SBR_REGION_B == regVal) {
+        return REGION_ID_SBR_B;  ///< SBR region B
+    } else {
+        LOGE("Invalid SBR region value: %u\r\n", regVal);
+        return REGION_ID_MAX;  ///< 出错返回region id max
+    }
+}
+
 static U32 flashLoad(U32 offset, U8 *pData, U32 size)
 {
     struct channel_info chan_info = { .channel_id = 0 };

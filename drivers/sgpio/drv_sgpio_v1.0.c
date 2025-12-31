@@ -23,6 +23,10 @@
 #include "bsp_config.h"
 #include "bsp_api.h"
 #include "osp_interrupt.h"
+#include "iomux.h"
+
+#define SGPIO_DEVICE_COUNT 4
+#define SGPIO_PINS_PER_DEVICE 4
 
 typedef volatile struct {
     U32 id;
@@ -31,6 +35,51 @@ typedef volatile struct {
 
 static SgpioIsrCtx_s sgpioIsrCtx[SGPIO_MAX_NUM] = {
     {0, NULL}, {0, NULL}, {0, NULL}, {0, NULL}
+};
+
+/**
+ * @brief SGPIO引脚配置表
+ * 每个SGPIO设备有4个引脚: CLK, LOAD, DIN, DOUT
+ */
+typedef struct {
+    IomuxIoNum_e gpioNum;      ///< GPIO编号
+    IomuxFunc_e func;          ///< 功能选择
+    const char* name;          ///< 引脚名称（用于日志）
+} SgpioPinConfig_s;
+
+/* SGPIO引脚配置二维表: [SGPIO设备ID][引脚类型] */
+static const SgpioPinConfig_s sgpioPinConfigTable[SGPIO_DEVICE_COUNT][SGPIO_PINS_PER_DEVICE] = {
+    /* SGPIO0 引脚配置: GPIO0 - SGPIO0_CLK, GPIO1 - SGPIO0_LOAD, GPIO2 - SGPIO0_DIN, GPIO3 - SGPIO0_DOUT */
+    {
+        {IOMUX_GPIO0, IOMUX_FUNC5, "SGPIO0_CLK"},
+        {IOMUX_GPIO1, IOMUX_FUNC5, "SGPIO0_LOAD"},
+        {IOMUX_GPIO2, IOMUX_FUNC5, "SGPIO0_DIN"},
+        {IOMUX_GPIO3, IOMUX_FUNC5, "SGPIO0_DOUT"}
+    },
+    
+    /* SGPIO1 引脚配置: GPIO4 - SGPIO1_CLK, GPIO5 - SGPIO1_LOAD, GPIO6 - SGPIO1_DIN, GPIO7 - SGPIO1_DOUT */
+    {
+        {IOMUX_GPIO4, IOMUX_FUNC5, "SGPIO1_CLK"},
+        {IOMUX_GPIO5, IOMUX_FUNC5, "SGPIO1_LOAD"},
+        {IOMUX_GPIO6, IOMUX_FUNC5, "SGPIO1_DIN"},
+        {IOMUX_GPIO7, IOMUX_FUNC5, "SGPIO1_DOUT"}
+    },
+    
+    /* SGPIO2 引脚配置: GPIO50 - SGPIO2_CLK, GPIO51 - SGPIO2_LOAD, GPIO52 - SGPIO2_DIN, GPIO53 - SGPIO2_DOUT */
+    {
+        {IOMUX_GPIO50, IOMUX_FUNC4, "SGPIO2_CLK"},
+        {IOMUX_GPIO51, IOMUX_FUNC4, "SGPIO2_LOAD"},
+        {IOMUX_GPIO52, IOMUX_FUNC4, "SGPIO2_DIN"},
+        {IOMUX_GPIO53, IOMUX_FUNC4, "SGPIO2_DOUT"}
+    },
+    
+    /* SGPIO3 引脚配置: GPIO54 - SGPIO3_CLK, GPIO55 - SGPIO3_LOAD, GPIO56 - SGPIO3_DIN, GPIO57 - SGPIO3_DOUT */
+    {
+        {IOMUX_GPIO54, IOMUX_FUNC4, "SGPIO3_CLK"},
+        {IOMUX_GPIO55, IOMUX_FUNC4, "SGPIO3_LOAD"},
+        {IOMUX_GPIO56, IOMUX_FUNC4, "SGPIO3_DIN"},
+        {IOMUX_GPIO57, IOMUX_FUNC4, "SGPIO3_DOUT"}
+    }
 };
 
 /**
@@ -71,6 +120,76 @@ static const U8 sgpioLedPatternMap[][8] = {
     }
 };
 
+/**
+ * @brief 根据devId配置SGPIO引脚功能
+ *
+ * 该函数根据传入的devId，调用ioFuncConfig接口配置IO功能（sgpio0～sgpio3）
+ * 配置的依据是iomux.h中的引脚复用功能表
+ *
+ * @param devId 设备ID，指定要配置的SGPIO设备
+ * @return 成功返回EXIT_SUCCESS，失败返回错误码
+ */
+S32 sgpioCfgIoFuncByDevId(DevList_e devId)
+{
+    S32 ret = EXIT_SUCCESS;
+    U32 sgpioId = 0;
+
+    if (devId < DEVICE_SGPIO0 || devId > DEVICE_SGPIO3) {
+        LOGE("Invalid device ID for SGPIO: %d\n", devId);
+        return -EINVAL;
+    }
+
+    sgpioId = devId - DEVICE_SGPIO0;
+
+    ///< 每个SGPIO设备有4个引脚: CLK, LOAD, DIN, DOUT
+    const SgpioPinConfig_s* clkPin = &sgpioPinConfigTable[sgpioId][0];  ///< CLK
+    const SgpioPinConfig_s* loadPin = &sgpioPinConfigTable[sgpioId][1]; ///< LOAD
+    const SgpioPinConfig_s* dinPin = &sgpioPinConfigTable[sgpioId][2];   ///< DIN
+    const SgpioPinConfig_s* doutPin = &sgpioPinConfigTable[sgpioId][3];  ///< DOUT
+
+    ///< 配置CLK引脚
+    ret = ioFuncConfig(clkPin->gpioNum, clkPin->func);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("Failed to configure %s (IO:%d, Func:%d): %d\n", 
+             clkPin->name, clkPin->gpioNum, clkPin->func, ret);
+        return ret;
+    }
+    LOGD("Successfully configured %s (IO:%d, Func:%d)\n", 
+         clkPin->name, clkPin->gpioNum, clkPin->func);
+
+    ///< 配置LOAD引脚
+    ret = ioFuncConfig(loadPin->gpioNum, loadPin->func);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("Failed to configure %s (IO:%d, Func:%d): %d\n", 
+             loadPin->name, loadPin->gpioNum, loadPin->func, ret);
+        return ret;
+    }
+    LOGD("Successfully configured %s (IO:%d, Func:%d)\n", 
+         loadPin->name, loadPin->gpioNum, loadPin->func);
+
+    ///< 配置DIN引脚
+    ret = ioFuncConfig(dinPin->gpioNum, dinPin->func);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("Failed to configure %s (IO:%d, Func:%d): %d\n", 
+             dinPin->name, dinPin->gpioNum, dinPin->func, ret);
+        return ret;
+    }
+    LOGD("Successfully configured %s (IO:%d, Func:%d)\n", 
+         dinPin->name, dinPin->gpioNum, dinPin->func);
+
+    ///< 配置DOUT引脚
+    ret = ioFuncConfig(doutPin->gpioNum, doutPin->func);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("Failed to configure %s (IO:%d, Func:%d): %d\n", 
+             doutPin->name, doutPin->gpioNum, doutPin->func, ret);
+        return ret;
+    }
+    LOGD("Successfully configured %s (IO:%d, Func:%d)\n", 
+         doutPin->name, doutPin->gpioNum, doutPin->func);
+
+    return EXIT_SUCCESS;
+}
+
 static S32 sgpioGetRegsChecked(DevList_e devId, SgpioDrvData_s **drv, SgpioReg_s **regs)
 {
     if (devId < DEVICE_SGPIO0 || devId >= DEVICE_SGPIO0 + SGPIO_MAX_NUM)
@@ -89,35 +208,16 @@ static S32 sgpioGetRegsChecked(DevList_e devId, SgpioDrvData_s **drv, SgpioReg_s
     return EXIT_SUCCESS;
 }
 
-///< TODO： need replace when soc top pinmux api ready
-void sgpioConfigurePinmux()
-{
-    U32 pinmuxAddr = SGPIO_PINMUX_BASE;
-    U32 addr = 0;
-    U32 pinmuxVal = 0;
-    U32 offsets[] = { 0x208, 0x210, 0x218, 0x220, 0x228, 0x230, 0x238, 0x240 };
-    int i;
-
-    for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
-        addr = pinmuxAddr + offsets[i];
-        pinmuxVal = reg32Read(addr);
-        pinmuxVal &= ~(0xf);
-        pinmuxVal |= 5;
-        reg32Write(addr, pinmuxVal);
-    }
-
-}
-
 static S32 sgpioGetDevCfg(DevList_e devId, SbrSgpioCfg_s *sbrCfg)
 {
-#if 0
+#if 1
     /* 从SBR读取SGPIO配置 */
     if (devSbrRead(devId, sbrCfg, 0, sizeof(SbrSgpioCfg_s)) != sizeof(SbrSgpioCfg_s)) {
         LOGE("%s: failed to read SBR config for device %d\r\n",
              __func__, devId);
         return -EIO;
     }
-#else ///< TODO: 临时配置，后续删除
+#else /* 定位辅助配置，应从SBR读取 */
     sbrCfg->regAddr = (void *)(SGPIO_BASE_ADDR + (devId - DEVICE_SGPIO0) * SGPIO_DEVICE_OFFSET +
         SGPIO_8485_REG_OFFSET);
     sbrCfg->driveNum = 64;
@@ -643,7 +743,7 @@ static S32 sgpioSetSClock(DevList_e devId, U32 hz)
         /**
          * 分频计算公式hz = source clk/(((clkdivide * 8) + 1) *2)
          */
-        clkDiv = ((SGPIO_SOURCE_CLK / (2 * hz)) - 1) / 8;
+        clkDiv = ((sgpioDrvData->sgpioSrcClk / (2 * hz)) - 1) / 8;
         sgpioRegs->vendorSpec0.fields.clkDivide = clkDiv;
 
         /**
@@ -660,7 +760,7 @@ static S32 sgpioSetSClock(DevList_e devId, U32 hz)
          * freq(10KHz) = source clk / (us100Cnt)
          * 计算100us计数器值，用于10KHz基准频率: us100Cnt = source clk / 10000
         */
-        us100Cnt = (SGPIO_SOURCE_CLK / 10000);
+        us100Cnt = (sgpioDrvData->sgpioSrcClk / 10000);
         sgpioRegs->us100Cnt = us100Cnt;
 
         ret = EXIT_SUCCESS;
@@ -741,7 +841,7 @@ static S32 sgpioBlinkConfig(DevList_e devId, U8 blinkEn, U8 blinkMode, U8 blinkO
     }
 
     ///< 计算N值
-    nValue = sgpioCalculateNValue(freq, SGPIO_SOURCE_CLK);
+    nValue = sgpioCalculateNValue(freq, sgpioDrvData->sgpioSrcClk);
     if (nValue == 0) {
         LOGE("%s: failed to calculate N value for freq %uHz\r\n", __func__, freq);
         return -EINVAL;
@@ -1159,8 +1259,17 @@ S32 sgpioInit(DevList_e devId)
         goto cleanup;
     }
 
-    ///< TODO：需要soc提供pinmux配置函数
-    sgpioConfigurePinmux();
+    ret = peripsClockFreqGet(devId, &sgpioDrvData->sgpioSrcClk);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s-%d: failed to get peripheral clock frequency, devId=%d", __func__, __LINE__, devId);
+        goto cleanup;
+    }
+
+    ret = sgpioCfgIoFuncByDevId(devId);
+    if (ret != EXIT_SUCCESS) {
+        LOGE("%s: sgpio cfg io func failed %d\r\n", __func__, ret);
+        goto cleanup;
+    }
 
     ret = sgpioHwInit(devId, sgpioDrvData);
     if (ret != EXIT_SUCCESS) {

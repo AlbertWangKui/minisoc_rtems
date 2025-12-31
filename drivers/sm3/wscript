@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+
+def build(bld):
+    # SM3 driver
+    if bld.is_defined('CONFIG_DRIVER_SM3'):
+        bld.env.PROJECT_SOURCES = getattr(bld.env, 'PROJECT_SOURCES', []) + [
+            'drivers/sm3/drv_sm3.c'
+        ]
+

@@ -1,0 +1,6 @@
+config DRIVER_SM3
+    bool "Enable SM3 driver"
+    default y
+    help
+      Select this to enable SM3 hash calculation driver support
+
