@@ -514,12 +514,6 @@ S32 smbusTargetSetResponse(DevList_e devId, const U8 *data, U32 len, S32 status)
     volatile SmbusRegMap_s *regBase = NULL;
 
     /* ========== Parameter validity check ========== */
-    /* Device ID range check */
-    if (devId < DEVICE_SMBUS0 || devId >= DEVICE_SMBUS6) {
-        LOGE("%s: Invalid devId %d\n", __func__, devId);
-        return -EINVAL;
-    }
-
     /* Data length check */
     if (len > SMBUS_BLOCK_MAXLEN) {
         LOGE("%s: Data length %u exceeds maximum %u\n", __func__, len, SMBUS_BLOCK_MAXLEN);

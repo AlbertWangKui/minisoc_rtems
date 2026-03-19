@@ -3,3 +3,113 @@ config DRIVER_SMBUS
     default y
     help
       Select this to use smbus driver
+
+choice
+    prompt "SMBUS Test Mode"
+    depends on DRIVER_SMBUS
+    default TEST_I2C_SUIT
+    help
+      Select the test mode for SMBUS driver
+
+config TEST_I2C_SUIT
+    bool "Test I2C Suit"
+    help
+      Enable I2C test suit mode
+
+config TEST_SUITS_1
+    bool "Test Suits 1"
+    help
+      Enable SMBUS test suits 1 mode
+endchoice
+
+choice
+    prompt "SMBUS SDA Hold Time Configuration"
+    depends on DRIVER_SMBUS
+    default SMBUS_SDA_HOLD_MEDIUM
+    help
+      Select SDA hold time factor based on your cable length.
+      This setting helps compensate for signal delays on long cables.
+
+      For reference:
+      - Short line (<30cm):   720-960ns hold time
+      - Medium line (30-100cm): 960-1440ns hold time
+      - Long line (>100cm):    1440-2400ns hold time
+
+config SMBUS_SDA_HOLD_SHORT
+    bool "Short line mode (<30cm)"
+    help
+      Use factor=15 for short cables (<30cm).
+      Actual hold time: ~720ns @ 100kHz with 12.5MHz ic_clk
+
+config SMBUS_SDA_HOLD_MEDIUM
+    bool "Medium line mode (30-100cm)"
+    help
+      Use factor=35 for medium cables (30-100cm).
+      Actual hold time: ~1680ns @ 100kHz with 12.5MHz ic_clk
+      This is the recommended default for most applications
+
+config SMBUS_SDA_HOLD_LONG
+    bool "Long line mode (>100cm)"
+    help
+      Use factor=50 for long cables (>100cm).
+      Actual hold time: ~2400ns @ 100kHz with 12.5MHz ic_clk
+      Use this for long cable runs or noisy environments
+endchoice
+
+config SMBUS_SDA_HOLD_FACTOR
+    int
+    default 15 if SMBUS_SDA_HOLD_SHORT
+    default 35 if SMBUS_SDA_HOLD_MEDIUM
+    default 50 if SMBUS_SDA_HOLD_LONG
+
+choice
+    prompt "SMBUS Spike Suppression Configuration"
+    depends on DRIVER_SMBUS
+    default SMBUS_SPK_SHORT
+    help
+      Select spike suppression length based on your cable length.
+      This setting helps filter out signal glitches/noise on long cables.
+
+      For reference (@200MHz ic_clk):
+      - Short line (<30cm):   FS:15ns, HS:10ns
+      - Medium line (30-100cm): FS:35ns, HS:25ns
+      - Long line (>100cm):    FS:80ns, HS:50ns
+
+      Spike suppression time = (SPKLEN + 1) × ic_clk_period
+
+config SMBUS_SPK_SHORT
+    bool "Short line mode (<30cm)"
+    help
+      Use minimal spike suppression for short cables (<30cm).
+      - FS_SPKLEN: 2 (15ns @ 200MHz)
+      - HS_SPKLEN: 1 (10ns @ 200MHz)
+      Suitable for PCB-level connections with good signal integrity
+
+config SMBUS_SPK_MEDIUM
+    bool "Medium line mode (30-100cm)"
+    help
+      Use medium spike suppression for medium cables (30-100cm).
+      - FS_SPKLEN: 6 (35ns @ 200MHz)
+      - HS_SPKLEN: 4 (25ns @ 200MHz)
+      This is the recommended default for most applications
+
+config SMBUS_SPK_LONG
+    bool "Long line mode (>100cm)"
+    help
+      Use high spike suppression for long cables (>100cm).
+      - FS_SPKLEN: 15 (80ns @ 200MHz)
+      - HS_SPKLEN: 9 (50ns @ 200MHz)
+      Use this for long cable runs or noisy environments
+endchoice
+
+config SMBUS_FS_SPKLEN
+    int
+    default 2 if SMBUS_SPK_SHORT
+    default 6 if SMBUS_SPK_MEDIUM
+    default 15 if SMBUS_SPK_LONG
+
+config SMBUS_HS_SPKLEN
+    int
+    default 1 if SMBUS_SPK_SHORT
+    default 4 if SMBUS_SPK_MEDIUM
+    default 9 if SMBUS_SPK_LONG

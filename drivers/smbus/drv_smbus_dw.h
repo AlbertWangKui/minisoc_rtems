@@ -141,7 +141,7 @@ typedef struct SmbusFeatureConfig {
     U8 arpEnb           : 1;            /**< arp enable support bit */
     U8 smbAlertEnb      : 1;            /**< SMBus Alert enable bit */
     U8 quickCmdEnb      : 1;            /**< Quick Command support enable bit */
-    U8 reserved         : 4;           /**< Reserved for future expansion */
+    U8 reserved         : 3;            /**< Reserved for future expansion */
 } SmbusFeatureConfig_s;
 
 enum {
@@ -362,6 +362,32 @@ typedef enum SmbusTransferState {
         SMBUS_INTR_TX_ABRT  | \
         SMBUS_INTR_STOP_DET )                       /**< Master mode interrupt mask (basic) */
 
+/* ===== Pure I2C Mode Configuration (No SMBus Protocol) ===== */
+/**
+ * @brief Pure I2C mode interrupt mask - disables SMBus-specific interrupts
+ * @note This mask excludes SMBus protocol interrupts:
+ *       - RESTART_DET: SMBus restart condition detection (Bit 12)
+ *       - START_DET: Start condition detection (Bit 10)
+ *       - GEN_CALL: SMBus general call (Bit 11)
+ *       - SLV_ADDRx_TAG: SMBus address tag interrupts (Bits 16-19)
+ *       - SMBus protocol interrupts (QUICK_CMD, HOST_NOTIFY, PEC_NACK)
+ * @note Only keeps raw I2C interrupts:
+ *       - RX_FULL: Receive FIFO threshold
+ *       - TX_EMPTY: Transmit FIFO empty
+ *       - TX_ABRT: Transmit abort
+ *       - STOP_DET: Stop condition detection
+ *       - WR_REQ: Write request (Target mode)
+ *       - RD_REQ: Read request (Target mode)
+ *       - RX_DONE: Receive done
+ */
+#define SMBUS_I2C_ONLY_INTR_MASK ( \
+        SMBUS_INTR_WR_REQ | \
+        SMBUS_INTR_RX_FULL | \
+        SMBUS_INTR_RD_REQ | \
+        SMBUS_INTR_TX_ABRT | \
+        SMBUS_INTR_RX_DONE | \
+        SMBUS_INTR_STOP_DET )                       /**< Pure I2C mode - no SMBus protocol */
+
 /* I2C TX Abort Source Mask Constants */
 #define SMBUS_IC_TX_ABRT_SOURCE_ABRT_7B_ADDR_NOACK_MASK (1U << 0)   /**< 7-bit address NACK abort source mask */
 #define SMBUS_IC_TX_ABRT_SOURCE_ABRT_MASTER_DIS_MASK (1U << 1)      /**< Master disable abort source mask */
@@ -372,7 +398,7 @@ typedef enum SmbusTransferState {
 #define SMBUS_IC_TX_ABRT_SOURCE_ABRT_HIGH_SPEED_NACK_MASK (1U << 6)  /**< High speed NACK abort source mask */
 #define SMBUS_IC_TX_ABRT_SOURCE_ABRT_BYTE_NACK_MASK (1U << 7)        /**< Byte NACK abort source mask */
 #define SMBUS_IC_TX_ABRT_SOURCE_ABRT_SDA_STUCK_LOW_MASK (1U << 8)    /**< SDA stuck low abort source mask */
-#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_ARB_LOST_MASK (1U << 9)         /**< Arbitration lost abort source mask */
+#define SMBUS_IC_TX_ABRT_SOURCE_ABRT_ARB_LOST_MASK (1U << 12)        /**< Arbitration lost abort source mask (Bit 12, not 9) */
 
 /* SMBus Error Types */
 #define SMBUS_ERR_TYPE_NACK_7BIT          (1)  /**< 7-bit address NACK */
@@ -383,6 +409,7 @@ typedef enum SmbusTransferState {
 #define SMBUS_ERR_TYPE_SDA_STUCK          (6)  /**< SDA stuck low */
 #define SMBUS_ERR_TYPE_MASTER_DISABLED    (7)  /**< Master disabled */
 #define SMBUS_ERR_TYPE_UNKNOWN            (8)  /**< Unknown abort source */
+#define SMBUS_ERR_TYPE_NONE               (0)  /**< No error */
 
 #define SMBUS_ARP_ERR_NONE                (0)
 #define SMBUS_ARP_ERR_BUSY                (-EBUSY)    /* 资源正忙或被锁定 */
@@ -566,8 +593,103 @@ typedef enum SmbusTransferState {
 #define SMBUS_INTERNAL_CLOCK_HZ           (12500000) /**< Internal peripheral clock frequency (12.5MHz) */
 #define SMBUS_MIN_SDA_HOLD_TIME           (1)        /**< Minimum SDA hold time */
 #define SMBUS_DUTY_CYCLE_PERCENT_50       (50)       /**< 50% duty cycle */
+
+/* ======================================================================== */
+/*                     SDA Hold Time Configuration for Long Lines             */
+/* ======================================================================== */
+/**
+ * @brief SDA hold time factor configuration
+ * @details This value is configured via Kconfig based on cable length:
+ *          - Short line (<30cm): CONFIG_SMBUS_SDA_HOLD_SHORT (15)
+ *          - Medium line (30-100cm): CONFIG_SMBUS_SDA_HOLD_MEDIUM (35)
+ *          - Long line (>100cm): CONFIG_SMBUS_SDA_HOLD_LONG (50)
+ *
+ * The actual hold time is calculated as:
+ * sdaHoldTime = (CONFIG_SMBUS_SDA_HOLD_FACTOR × ic_clk) / (200 × speed)
+ *
+ * Example with ic_clk=12.5MHz, speed=100kHz:
+ * - Short (15):  720ns
+ * - Medium (35): 1680ns
+ * - Long (50):   2400ns
+ *
+ * @note Configure this option in menuconfig or defconfig:
+ *       Device Drivers -> SMBUS SDA Hold Time Configuration
+ */
+#ifdef CONFIG_SMBUS_SDA_HOLD_FACTOR
+    #define SMBUS_SDA_HOLD_FACTOR  CONFIG_SMBUS_SDA_HOLD_FACTOR
+#else
+    /**
+     * @brief Fallback default if Kconfig is not configured
+     * @details Defaults to medium mode (35) for general use
+     */
+    #define SMBUS_SDA_HOLD_FACTOR  35
+    #warning "CONFIG_SMBUS_SDA_HOLD_FACTOR not defined, using default value of 35 (medium mode)"
+#endif
+
+/* Legacy macros for reference - kept for documentation purposes */
+#define SMBUS_SDA_HOLD_FACTOR_SHORT       (15)       /**< SDA hold factor for short lines (<30cm) */
+#define SMBUS_SDA_HOLD_FACTOR_MEDIUM      (35)       /**< SDA hold factor for medium lines (30-100cm) */
+#define SMBUS_SDA_HOLD_FACTOR_LONG        (50)       /**< SDA hold factor for long lines (>100cm) */
+#define SMBUS_SDA_HOLD_FACTOR_DEFAULT     (35)       /**< Default to medium mode */
 #define SMBUS_SPIKE_LEN_OFFSET_HIGH       (7)        /**< High spike length offset */
 #define SMBUS_SPIKE_LEN_OFFSET_LOW        (5)        /**< Low spike length offset */
+
+/* ======================================================================== */
+/*                  Spike Suppression Configuration for Long Lines          */
+/* ======================================================================== */
+/**
+ * @brief Spike suppression length configuration
+ * @details These values are configured via Kconfig based on cable length:
+ *          - Short line (<30cm): CONFIG_SMBUS_SPK_SHORT
+ *            FS_SPKLEN: 2 (240ns @ 12.5MHz), HS_SPKLEN: 1 (160ns @ 12.5MHz)
+ *          - Medium line (30-100cm): CONFIG_SMBUS_SPK_MEDIUM
+ *            FS_SPKLEN: 6 (560ns @ 12.5MHz), HS_SPKLEN: 4 (400ns @ 12.5MHz)
+ *          - Long line (>100cm): CONFIG_SMBUS_SPK_LONG
+ *            FS_SPKLEN: 15 (1280ns @ 12.5MHz), HS_SPKLEN: 9 (800ns @ 12.5MHz)
+ *
+ * The actual suppression time is calculated as:
+ * suppression_time = (SPKLEN + 1) × ic_clk_period
+ *
+ * Example with ic_clk=12.5MHz:
+ * - Short (FS_SPKLEN=2):  (2+1) × 80ns = 250ns
+ * - Medium (FS_SPKLEN=6): (6+1) × 80ns = 560ns
+ * - Long (FS_SPKLEN=15):  (15+1) × 80ns = 1280ns
+ *
+ * @note Configure this option in menuconfig or defconfig:
+ *       Device Drivers -> SMBUS Spike Suppression Configuration
+ */
+
+#ifdef CONFIG_SMBUS_FS_SPKLEN
+    #define SMBUS_FS_SPKLEN_CONFIG  CONFIG_SMBUS_FS_SPKLEN
+#else
+    /**
+     * @brief Fallback default for FS_SPKLEN if Kconfig is not configured
+     * @details Defaults to medium mode (6) for general use
+     */
+    #define SMBUS_FS_SPKLEN_CONFIG  2
+    #warning "CONFIG_SMBUS_FS_SPKLEN not defined, using default value of 6 (medium mode)"
+#endif
+
+#ifdef CONFIG_SMBUS_HS_SPKLEN
+    #define SMBUS_HS_SPKLEN_CONFIG  CONFIG_SMBUS_HS_SPKLEN
+#else
+    /**
+     * @brief Fallback default for HS_SPKLEN if Kconfig is not configured
+     * @details Defaults to medium mode (4) for general use
+     */
+    #define SMBUS_HS_SPKLEN_CONFIG  1
+    #warning "CONFIG_SMBUS_HS_SPKLEN not defined, using default value of 4 (medium mode)"
+#endif
+
+/* Legacy SPKLEN constants for reference - kept for documentation purposes */
+#define SMBUS_FS_SPKLEN_SHORT       (2)        /**< FS_SPKLEN for short lines (<30cm) */
+#define SMBUS_FS_SPKLEN_MEDIUM      (6)        /**< FS_SPKLEN for medium lines (30-100cm) */
+#define SMBUS_FS_SPKLEN_LONG        (15)       /**< FS_SPKLEN for long lines (>100cm) */
+#define SMBUS_FS_SPKLEN_DEFAULT     (6)        /**< Default to medium mode */
+#define SMBUS_HS_SPKLEN_SHORT       (1)        /**< HS_SPKLEN for short lines (<30cm) */
+#define SMBUS_HS_SPKLEN_MEDIUM      (4)        /**< HS_SPKLEN for medium lines (30-100cm) */
+#define SMBUS_HS_SPKLEN_LONG        (9)        /**< HS_SPKLEN for long lines (>100cm) */
+#define SMBUS_HS_SPKLEN_DEFAULT     (4)        /**< Default to medium mode */
 
 /* ======================================================================== */
 /*                     Address Validity Constants                            */
@@ -631,6 +753,8 @@ typedef enum SmbusTransferState {
 #define SMBUS_IC_CON_10BIT_MASTER_ADDR_BIT    (4)   /**< 10-bit master addressing bit position */
 #define SMBUS_IC_CON_10BIT_TARGET_ADDR_BIT    (3)   /**< 10-bit target addressing bit position */
 #define SMBUS_IC_CON_RX_FIFO_HOLD_BIT         (9)   /**< RX FIFO full hold control bit position */
+#define SMBUS_IC_CON_TX_EMPTY_CTRL_BIT        (8)   /**< TX_EMPTY control bit position */
+#define SMBUS_IC_CON_BUS_CLEAR_CTRL_BIT       (11)  /**< Bus clear feature control bit position */
 #define SMBUS_IC_CON_STOP_DET_IFADDRESSED_BIT (7)   /**< STOP detection when addressed bit position */
 #define SMBUS_IC_CON_ARP_ENABLE_BIT           (18)  /**< ARP enable bit position */
 #define SMBUS_IC_CON_QUICK_CMD_BIT            (17)  /**< SMBus quick command enable bit position */
@@ -792,11 +916,11 @@ typedef struct SmbusMsg {
  */
 typedef struct SmbusDev {
     volatile SmbusRegMap_s  *regBase;                               /**< Register base address */
-    U32                      busId;                                  /**< Bus channel number */
+    U32                      busId;                                 /**< Bus channel number */
     U32                      flags;                                 /**< Device flags */
     SmbusMode_e              mode;                                  /**< Operation mode (0=master, 1=target) */
     U32                      addrMode;                              /**< Address mode (7/10 bit) */
-    U32                      targetAddr;                             /**< target address */
+    U32                      targetAddr;                            /**< target address */
     U8                       status;
     U32                      xferStatus;                            /**< Device status */
     S32                      cmdErr;                                /**< Command error code */
@@ -838,6 +962,9 @@ typedef struct SmbusDev {
     U32                      masterTxBufLen;     ///< 当前消息剩余待发送长度
     U32                      sdaHoldTime;        /**< SDA hold time configuration */
     U32                      clkRate;            /**< Clock rate for timing calculations */
+    U8                       sdaHoldFactor;      /**< SDA hold factor from SBR config */
+    U8                       fsSpklenConfig;     /**< Fast mode spike suppression from SBR config */
+    U8                       hsSpklenConfig;     /**< High speed spike suppression from SBR config */
 
     /* SMBus timing configuration fields (ported from I2C) */
     U16                      ssHcnt;             /**< Standard mode SCL high count */

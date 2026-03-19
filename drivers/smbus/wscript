@@ -6,5 +6,7 @@ def build(bld):
             'drivers/smbus/drv_smbus_dw.c',
             'drivers/smbus/drv_smbus_dw_i2c.c',
             'drivers/smbus/drv_smbus_dw_master.c',
-            'drivers/smbus/drv_smbus_dw_target.c'
+            'drivers/smbus/drv_smbus_dw_target.c',
+            'drivers/smbus/test_smbus_api.c',
+            'drivers/smbus/test_smbus_control.c'
         ]

@@ -66,6 +66,7 @@
 #define SMBUS_IC_ENABLE_RECOVERY_MASK (1 << 3)  /* 对应 sdaStuckRecoveryEnable */
 
 #define SMBUS_IC_STATUS_ACTIVITY_MASK (1 << 0)
+#define SMBUS_IC_TAR_10BITADDR_MASTER_MASK (1 << 12)  /* IC_TAR bit 12: Master 10-bit addressing mode */
 #define SMBUS_INTR_TX_ABRT_MASK       (1 << 6)
 
 /* SMBus speed range definitions */
@@ -96,6 +97,7 @@
 /* IC_CON register bit definitions */
 #define SMBUS_IC_CON_RESTART_EN     (1U << 5)   /* Restart enable */
 #define SMBUS_IC_CON_MASTER         (1U << 0)   /* Master mode */
+#define SMBUS_IC_CON_STOP_DET_IFMASTERACTIVE (1U << 10)  /* STOP detection only when master is active */
 
 /* Macro to initialize all SMBus timing counters to zero */
 #define SMBUS_INIT_TIMING_COUNTERS(dev) do { \
